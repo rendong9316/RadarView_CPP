@@ -16,7 +16,6 @@
 #include "tilesource.h"
 
 class QOpenGLShaderProgram;
-class QOpenGLTexture;
 
 // 3D 地球：WGS84 椭球 + 本地 mbtiles（Web 墨卡托 XYZ）瓦片
 // 左键拖拽旋转，滚轮缩放，按视距自动选择瓦片层级
@@ -59,13 +58,13 @@ protected:
 
 private:
     struct TileId { int z, x, y; };
-    struct CachedTexture { QOpenGLTexture *tex; quint64 lastUsed; };
+    struct CachedTexture { GLuint tex; quint64 lastUsed; };
 
     void cleanupGL();
     void clearTextures();
     void updateMatrices();
     void collectTiles(int z, int x, int y, QVector<TileId> &out) const;
-    QOpenGLTexture *textureFor(const TileId &t, QVector4D *xform);
+    GLuint textureFor(const TileId &t, QVector4D *xform);   // 0 = 无可用纹理
     void loadTexture(int z, int x, int y);
     void evictTextures();
     void updateCapColors();

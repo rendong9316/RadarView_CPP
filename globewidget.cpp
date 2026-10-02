@@ -1,7 +1,6 @@
 #include "globewidget.h"
 
 #include <QOpenGLShaderProgram>
-#include <QOpenGLTexture>
 #include <QOpenGLContext>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -348,7 +347,7 @@ void GlobeWidget::cleanupGL()
 void GlobeWidget::clearTextures()
 {
     for (const CachedTexture &c : qAsConst(m_textures))
-        delete c.tex;
+        glDeleteTextures(1, &c.tex);
     m_textures.clear();
 }
 
@@ -413,10 +412,10 @@ void GlobeWidget::collectTiles(int z, int x, int y, QVector<TileId> &out) const
 }
 
 // 自身纹理未加载时向上找最近的父级纹理，并算出对应的子区域纹理坐标
-QOpenGLTexture *GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
+GLuint GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
 {
     if (!m_tiles)
-        return nullptr;
+        return 0;
     for (int az = qMin(t.z, m_tiles->maxZoom()); az >= m_tiles->minZoom(); --az) {
         const int dz = t.z - az;
         const int ax = t.x >> dz, ay = t.y >> dz;
@@ -428,7 +427,7 @@ QOpenGLTexture *GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
         *xform = QVector4D((t.x - (ax << dz)) * s, (t.y - (ay << dz)) * s, s, s);
         return it->tex;
     }
-    return nullptr;
+    return 0;
 }
 
 void GlobeWidget::loadTexture(int z, int x, int y)
@@ -439,9 +438,24 @@ void GlobeWidget::loadTexture(int z, int x, int y)
         m_missing.insert(key);
         return;
     }
-    QOpenGLTexture *tex = new QOpenGLTexture(img.convertToFormat(QImage::Format_RGBA8888));
-    tex->setMinMagFilters(QOpenGLTexture::LinearMipMapLinear, QOpenGLTexture::Linear);
-    tex->setWrapMode(QOpenGLTexture::ClampToEdge);
+    // 只用 OpenGL ES 2.0 子集（GL_RGBA + glGenerateMipmap），ANGLE/D3D 下不报错
+    // QOpenGLTexture 会设置 ES2 没有的 GL_TEXTURE_MAX_LEVEL 等参数，Win7 走 ANGLE 时会产生 GL_INVALID_ENUM
+    const QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+    const bool pot = (rgba.width() & (rgba.width() - 1)) == 0 && (rgba.height() & (rgba.height() - 1)) == 0;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba.width(), rgba.height(), 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba.constBits());
+    // ES2 只允许 2 的幂尺寸纹理生成 mipmap
+    if (pot)
+        glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, pot ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
     m_textures.insert(key, CachedTexture{tex, m_frame});
 }
 
@@ -458,7 +472,8 @@ void GlobeWidget::evictTextures()
     }
     std::sort(candidates.begin(), candidates.end());
     for (int i = 0; i < candidates.size() && excess > 0; ++i, --excess) {
-        delete m_textures.value(candidates[i].second).tex;
+        const GLuint tex = m_textures.value(candidates[i].second).tex;
+        glDeleteTextures(1, &tex);
         m_textures.remove(candidates[i].second);
     }
 }
@@ -570,8 +585,8 @@ void GlobeWidget::paintGL()
     int maxZ = 0;
     for (const TileId &t : qAsConst(tiles)) {
         QVector4D xform;
-        if (QOpenGLTexture *tex = textureFor(t, &xform)) {
-            tex->bind();
+        if (const GLuint tex = textureFor(t, &xform)) {
+            glBindTexture(GL_TEXTURE_2D, tex);
             m_prog->setUniformValue(m_uUseTex, 1.0f);
             m_prog->setUniformValue(m_uTexXform, xform);
         } else {
