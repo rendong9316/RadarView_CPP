@@ -1,0 +1,35 @@
+# 构建产物（用 build_win7.sh 重新生成）
+build/
+debug/
+release/
+Makefile
+Makefile.*
+.qmake.stash
+*.o
+*.obj
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+qrc_*.cpp
+ui_*.h
+*.exe
+*.dll
+*.a
+*.lib
+
+# Qt Creator 本地配置
+*.pro.user
+*.pro.user.*
+*.autosave
+CMakeLists.txt.user*
+
+# 运行时生成
+selftest.log
+
+# 瓦片数据体积大，从 RadarView 项目拷贝，不入库
+*.mbtiles
+
+# 临时/备份文件
+*.bak
+*.tmp
+*~
