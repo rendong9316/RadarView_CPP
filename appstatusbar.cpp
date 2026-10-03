@@ -1,6 +1,7 @@
 #include "appstatusbar.h"
 #include "replaycontroller.h"
 #include "track.h"
+#include "apppaths.h"
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -597,7 +598,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     connect(m_ctrl, &ReplayController::stateChanged, this, &AppStatusBar::syncState);
     connect(m_ctrl, &ReplayController::timeChanged, this, &AppStatusBar::syncTime);
 
-    QSettings settings(QStringLiteral("RadarView"), QStringLiteral("HelloVscode"));
+    QSettings &settings = app::settings();
     m_theme = themeById(settings.value(QStringLiteral("theme"), QStringLiteral("dark")).toString());
     m_showCustom = false;
     setViewStatus(0.0, 0.0, 0.0, 0);
@@ -701,8 +702,27 @@ void AppStatusBar::setTrackCount(int count)
 
 void AppStatusBar::setLoading(bool loading, int percent)
 {
-    m_loading->setText(QStringLiteral("%1%").arg(qBound(0, percent, 100)));
-    m_loadingBox->setVisible(loading);
+    m_isLoading = loading;
+    m_loadPercent = qBound(0, percent, 100);
+    syncLoading();
+}
+
+// StatusBar.vue：导入中显示百分比，后台入库时显示「保存中」
+void AppStatusBar::setPersisting(bool persisting)
+{
+    m_persisting = persisting;
+    syncLoading();
+}
+
+void AppStatusBar::syncLoading()
+{
+    m_loading->setText(m_isLoading ? QStringLiteral("%1%").arg(m_loadPercent) : QStringLiteral("保存中"));
+    m_loadingBox->setVisible(m_isLoading || m_persisting);
+}
+
+QString AppStatusBar::loadingText() const
+{
+    return m_loadingBox->isVisible() ? m_loading->text() : QString();
 }
 
 void AppStatusBar::setError(const QString &message)
@@ -717,7 +737,7 @@ void AppStatusBar::setError(const QString &message)
 void AppStatusBar::setTheme(const QString &id)
 {
     m_theme = themeById(id);
-    QSettings settings(QStringLiteral("RadarView"), QStringLiteral("HelloVscode"));
+    QSettings &settings = app::settings();
     settings.setValue(QStringLiteral("theme"), m_theme.id);
     applyTheme();
     emit themeChanged(m_theme.id);

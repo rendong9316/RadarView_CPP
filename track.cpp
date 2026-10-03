@@ -2,15 +2,32 @@
 
 #include <QSet>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
 const qint64 kBeijingOffsetMs = 8LL * 3600 * 1000;
 
-// 雷达文件按导入顺序轮换的颜色（与 RadarView RADAR_IMPORT_COLORS 一致）
+// 同一数据源的多个文件按导入顺序轮换的颜色，第一个文件用该数据源的默认色。
+// 雷达沿用 RadarView RADAR_IMPORT_COLORS；原始量测、ADS-B 各用一组与之错开的颜色
 const char *const kRadarFileColors[] = {
     "#00ff88", "#ffcc00", "#3ba7ff", "#ff5f8f", "#9bff3b", "#ff8a3b", "#c17dff", "#38f2ff"
 };
+const char *const kRawFileColors[] = {
+    "#ff8800", "#e040fb", "#40c4ff", "#eeff41", "#ff5252", "#64ffda", "#ffab40", "#b388ff"
+};
+const char *const kAdsbFileColors[] = {
+    "#00d4ff", "#ff7eb6", "#ffe066", "#7cff6b", "#c08bff", "#ff9e57", "#5cffd6", "#ff5c5c"
+};
+const int kPaletteSize = 8;
+
+// 调色板用完后按黄金角旋转色相继续生成，仍与已用颜色错开
+QColor rotatedColor(TrackSource s, int n)
+{
+    const double base = s == TrackSource::Adsb ? 190.0 : s == TrackSource::Radar ? 150.0 : 30.0;
+    const double hue = std::fmod(base + n * 137.508, 360.0);
+    return QColor::fromHslF(hue / 360.0, 0.85, 0.6);
+}
 
 // 公历日期 -> 1970-01-01 起的天数（Howard Hinnant 算法）
 qint64 daysFromCivil(int y, int m, int d)
@@ -68,6 +85,36 @@ QColor trackSourceColor(TrackSource s)
     case TrackSource::RadarRaw: return QColor(QStringLiteral("#ff8800"));
     }
     return QColor(Qt::white);
+}
+
+bool trackSourceFromName(const QString &name, TrackSource *out)
+{
+    for (TrackSource s : { TrackSource::Adsb, TrackSource::Radar, TrackSource::RadarRaw })
+        if (trackSourceName(s) == name) {
+            *out = s;
+            return true;
+        }
+    return false;
+}
+
+QString trackSourceKey(TrackSource s)
+{
+    switch (s) {
+    case TrackSource::Adsb: return QStringLiteral("adsb");
+    case TrackSource::Radar: return QStringLiteral("radar");
+    case TrackSource::RadarRaw: return QStringLiteral("radar_raw");
+    }
+    return QString();
+}
+
+bool trackSourceFromKey(const QString &key, TrackSource *out)
+{
+    for (TrackSource s : { TrackSource::Adsb, TrackSource::Radar, TrackSource::RadarRaw })
+        if (trackSourceKey(s) == key) {
+            *out = s;
+            return true;
+        }
+    return false;
 }
 
 QString Track::key() const
@@ -138,18 +185,21 @@ int TrackStore::addTracks(QVector<Track> tracks)
 
         const QString fileKey = trackSourceName(t.source) + QStringLiteral("::") + t.fileName;
         if (!m_fileColors.contains(fileKey)) {
-            if (t.source == TrackSource::Adsb) {
-                m_fileColors.insert(fileKey, trackSourceColor(t.source));
-            } else {
-                int n = 0;   // 同类雷达已有的文件数，决定轮换到哪个颜色
-                for (auto it = m_fileColors.constBegin(); it != m_fileColors.constEnd(); ++it)
-                    if (it.key().startsWith(trackSourceName(t.source) + QStringLiteral("::")))
-                        ++n;
-                const QColor c = t.source == TrackSource::RadarRaw && n == 0
-                                     ? trackSourceColor(t.source)
-                                     : QColor(QLatin1String(kRadarFileColors[n % 8]));
-                m_fileColors.insert(fileKey, c);
+            // 同一数据源已用过的颜色（含已清空但记住颜色的文件），新文件取第一个没用过的
+            const QString prefix = trackSourceName(t.source) + QStringLiteral("::");
+            QSet<QRgb> used;
+            for (auto it = m_fileColors.constBegin(); it != m_fileColors.constEnd(); ++it)
+                if (it.key().startsWith(prefix))
+                    used.insert(it.value().rgb());
+            const char *const *palette = t.source == TrackSource::Adsb ? kAdsbFileColors
+                                       : t.source == TrackSource::Radar ? kRadarFileColors : kRawFileColors;
+            QColor c;
+            for (int n = 0; !c.isValid(); ++n) {
+                const QColor cand = n < kPaletteSize ? QColor(QLatin1String(palette[n])) : rotatedColor(t.source, n);
+                if (!used.contains(cand.rgb()))
+                    c = cand;
             }
+            m_fileColors.insert(fileKey, c);
         }
 
         const QString k = t.key();
@@ -182,11 +232,28 @@ int TrackStore::addTracks(QVector<Track> tracks)
     return added;
 }
 
+int TrackStore::removeTracks(const QSet<QString> &keys)
+{
+    if (keys.isEmpty())
+        return 0;
+    QVector<Track> kept;
+    kept.reserve(m_tracks.size());
+    for (Track &t : m_tracks)
+        if (!keys.contains(t.key()))
+            kept.append(std::move(t));
+    const int removed = m_tracks.size() - kept.size();
+    m_tracks = std::move(kept);
+    m_index.clear();
+    for (int i = 0; i < m_tracks.size(); ++i)
+        m_index.insert(m_tracks[i].key(), i);
+    ++m_version;
+    return removed;
+}
+
 void TrackStore::clear()
 {
     m_tracks.clear();
     m_index.clear();
-    m_fileColors.clear();
     ++m_version;
 }
 
@@ -223,10 +290,10 @@ QColor TrackStore::fileColor(TrackSource s, const QString &fileName) const
     return m_fileColors.value(trackSourceName(s) + QStringLiteral("::") + fileName, trackSourceColor(s));
 }
 
-QString TrackStore::uniqueFileName(TrackSource s) const
+QString TrackStore::uniqueFileName(TrackSource s, const QSet<QString> &extraUsed) const
 {
     const QString base = s == TrackSource::RadarRaw ? QStringLiteral("RadarRaw") : QStringLiteral("Radar");
-    QSet<QString> used;
+    QSet<QString> used = extraUsed;
     for (const Track &t : m_tracks)
         if (t.source == s)
             used.insert(t.fileName);

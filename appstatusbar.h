@@ -54,6 +54,8 @@ public:
     void setSources(const QVector<SourceItem> &items);
     void setTrackCount(int count);
     void setLoading(bool loading, int percent);
+    void setPersisting(bool persisting);        // 后台写数据库中：显示「保存中」
+    QString loadingText() const;
     void setError(const QString &message);     // 空串表示清除
 
     void setTheme(const QString &id);           // 会写入 QSettings
@@ -90,6 +92,9 @@ protected:
 private:
     void syncState();
     void syncTime();
+    void syncLoading();
+    bool m_isLoading = false, m_persisting = false;
+    int m_loadPercent = 0;
     void applyTheme();
     void updateSeekWidth();
     void applyCustomSpeed(const QString &text);

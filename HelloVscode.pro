@@ -19,7 +19,16 @@ SOURCES += \
     trackimporter.cpp \
     replaycontroller.cpp \
     appstatusbar.cpp \
-    trackpointdialog.cpp
+    trackpointdialog.cpp \
+    theme.cpp \
+    lucide.cpp \
+    geocalc.cpp \
+    apppaths.cpp \
+    trackdb.cpp \
+    maptools.cpp \
+    uiwidgets.cpp \
+    managepanel.cpp \
+    sidepanels.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -33,7 +42,16 @@ HEADERS += \
     replaycontroller.h \
     appstatusbar.h \
     trackpointdialog.h \
-    geo.h
+    geo.h \
+    theme.h \
+    lucide.h \
+    geocalc.h \
+    apppaths.h \
+    trackdb.h \
+    maptools.h \
+    uiwidgets.h \
+    managepanel.h \
+    sidepanels.h
 
 # Windows 用 Qt5Core 内置并导出的 zlib；其他平台链接系统 zlib
 unix: LIBS += -lz

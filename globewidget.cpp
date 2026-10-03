@@ -1,6 +1,12 @@
 #include "globewidget.h"
 #include "track.h"
+#include "maptools.h"
+#include "geo.h"
 
+#include <QApplication>
+#include <QDateTime>
+#include <QPainter>
+#include <QPainterPath>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLContext>
 #include <QMouseEvent>
@@ -26,6 +32,54 @@ const int kLoadPerFrame = 8;                       // 每帧最多解码的瓦�
 const int kMaxTextures = 256;
 const float kPickTolPx = 6.0f;                     // 鼠标离航迹多近算命中
 const int kClickSlopPx = 4;                        // 按下到松开移动不超过它算单击
+const double kFlagScale = 1.2;                     // RadarView 旗标缩放默认值
+const QColor kRulerColor(0xf5, 0x9e, 0x0b);        // #f59e0b
+
+// RadarView flagRenderer.ts「flag-pin」：32×32 红色图钉，白色描边，中间白点
+QPixmap makeFlagPin(qreal dpr)
+{
+    const int size = 32;
+    QPixmap pm(int(size * dpr), int(size * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QColor red(0xff, 0x44, 0x44);
+    const QPointF c(size / 2.0, size / 2.0 - 4);
+    p.setBrush(red);
+    p.setPen(QPen(Qt::white, 2));
+    p.drawEllipse(c, 10, 10);
+    QPainterPath tail;
+    tail.moveTo(size / 2.0 - 5, size / 2.0 + 2);
+    tail.lineTo(size / 2.0, size - 4);
+    tail.lineTo(size / 2.0 + 5, size / 2.0 + 2);
+    p.setPen(Qt::NoPen);
+    p.fillPath(tail, red);
+    p.strokePath(tail, QPen(Qt::white, 1.5));
+    p.setBrush(Qt::white);
+    p.drawEllipse(c, 4, 4);
+    return pm;
+}
+
+// Cesium FILL_AND_OUTLINE 文字：先描边再填充
+void drawOutlinedText(QPainter &p, const QPointF &baseline, const QString &text, const QFont &font,
+                      const QColor &fill, const QColor &outline, qreal outlineWidth)
+{
+    QPainterPath path;
+    path.addText(baseline, font, text);
+    p.strokePath(path, QPen(outline, outlineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.fillPath(path, fill);
+}
+
+QFont pxFont(int px, bool bold = false)
+{
+    QFont f(QStringLiteral("Microsoft YaHei"));
+    f.setFamilies(QStringList() << QStringLiteral("Segoe UI") << QStringLiteral("Microsoft YaHei")
+                                << QStringLiteral("WenQuanYi Micro Hei") << QStringLiteral("Noto Sans CJK SC"));
+    f.setPixelSize(px);
+    f.setBold(bold);
+    return f;
+}
 
 // 椭球长半轴归一化为 1；顶点位置在着色器里由经纬度算出，所有瓦片共用一套网格
 const char *const kVertexSrc = R"(
@@ -124,6 +178,30 @@ void tileBounds(int z, int x, int y, QVector3D *center, float *radius)
 
 } // namespace
 
+// 叠加层画在一个透明子控件上（光栅绘制，不碰 GL）。QPainter 直接画在 QOpenGLWidget 上会走 GL 绘制引擎，
+// ANGLE（D3D11/D3D9）下会产生 GL 错误；子控件由 backing store 和 GL 画面合成，对鼠标事件透明
+class GlobeOverlay : public QWidget
+{
+public:
+    explicit GlobeOverlay(GlobeWidget *globe) : QWidget(globe), m_globe(globe)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        m_globe->paintOverlay(p);
+    }
+
+private:
+    GlobeWidget *m_globe;
+};
+
 GlobeWidget::GlobeWidget(QWidget *parent)
     : QOpenGLWidget(parent),
       m_northCap(0.80f, 0.85f, 0.90f, 1.0f),
@@ -142,6 +220,9 @@ GlobeWidget::GlobeWidget(QWidget *parent)
     });
     m_camLon = qDegreesToRadians(105.0);
     m_camLat = qDegreesToRadians(35.0);
+    m_overlay = new GlobeOverlay(this);
+    m_overlay->setGeometry(rect());
+    m_overlay->show();
 }
 
 GlobeWidget::~GlobeWidget()
@@ -251,6 +332,279 @@ void GlobeWidget::setTrackStore(const TrackStore *store)
     m_trackStore = store;
     m_trackLayer.setStore(store);
     update();
+}
+
+void GlobeWidget::setMapTools(FlagStore *flags, RulerState *ruler)
+{
+    m_flags = flags;
+    m_ruler = ruler;
+    connect(flags, &FlagStore::changed, this, [this]() { update(); });
+    connect(ruler, &RulerState::changed, this, [this]() { update(); });
+    connect(ruler, &RulerState::mouseMoved, this, [this]() { update(); });
+}
+
+void GlobeWidget::setShowLabels(bool on)
+{
+    m_showLabels = on;
+    update();
+}
+
+bool GlobeWidget::visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos)
+{
+    updateMatrices();
+    const QVector3D p = ecef(qDegreesToRadians(lonDeg), qDegreesToRadians(latDeg), altM / (kEarthRadiusKm * 1000.0));
+    if (QVector3D::dotProduct(p, m_eye - p) < 0.0f)
+        return false;   // 地球背面
+    const QVector4D c = m_mvp * QVector4D(p, 1.0f);
+    if (c.w() < 1e-6f)
+        return false;
+    *pos = QPointF((c.x() / c.w() + 1.0) * 0.5 * width(), (1.0 - c.y() / c.w()) * 0.5 * height());
+    return true;
+}
+
+// 旗标图标：底边中点对准旗标位置，32px × 0.8 × 缩放
+QRectF GlobeWidget::flagIconRect(const QPointF &anchor) const
+{
+    const double s = 32.0 * 0.8 * kFlagScale;
+    return QRectF(anchor.x() - s / 2.0, anchor.y() - s, s, s);
+}
+
+QString GlobeWidget::flagAt(const QPointF &pos)
+{
+    if (!m_flags)
+        return QString();
+    const QVector<MapFlag> &flags = m_flags->flags();
+    for (int i = flags.size() - 1; i >= 0; --i) {   // 后放的在上面
+        QPointF sp;
+        if (visiblePos(flags[i].lon, flags[i].lat, 0.0, &sp) && flagIconRect(sp).contains(pos))
+            return flags[i].id;
+    }
+    return QString();
+}
+
+void GlobeWidget::resetInteraction()
+{
+    m_tipTrack = m_tipPoint = -1;
+    m_trackLayer.setHoveredTrack(-1);
+    QToolTip::hideText();
+    unsetCursor();
+    update();
+}
+
+bool GlobeWidget::pointHover(int *track, int *point) const
+{
+    *track = m_tipTrack;
+    *point = m_tipPoint;
+    return m_tipTrack >= 0;
+}
+
+QString GlobeWidget::trackLabel(const Track &t)
+{
+    QStringList parts;
+    if (!t.flightNo.isEmpty())
+        parts << t.flightNo;
+    if (!t.aircraftType.isEmpty())
+        parts << t.aircraftType;
+    return parts.isEmpty() ? t.id : parts.join(QStringLiteral(" | "));
+}
+
+// ---------------------------------------------------------------
+//  叠加层：标尺、旗标、航迹标签、点迹悬停标签（QPainter 画在 GL 画面之上）
+// ---------------------------------------------------------------
+QVector<QPolygonF> GlobeWidget::geodesicLines(double lat1, double lon1, double lat2, double lon2)
+{
+    const QVector3D a = geo::ecefDeg(lon1, lat1, 0.0).normalized();
+    const QVector3D b = geo::ecefDeg(lon2, lat2, 0.0).normalized();
+    const double ang = std::acos(qBound(-1.0, double(QVector3D::dotProduct(a, b)), 1.0));
+    const int n = 64;
+    QVector<QPolygonF> out;
+    QPolygonF cur;
+    for (int i = 0; i <= n; ++i) {
+        const double f = double(i) / n;
+        QVector3D v;
+        if (ang < 1e-9) {
+            v = a;
+        } else {
+            const double s = std::sin(ang);
+            v = a * float(std::sin((1 - f) * ang) / s) + b * float(std::sin(f * ang) / s);
+        }
+        const double lat = qRadiansToDegrees(std::asin(qBound(-1.0, double(v.z()), 1.0)));
+        const double lon = qRadiansToDegrees(std::atan2(double(v.y()), double(v.x())));
+        QPointF sp;
+        if (visiblePos(lon, lat, 0.0, &sp)) {
+            cur << sp;
+        } else if (!cur.isEmpty()) {
+            out << cur;
+            cur.clear();
+        }
+    }
+    if (cur.size() > 1)
+        out << cur;
+    return out;
+}
+
+void GlobeWidget::drawRuler(QPainter &p)
+{
+    m_rulerMarkersDrawn = 0;
+    if (!m_ruler || !m_ruler->isActive() || m_ruler->waypoints().isEmpty())
+        return;
+    const QVector<RulerState::Waypoint> &w = m_ruler->waypoints();
+    QPen seg(kRulerColor, 2.0, Qt::CustomDashLine, Qt::FlatCap);
+    seg.setDashPattern(QVector<qreal>() << 6.0 << 6.0);   // Cesium dashLength 12：一半实一半空
+    p.setBrush(Qt::NoBrush);
+    for (int i = 0; i + 1 < w.size(); ++i) {
+        p.setPen(seg);
+        for (const QPolygonF &line : geodesicLines(w[i].lat, w[i].lon, w[i + 1].lat, w[i + 1].lon))
+            p.drawPolyline(line);
+    }
+    if (m_ruler->hasMouse()) {
+        QColor c = kRulerColor;
+        c.setAlphaF(0.45);
+        QPen pre(c, 1.5, Qt::CustomDashLine, Qt::FlatCap);
+        pre.setDashPattern(QVector<qreal>() << 8.0 / 1.5 / 2.0 << 8.0 / 1.5 / 2.0);
+        p.setPen(pre);
+        for (const QPolygonF &line : geodesicLines(w.last().lat, w.last().lon, m_ruler->mouseLat(), m_ruler->mouseLon()))
+            p.drawPolyline(line);
+    }
+    // 航点：r=11 琥珀色圆、黑色描边、白色粗体序号
+    const QFont f = pxFont(12, true);
+    p.setFont(f);
+    for (int i = 0; i < w.size(); ++i) {
+        QPointF sp;
+        if (!visiblePos(w[i].lon, w[i].lat, 0.0, &sp))
+            continue;
+        p.setPen(QPen(Qt::black, 1.5));
+        p.setBrush(kRulerColor);
+        p.drawEllipse(sp, 11.0, 11.0);
+        p.setPen(Qt::white);
+        p.drawText(QRectF(sp.x() - 11, sp.y() - 11, 22, 22), Qt::AlignCenter, QString::number(i + 1));
+        ++m_rulerMarkersDrawn;
+    }
+    p.setBrush(Qt::NoBrush);
+}
+
+void GlobeWidget::drawFlags(QPainter &p)
+{
+    m_flagsDrawn = 0;
+    if (!m_flags || m_flags->flags().isEmpty())
+        return;
+    MapFlag a, b;
+    if (m_flags->selectedPair(&a, &b)) {
+        QColor c(Qt::yellow);
+        c.setAlphaF(0.8);
+        p.setPen(QPen(c, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        for (const QPolygonF &line : geodesicLines(a.lat, a.lon, b.lat, b.lon))
+            p.drawPolyline(line);
+    }
+    const qreal iconDpr = devicePixelRatioF() * 0.8 * kFlagScale;   // 按显示尺寸生成，缩放后不发虚
+    if (m_flagIcon.isNull() || !qFuzzyCompare(m_flagIcon.devicePixelRatio(), iconDpr))
+        m_flagIcon = makeFlagPin(iconDpr);
+    const QFont f = pxFont(int(std::lround(12 * kFlagScale)));
+    const QFontMetricsF fm(f);
+    for (const MapFlag &fl : m_flags->flags()) {
+        QPointF sp;
+        if (!visiblePos(fl.lon, fl.lat, 0.0, &sp))
+            continue;
+        p.drawPixmap(flagIconRect(sp), m_flagIcon, QRectF(QPointF(0, 0), QSizeF(m_flagIcon.size())));
+        // 标签：黄色，黑色描边 2，顶边在旗标位置下方 round(8 × 缩放) px
+        const double w = fm.horizontalAdvance(fl.label);
+        const QPointF base(sp.x() - w / 2.0, sp.y() + std::lround(8 * kFlagScale) + fm.ascent());
+        drawOutlinedText(p, base, fl.label, f, Qt::yellow, Qt::black, 2.0);
+        ++m_flagsDrawn;
+    }
+}
+
+// RadarView trackRenderer.ts：18px，填充为航迹线颜色、黑色描边 2，底边在端点上方 20px，水平居中
+void GlobeWidget::drawLabels(QPainter &p)
+{
+    m_labelsDrawn = 0;
+    if (!m_showLabels || !m_trackStore)
+        return;
+    const QVector<TrackLayer::EndPoint> &eps = m_trackLayer.endpoints();
+    const QVector<Track> &tracks = m_trackStore->tracks();
+    const QFont f = pxFont(18);
+    const QFontMetricsF fm(f);
+    const qreal dpr = devicePixelRatioF();
+    if (m_labelCache.size() > 20000)
+        m_labelCache.clear();
+    for (const TrackLayer::EndPoint &e : eps) {
+        if (e.track < 0 || e.track >= tracks.size())
+            continue;
+        QPointF sp;
+        if (!visiblePos(e.lon, e.lat, TrackLayer::kAltitudeM, &sp))
+            continue;
+        if (sp.x() < -200 || sp.y() < -50 || sp.x() > width() + 200 || sp.y() > height() + 50)
+            continue;
+        const QString text = trackLabel(tracks[e.track]);
+        const QColor color = m_trackLayer.trackColor(e.track);
+        const QString key = text + QLatin1Char('\x1f') + color.name();
+        auto it = m_labelCache.find(key);
+        if (it == m_labelCache.end()) {
+            const QSizeF sz(fm.horizontalAdvance(text) + 6.0, fm.height() + 4.0);
+            QPixmap pm(int(std::ceil(sz.width() * dpr)), int(std::ceil(sz.height() * dpr)));
+            pm.setDevicePixelRatio(dpr);
+            pm.fill(Qt::transparent);
+            QPainter lp(&pm);
+            lp.setRenderHint(QPainter::Antialiasing);
+            drawOutlinedText(lp, QPointF(3.0, 2.0 + fm.ascent()), text, f, color, Qt::black, 2.0);
+            lp.end();
+            it = m_labelCache.insert(key, pm);
+        }
+        const QSizeF sz = QSizeF(it->size()) / dpr;
+        p.drawPixmap(QPointF(sp.x() - sz.width() / 2.0, sp.y() - 20.0 - sz.height() + 2.0), *it);
+        ++m_labelsDrawn;
+    }
+}
+
+// RadarView pointDotRenderer.ts showPointDotHover：两行，14px 白字黑底，内边距 (8, 6)，在点右侧 点径+10 px
+void GlobeWidget::drawPointTip(QPainter &p)
+{
+    if (m_tipTrack < 0 || !m_trackStore || m_tipTrack >= m_trackStore->size())
+        return;
+    const Track &t = m_trackStore->tracks()[m_tipTrack];
+    if (m_tipPoint < 0 || m_tipPoint >= t.points.size())
+        return;
+    const TrackPoint &pt = t.points[m_tipPoint];
+    QPointF sp;
+    if (!visiblePos(pt.lon, pt.lat, TrackLayer::kAltitudeM, &sp))
+        return;
+    const QString label = !t.flightNo.isEmpty() ? t.flightNo : !t.registration.isEmpty() ? t.registration : t.id;
+    const QString l1 = QStringLiteral("%1  ·  %2m  ·  %3kt  ·  %4°")
+                           .arg(label).arg(double(pt.alt), 0, 'f', 0).arg(double(pt.speed), 0, 'f', 0)
+                           .arg(double(pt.heading), 0, 'f', 0);
+    const QString l2 = QDateTime::fromMSecsSinceEpoch(pt.t, Qt::OffsetFromUTC, 8 * 3600)
+                           .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    const QFont f = pxFont(14);
+    const QFontMetricsF fm(f);
+    const double w = qMax(fm.horizontalAdvance(l1), fm.horizontalAdvance(l2));
+    const double lineH = fm.height();
+    const QRectF box(sp.x() + m_trackLayer.pointDotPx() + 10.0, sp.y() - lineH - 6.0, w + 16.0, lineH * 2 + 12.0);
+    p.fillRect(box, Qt::black);
+    QColor outline(Qt::black);
+    outline.setAlphaF(0.9);
+    drawOutlinedText(p, QPointF(box.left() + 8, box.top() + 6 + fm.ascent()), l1, f, Qt::white, outline, 2.0);
+    drawOutlinedText(p, QPointF(box.left() + 8, box.top() + 6 + lineH + fm.ascent()), l2, f, Qt::white, outline, 2.0);
+}
+
+void GlobeWidget::paintOverlay(QPainter &p)
+{
+    m_labelsDrawn = m_flagsDrawn = m_rulerMarkersDrawn = 0;
+    if (!m_overlayWanted)
+        return;
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    drawLabels(p);
+    drawRuler(p);
+    drawFlags(p);
+    drawPointTip(p);
+}
+
+void GlobeWidget::resizeEvent(QResizeEvent *e)
+{
+    QOpenGLWidget::resizeEvent(e);
+    if (m_overlay)
+        m_overlay->setGeometry(rect());
 }
 
 double GlobeWidget::altitudeKm() const
@@ -558,6 +912,13 @@ void GlobeWidget::drawPatch(const QVector4D &range)
 void GlobeWidget::paintGL()
 {
     ++m_frame;
+    // 上一帧 QPainter 叠加层可能留下的状态
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glViewport(0, 0, int(width() * devicePixelRatioF()), int(height() * devicePixelRatioF()));
     glClearColor(0.118f, 0.118f, 0.118f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (!m_prog || width() <= 0 || height() <= 0)
@@ -655,6 +1016,16 @@ void GlobeWidget::paintGL()
     for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i)
         ++m_glErrors;
 
+    // 文字和图标由叠加层控件画（有内容时，或刚从有内容变为没有、需要擦掉时才重画）
+    const bool overlay = (m_showLabels && m_trackLayer.visibleTrackCount() > 0)
+                         || (m_flags && !m_flags->flags().isEmpty())
+                         || (m_ruler && m_ruler->isActive() && !m_ruler->waypoints().isEmpty())
+                         || m_tipTrack >= 0;
+    if (overlay || m_overlayWanted) {
+        m_overlayWanted = overlay;
+        m_overlay->update();
+    }
+
     m_lastDrawn = tiles.size();
     m_lastMaxZ = maxZ;
     evictTextures();
@@ -725,6 +1096,8 @@ void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
     }
     updateMatrices();
     m_cursorValid = pick(e->pos(), &m_cursorLon, &m_cursorLat);
+    if (m_ruler && m_ruler->isActive())
+        m_ruler->setMouse(m_cursorValid, qRadiansToDegrees(m_cursorLat), qRadiansToDegrees(m_cursorLon));
     emitStatus();
 }
 
@@ -736,16 +1109,46 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
     m_dragging = false;
     m_clickCandidate = false;
     unsetCursor();
-    if (click)
-        emit trackClicked(trackAt(e->pos()));
+    if (click) {
+        if (m_ruler && m_ruler->isActive()) {
+            // 标尺模式：单击只放航点，不选航迹（RadarView interactionHandler LEFT_CLICK）
+            double lon, lat;
+            if (geoAt(e->pos(), &lon, &lat))
+                m_ruler->addWaypoint(lat, lon);
+        } else {
+            emit trackClicked(trackAt(e->pos()));
+        }
+    }
     updateHover(e->pos(), e->globalPos());
+}
+
+// 双击：在旗标上删除，否则在该处放旗标（RadarView LEFT_DOUBLE_CLICK）
+void GlobeWidget::mouseDoubleClickEvent(QMouseEvent *e)
+{
+    if (e->button() != Qt::LeftButton || !m_flags)
+        return;
+    const QString id = flagAt(e->pos());
+    if (!id.isEmpty()) {
+        m_flags->removeFlag(id);
+        return;
+    }
+    double lon, lat;
+    if (geoAt(e->pos(), &lon, &lat))
+        m_flags->addFlag(lat, lon);
 }
 
 void GlobeWidget::contextMenuEvent(QContextMenuEvent *e)
 {
     QToolTip::hideText();
-    emit trackContextMenuRequested(trackAt(e->pos()), e->globalPos());
     e->accept();
+    if (m_ruler && m_ruler->isActive())
+        return;   // 标尺模式下右键不弹菜单
+    const QString flag = flagAt(e->pos());
+    if (!flag.isEmpty()) {
+        emit flagContextMenuRequested(flag, e->globalPos());
+        return;
+    }
+    emit trackContextMenuRequested(trackAt(e->pos()), e->globalPos());
 }
 
 void GlobeWidget::leaveEvent(QEvent *e)
@@ -753,6 +1156,12 @@ void GlobeWidget::leaveEvent(QEvent *e)
     QOpenGLWidget::leaveEvent(e);
     m_cursorValid = false;     // 与 RadarView 一致：鼠标离开地图后经纬度归零
     emitStatus();
+    if (m_ruler && m_ruler->isActive())
+        m_ruler->setMouse(false, 0.0, 0.0);
+    if (m_tipTrack >= 0) {
+        m_tipTrack = m_tipPoint = -1;
+        update();
+    }
     if (m_trackLayer.hoveredTrack() >= 0) {
         m_trackLayer.setHoveredTrack(-1);
         QToolTip::hideText();
@@ -765,15 +1174,32 @@ void GlobeWidget::leaveEvent(QEvent *e)
 void GlobeWidget::updateHover(const QPoint &pos, const QPoint &globalPos)
 {
     const int idx = trackAt(pos);
+    // 点迹悬停：拾取到的航迹若显示了点迹，找离鼠标最近的点，在点旁边显示该点数据，不再弹航迹提示框
+    int tipTrack = -1, tipPoint = -1;
+    if (idx >= 0 && m_trackLayer.hasPointDots(idx)) {
+        updateMatrices();
+        if (m_trackLayer.pickPointDot(m_mvp, m_eye, QSizeF(width(), height()), pos, idx, &tipPoint))
+            tipTrack = idx;
+    }
+    if (tipTrack != m_tipTrack || tipPoint != m_tipPoint) {
+        m_tipTrack = tipTrack;
+        m_tipPoint = tipPoint;
+        update();
+    }
     if (idx == m_trackLayer.hoveredTrack()) {
-        if (idx >= 0)
+        if (idx >= 0 && tipTrack < 0)
             QToolTip::showText(globalPos, trackTooltip(idx), this);   // 跟随鼠标
+        else if (tipTrack >= 0)
+            QToolTip::hideText();
         return;
     }
     m_trackLayer.setHoveredTrack(idx);
     if (idx >= 0) {
         setCursor(Qt::PointingHandCursor);
-        QToolTip::showText(globalPos, trackTooltip(idx), this);
+        if (tipTrack < 0)
+            QToolTip::showText(globalPos, trackTooltip(idx), this);
+        else
+            QToolTip::hideText();
     } else {
         unsetCursor();
         QToolTip::hideText();

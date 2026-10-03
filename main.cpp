@@ -16,6 +16,13 @@
 #include "replaycontroller.h"
 #include "trackpointdialog.h"
 #include "appstatusbar.h"
+#include "apppaths.h"
+#include "uiwidgets.h"
+#include "geocalc.h"
+#include "managepanel.h"
+#include "maptools.h"
+#include "sidepanels.h"
+#include "trackdb.h"
 
 #include <QMouseEvent>
 #include <QDialog>
@@ -299,6 +306,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
     auto step = std::make_shared<int>(0);
     auto conn = std::make_shared<QMetaObject::Connection>();
     auto runNext = std::make_shared<std::function<void()>>();
+    auto testFeatures = std::make_shared<std::function<void()>>();   // 管理面板 / 入库 / 标签 / 点迹 / 筛选 / 旗标 / 标尺
 
     // 回放：跳到中间时刻，可见端点应等于「已开始」的航迹数；推进到结尾应自动退出回放
     auto testReplay = [=]() {
@@ -374,7 +382,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                         w->resize(oldSize);
                         afterFrames([=]() {
                             check(g->glErrorCount() == 0, QStringLiteral("回放后 OpenGL 错误数 %1").arg(g->glErrorCount()));
-                            finish();
+                            (*testFeatures)();
                         });
                     });
                 });
@@ -558,6 +566,223 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
         });
     };
 
+    // ---- 新功能：入库与启动加载、管理面板、标签、点迹、筛选、旗标、标尺 ----
+    *testFeatures = [=]() {
+        // 等后台入库结束（最多 60 秒）
+        auto waitPersist = std::make_shared<std::function<void(std::function<void()>)>>();
+        *waitPersist = [w](std::function<void()> next) {
+            QElapsedTimer t;
+            t.start();
+            auto poll = std::make_shared<std::function<void()>>();
+            *poll = [w, t, next, poll]() {
+                if (!w->isPersisting() || t.elapsed() > 60000) {
+                    next();
+                    return;
+                }
+                QTimer::singleShot(50, *poll);
+            };
+            QTimer::singleShot(0, *poll);
+        };
+        (*waitPersist)([=]() {
+            TrackLayer *layer = g->trackLayer();
+            check(!w->isPersisting() && sb->loadingText().isEmpty(), QStringLiteral("后台入库完成，状态栏不再显示保存中"));
+            const ManageStats ds = trackdb::stats();
+            check(ds.totalTracks == 3522 && ds.totalBatches == 3,
+                  QStringLiteral("数据库：%1 条航迹，%2 个批次（期望 3522 / 3）").arg(ds.totalTracks).arg(ds.totalBatches));
+            // 启动加载：从数据库读回的内容与内存一致
+            const QVector<Track> back = trackdb::loadAll();
+            qint64 pts = 0;
+            for (const Track &t : back)
+                pts += t.points.size();
+            check(back.size() == store->size() && pts == store->pointCount(),
+                  QStringLiteral("数据库读回 %1 条 %2 点（内存 %3 条 %4 点）").arg(back.size()).arg(pts).arg(store->size()).arg(store->pointCount()));
+            // 同一数据源的不同文件颜色互不相同：Radar 与 RadarRaw 来自同一个 .mat，再导入一个 Radar 文件
+            const QColor c1 = store->fileColor(TrackSource::Radar, QStringLiteral("Radar"));
+            TrackStore probe;
+            probe.setFileColors(store->fileColors());
+            QVector<Track> extra;
+            Track et;
+            et.id = QStringLiteral("X");
+            et.source = TrackSource::Radar;
+            et.fileName = QStringLiteral("Radar2");
+            TrackPoint tp;
+            tp.t = 1;
+            et.points << tp;
+            extra << et;
+            et.fileName = QStringLiteral("Radar3");
+            extra << et;
+            probe.addTracks(extra);
+            const QColor c2 = probe.fileColor(TrackSource::Radar, QStringLiteral("Radar2"));
+            const QColor c3 = probe.fileColor(TrackSource::Radar, QStringLiteral("Radar3"));
+            check(c1 != c2 && c2 != c3 && c1 != c3, QStringLiteral("同源文件轮换颜色 %1 / %2 / %3").arg(c1.name(), c2.name(), c3.name()));
+
+            // 管理面板：统计、分页、搜索、排序
+            w->activatePanel(PanelId::Manage);
+            ManagePanel *mp = w->managePanel();
+            ManageState *ms = w->manageState();
+            check(w->activePanel() == int(PanelId::Manage) && mp->totalCount() == 3522 && mp->rowCount() == 100,
+                  QStringLiteral("管理面板 共 %1 条，本页 %2 行，%3").arg(mp->totalCount()).arg(mp->rowCount()).arg(mp->pageText()));
+            check(mp->statsText().startsWith(QStringLiteral("总计 3522 条 | ADS-B 2900 雷达 311 原始 311 | ")),
+                  QStringLiteral("统计栏：%1").arg(mp->statsText()));
+            const QString icao = mp->rows().value(0).icao;
+            mp->setSearchText(icao.toLower());
+            bool allMatch = mp->totalCount() >= 1;
+            for (const ManageRow &r : mp->rows())
+                allMatch = allMatch && (r.icao.contains(icao, Qt::CaseInsensitive) || r.flightNo.contains(icao, Qt::CaseInsensitive)
+                                        || r.registration.contains(icao, Qt::CaseInsensitive));
+            check(allMatch, QStringLiteral("搜索 %1：匹配 %2 条").arg(icao).arg(mp->totalCount()));
+            // 与 ManageDataTable.vue 相同：匹配总数为 0 时显示「暂无航迹数据」，有匹配但本页为空才是「未找到匹配」
+            mp->setSearchText(QStringLiteral("没有这条航迹zz"));
+            check(mp->totalCount() == 0 && mp->emptyText() == QStringLiteral("暂无航迹数据，请先导入文件"),
+                  QStringLiteral("无匹配提示：%1").arg(mp->emptyText()));
+            mp->clickResetFilters();
+            mp->clickSort(ManageModel::Pts);
+            bool asc = mp->rowCount() == 100;
+            for (int i = 1; i < mp->rows().size(); ++i)
+                asc = asc && mp->rows()[i - 1].pointCount <= mp->rows()[i].pointCount;
+            mp->clickSort(ManageModel::Pts);
+            bool desc = mp->rows().size() > 1 && mp->rows()[0].pointCount >= mp->rows()[1].pointCount;
+            check(asc && desc, QStringLiteral("点数列排序 升序=%1 降序=%2").arg(asc).arg(desc));
+
+            // 勾选显示：地图只显示可见集合，回放范围跟随
+            const ManageRow r0 = mp->rows()[0];
+            mp->clickEye(0);
+            const int ti0 = store->indexOf(r0.trackKey());
+            check(w->displayedTrackCount() == 1 && ti0 >= 0
+                      && w->replay()->start() == store->tracks()[ti0].minTime() && w->replay()->end() == store->tracks()[ti0].maxTime(),
+                  QStringLiteral("勾选 1 条后地图显示 %1 条，回放范围为该航迹").arg(w->displayedTrackCount()));
+            check(mp->toolbarText() == QStringLiteral("匹配 3522 条 · 本页 100 条 · 地图可见 1 条"), mp->toolbarText());
+            mp->clickClearMap();
+            check(w->displayedTrackCount() == 3522, QStringLiteral("清空地图后显示 %1 条").arg(w->displayedTrackCount()));
+
+            // 删除（软删除）与撤销
+            const QString delKey = mp->rows()[0].trackKey();
+            mp->deleteRow(0);
+            check(store->size() == 3521 && store->indexOf(delKey) < 0 && mp->totalCount() == 3521
+                      && w->undoToast()->text().startsWith(QStringLiteral("已删除")),
+                  QStringLiteral("删除后内存 %1 条，面板 %2 条，提示 [%3]").arg(store->size()).arg(mp->totalCount()).arg(w->undoToast()->text()));
+            check(trackdb::loadAll().size() == 3521, QStringLiteral("删除的航迹下次启动不加载"));
+            ms->undoDelete();
+            check(store->size() == 3522 && store->indexOf(delKey) >= 0 && mp->totalCount() == 3522
+                      && ms->isVisible(delKey) && w->undoToast()->text().isEmpty(),
+                  QStringLiteral("撤销后恢复 %1 条，并加入地图可见集合").arg(store->size()));
+            ms->clearVisible();
+            mp->clickResetFilters();
+
+            // 标签
+            w->toggleLabels();
+            afterFrames([=]() {
+                check(g->showLabels() && g->labelsDrawn() > 0, QStringLiteral("标签显示 %1 个").arg(g->labelsDrawn()));
+                check(GlobeWidget::trackLabel(store->tracks()[0]).size() > 0, QStringLiteral("标签文字 %1").arg(GlobeWidget::trackLabel(store->tracks()[0])));
+                w->toggleLabels();
+                // 点迹：选一条点数较多的 ADS-B 航迹
+                int ti = -1;
+                for (int i = 0; i < store->size() && ti < 0; ++i)
+                    if (store->tracks()[i].source == TrackSource::Adsb && store->tracks()[i].points.size() >= 100)
+                        ti = i;
+                const Track &t = store->tracks()[ti];
+                w->togglePointDots(ti);
+                w->isolateTrack(ti);     // 单独显示，保证鼠标处拾取到的就是这条（ADS-B 航迹很密）
+                const TrackPoint mid = t.points[t.points.size() / 2];
+                g->lookAt(mid.lon, mid.lat, 300.0);
+                afterFrames([=]() {
+                    check(w->pointDotsShown(ti) && layer->pointDotCount() == store->tracks()[ti].points.size(),
+                          QStringLiteral("点迹 %1 个（期望 %2）").arg(layer->pointDotCount()).arg(store->tracks()[ti].points.size()));
+                    QPointF sp;
+                    g->screenPos(mid.lon, mid.lat, TrackLayer::kAltitudeM, &sp);
+                    sendMouse(QEvent::MouseMove, sp, Qt::NoButton);
+                    int ht = -1, hp = -1;
+                    g->pointHover(&ht, &hp);
+                    check(ht == ti && hp >= 0, QStringLiteral("悬停点迹 航迹 %1 点 %2").arg(ht).arg(hp));
+                    w->togglePointDots(ti);
+                    w->isolateTrack(-1);
+                    afterFrames([=]() {
+                        check(!w->pointDotsShown(ti) && layer->pointDotCount() == 0, QStringLiteral("隐藏点迹"));
+                        // 时间筛选
+                        FilterPanel *fp = w->filterPanel();
+                        const qint64 midT = 1777253315000LL + (1777282200000LL - 1777253315000LL) / 2;
+                        const qint64 lo = midT / 60000 * 60000 - 1800000, hi = lo + 3600000;
+                        int expect = 0;
+                        for (const Track &tr : store->tracks()) {
+                            bool any = false;
+                            for (const TrackPoint &p : tr.points)
+                                if (p.t >= lo && p.t <= hi) {
+                                    any = true;
+                                    break;
+                                }
+                            expect += any;
+                        }
+                        fp->setInputs(hi, lo);
+                        fp->clickApply();
+                        check(fp->errorText() == QStringLiteral("起始时间必须早于结束时间"), QStringLiteral("时间顺序校验：%1").arg(fp->errorText()));
+                        fp->setInputs(lo, hi);
+                        fp->clickApply();
+                        check(w->displayedTrackCount() == expect && w->replay()->start() >= lo && w->replay()->end() <= hi,
+                              QStringLiteral("时间筛选后显示 %1 条（期望 %2），回放 %3 ~ %4").arg(w->displayedTrackCount()).arg(expect)
+                                  .arg(formatBeijingTime(w->replay()->start()), formatBeijingTime(w->replay()->end())));
+                        fp->clickClear();
+                        // 点数筛选（按原始总点数）
+                        int expectPc = 0;
+                        for (const Track &tr : store->tracks())
+                            expectPc += tr.source != TrackSource::Adsb || tr.points.size() >= 100;
+                        fp->setPointCount(TrackSource::Adsb, true, 100, -1);
+                        check(w->displayedTrackCount() == expectPc,
+                              QStringLiteral("ADS-B ≥100 点筛选后显示 %1 条（期望 %2）").arg(w->displayedTrackCount()).arg(expectPc));
+                        fp->setPointCount(TrackSource::Adsb, false, -1, -1);
+                        check(w->displayedTrackCount() == 3522, QStringLiteral("取消点数筛选后显示 %1 条").arg(w->displayedTrackCount()));
+                        afterFrames([=]() {
+                            check(layer->visibleTrackCount() == 3522, QStringLiteral("筛选清除后端点 %1").arg(layer->visibleTrackCount()));
+                            // 旗标：双击放置 / 双击删除；勾选两个测距
+                            FlagStore *fs = w->flagStore();
+                            const QPointF c(g->width() / 2.0, g->height() / 2.0);
+                            sendMouse(QEvent::MouseButtonDblClick, c, Qt::LeftButton);
+                            check(fs->flags().size() == 1 && fs->flags()[0].label == QStringLiteral("旗标 1"),
+                                  QStringLiteral("双击放置旗标 %1 个").arg(fs->flags().size()));
+                            fs->addFlag(mid.lat + 0.5, mid.lon + 0.5);
+                            check(fs->flags().size() == 2 && fs->flags()[1].label == QStringLiteral("旗标 2"), QStringLiteral("第二个旗标编号"));
+                            fs->toggleSelect(fs->flags()[0].id);
+                            fs->toggleSelect(fs->flags()[1].id);
+                            const MapFlag a = fs->flags()[0], b = fs->flags()[1];
+                            const double km = geocalc::vincentyKm(a.lat, a.lon, b.lat, b.lon);
+                            check(w->flagPanel()->geoText().startsWith(QStringLiteral("距离: %1 km").arg(km, 0, 'f', 1)),
+                                  QStringLiteral("两旗标测距：%1").arg(w->flagPanel()->geoText().replace(QLatin1Char('\n'), QLatin1Char(' '))));
+                            w->flagPanel()->placeFlag(QStringLiteral("95"), QStringLiteral("100"));
+                            check(w->flagPanel()->coordError() == QStringLiteral("纬度范围 -90 ~ 90"), QStringLiteral("纬度校验"));
+                            afterFrames([=]() {
+                                check(g->flagsDrawn() == 2, QStringLiteral("地图上画出旗标 %1 个").arg(g->flagsDrawn()));
+                                sendMouse(QEvent::MouseButtonDblClick, c + QPointF(0, -10), Qt::LeftButton);
+                                check(w->flagStore()->flags().size() == 1, QStringLiteral("双击旗标删除，剩 %1 个").arg(w->flagStore()->flags().size()));
+                                w->flagStore()->clearAll();
+                                // 标尺：单击放两个航点
+                                RulerState *rs = w->ruler();
+                                rs->toggle();
+                                const QPointF p1 = c + QPointF(-100, 0), p2 = c + QPointF(100, 60);
+                                sendMouse(QEvent::MouseButtonPress, p1, Qt::LeftButton);
+                                sendMouse(QEvent::MouseButtonRelease, p1, Qt::LeftButton);
+                                sendMouse(QEvent::MouseButtonPress, p2, Qt::LeftButton);
+                                sendMouse(QEvent::MouseButtonRelease, p2, Qt::LeftButton);
+                                check(rs->isActive() && rs->waypoints().size() == 2 && w->isolatedTrack() < 0,
+                                      QStringLiteral("标尺航点 %1 个，单击不选航迹").arg(rs->waypoints().size()));
+                                const double d = rs->segments().value(0).distanceKm;
+                                check(w->flagPanel()->rulerTotalText() == formatRulerDistance(d) && w->flagPanel()->segmentTexts().size() == 1,
+                                      QStringLiteral("标尺总距离 %1，%2").arg(w->flagPanel()->rulerTotalText(), w->flagPanel()->segmentTexts().value(0)));
+                                afterFrames([=]() {
+                                    check(g->rulerMarkersDrawn() == 2, QStringLiteral("地图上画出航点 %1 个").arg(g->rulerMarkersDrawn()));
+                                    w->onEscape();
+                                    check(!w->ruler()->isActive() && w->ruler()->waypoints().isEmpty(), QStringLiteral("Esc 关闭标尺"));
+                                    afterFrames([=]() {
+                                        check(g->glErrorCount() == 0, QStringLiteral("新功能测试后 OpenGL 错误数 %1").arg(g->glErrorCount()));
+                                        finish();
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    };
+
     *runNext = [=]() {
         if (*step >= jobs->size()) {
             QObject::disconnect(*conn);
@@ -572,7 +797,9 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
     *conn = QObject::connect(w, &MainWindow::importFinished, w, [=](bool ok, const QString &msg) {
         const Job &j = jobs->at(*step);
         check(ok, QStringLiteral("导入 %1：%2").arg(trackSourceName(j.kind), msg));
-        check(!sb->isLoadingShown(), QStringLiteral("导入完成后隐藏进度"));
+        // 解析完成后进度百分比消失；后台入库期间显示「保存中」（StatusBar.vue persisting）
+        check(sb->loadingText() == (w->isPersisting() ? QStringLiteral("保存中") : QString()),
+              QStringLiteral("导入完成后进度项 [%1]（入库中=%2）").arg(sb->loadingText()).arg(w->isPersisting()));
         statusConsistent(QStringLiteral("导入 %1 后").arg(trackSourceName(j.kind)));
         ++*step;
         QTimer::singleShot(0, *runNext);
@@ -612,6 +839,13 @@ int main(int argc, char *argv[])
     const int pt = args.indexOf(QStringLiteral("--parsetest"));
     if (pt >= 0 && pt + 2 < args.size())
         return runParseTest(args.at(pt + 1), args.at(pt + 2));
+
+    // 自检：数据库和设置用 exe 旁的临时文件（启动时清空），确认框自动通过
+    const bool testRun = args.contains(QStringLiteral("--selftest")) || args.contains(QStringLiteral("--tracktest"));
+    if (testRun) {
+        app::setTestMode(true);
+        ui::setAutoConfirm(true);
+    }
 
     MainWindow w;
     w.show();

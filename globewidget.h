@@ -15,10 +15,17 @@
 #include <QTimer>
 #include <memory>
 
+#include <QPixmap>
+#include <QPolygonF>
+
 #include "tilesource.h"
 #include "tracklayer.h"
 
 class QOpenGLShaderProgram;
+class QPainter;
+class FlagStore;
+class RulerState;
+struct Track;
 
 // 3D 地球：WGS84 椭球 + 本地 mbtiles（Web 墨卡托 XYZ）瓦片
 // 左键拖拽旋转，滚轮缩放，按视距自动选择瓦片层级
@@ -44,6 +51,23 @@ public:
     void setTrackStore(const TrackStore *store);
     TrackLayer *trackLayer() { return &m_trackLayer; }
 
+    // 旗标 / 标尺（数据由主窗口持有）
+    void setMapTools(FlagStore *flags, RulerState *ruler);
+    // 航迹标签（RadarView Ctrl+T）
+    void setShowLabels(bool on);
+    bool showLabels() const { return m_showLabels; }
+    // 经纬度在当前视角下的屏幕位置；在地球背面或相机后方返回 false
+    bool visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos);
+    QString flagAt(const QPointF &pos);          // 屏幕位置处的旗标 id
+    // ---- 自检用 ----
+    int labelsDrawn() const { return m_labelsDrawn; }
+    int flagsDrawn() const { return m_flagsDrawn; }
+    int rulerMarkersDrawn() const { return m_rulerMarkersDrawn; }
+    bool pointHover(int *track, int *point) const;
+    // 航迹下标即将失效（删除 / 重新加载）时清掉悬停状态
+    void resetInteraction();
+    static QString trackLabel(const Track &t);   // "航班号 | 机型"，都没有时为 id
+
     // 屏幕坐标 -> 经纬度（度），未落在地球上时返回 false
     bool geoAt(const QPointF &pos, double *lonDeg, double *latDeg);
     // 经纬度（度）+ 高度（米）-> 屏幕坐标；在相机后方返回 false
@@ -65,6 +89,7 @@ signals:
     void viewStatusChanged(double heightKm, double lonDeg, double latDeg, int fps);
     void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
     void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
+    void flagContextMenuRequested(const QString &flagId, const QPoint &globalPos);
 
 protected:
     void initializeGL() override;
@@ -72,8 +97,10 @@ protected:
     void mousePressEvent(QMouseEvent *e) override;
     void mouseMoveEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
+    void mouseDoubleClickEvent(QMouseEvent *e) override;
     void wheelEvent(QWheelEvent *e) override;
     void contextMenuEvent(QContextMenuEvent *e) override;
+    void resizeEvent(QResizeEvent *e) override;
     void leaveEvent(QEvent *e) override;
 
 private:
@@ -94,6 +121,25 @@ private:
     void trackFps();
     void updateHover(const QPoint &pos, const QPoint &globalPos);
     QString trackTooltip(int index) const;
+    friend class GlobeOverlay;
+    void paintOverlay(QPainter &p);
+    void drawRuler(QPainter &p);
+    void drawFlags(QPainter &p);
+    void drawLabels(QPainter &p);
+    void drawPointTip(QPainter &p);
+    // 两点间沿大圆插值的屏幕折线（背面部分断开）
+    QVector<QPolygonF> geodesicLines(double lat1, double lon1, double lat2, double lon2);
+    QRectF flagIconRect(const QPointF &anchor) const;
+
+    QWidget *m_overlay = nullptr;            // 叠加层（透明子控件）
+    bool m_overlayWanted = false;
+    FlagStore *m_flags = nullptr;
+    RulerState *m_ruler = nullptr;
+    bool m_showLabels = false;
+    int m_labelsDrawn = 0, m_flagsDrawn = 0, m_rulerMarkersDrawn = 0;
+    int m_tipTrack = -1, m_tipPoint = -1;
+    QHash<QString, QPixmap> m_labelCache;          // 标签文字 + 颜色 -> 带描边的位图
+    QPixmap m_flagIcon;
 
     std::unique_ptr<TileSource> m_tiles;
     TrackLayer m_trackLayer;

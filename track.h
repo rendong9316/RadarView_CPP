@@ -4,6 +4,7 @@
 #include <QString>
 #include <QVector>
 #include <QHash>
+#include <QSet>
 #include <QColor>
 
 // 航迹数据源，对应 RadarView 的 adsb / radar / radar_raw
@@ -43,12 +44,22 @@ bool parseBeijingTime(const char *s, int len, qint64 *ms);
 // Unix 毫秒 -> "YYYY MM DD HH:mm:ss"（UTC+8，与 RadarView 显示一致）
 QString formatBeijingTime(qint64 ms);
 
+// "ADS-B" / "Radar" / "RadarRaw" <-> TrackSource（数据库 source 列）
+bool trackSourceFromName(const QString &name, TrackSource *out);
+// 筛选键 adsb / radar / radar_raw（RadarView DataSource）
+QString trackSourceKey(TrackSource s);
+bool trackSourceFromKey(const QString &key, TrackSource *out);
+
 // 已加载航迹集合：按 key 合并，同 key 只追加新时间点
 class TrackStore
 {
 public:
     // 返回新增的航迹条数
     int addTracks(QVector<Track> tracks);
+    // 按 Track::key() 移除，返回移除条数
+    int removeTracks(const QSet<QString> &keys);
+    int indexOf(const QString &key) const { return m_index.value(key, -1); }
+    // 清空航迹；文件颜色保留（与 RadarView 的文件颜色持久化一致，同一文件再导入颜色不变）
     void clear();
 
     const QVector<Track> &tracks() const { return m_tracks; }
@@ -58,10 +69,13 @@ public:
     qint64 minTime() const;
     qint64 maxTime() const;
 
-    // 每个导入文件一种颜色（雷达按导入顺序轮换，ADS-B 固定）
+    // 每个导入文件一种颜色：同一数据源的不同文件按首次出现顺序在调色板里轮换，互不相同
     QColor fileColor(TrackSource s, const QString &fileName) const;
-    // 为新导入的雷达文件生成不重名的显示名称：Radar、Radar2...
-    QString uniqueFileName(TrackSource s) const;
+    // 已分配的文件颜色（key: source::fileName），用于持久化；载入后再导入的文件接着轮换
+    QHash<QString, QColor> fileColors() const { return m_fileColors; }
+    void setFileColors(const QHash<QString, QColor> &colors) { m_fileColors = colors; ++m_version; }
+    // 为新导入的雷达文件生成不重名的显示名称：Radar、Radar2...；extraUsed 为数据库里已有的批次名
+    QString uniqueFileName(TrackSource s, const QSet<QString> &extraUsed = QSet<QString>()) const;
 
 private:
     QVector<Track> m_tracks;

@@ -48,6 +48,33 @@ public:
     int hoveredTrack() const { return m_hoverTrack; }
     void setIsolatedTrack(int index);       // 单独显示该航迹（不受分组显隐影响）
     int isolatedTrack() const { return m_isoTrack; }
+    // 显示集合（RadarView displayTracks）：mask[i] 为 false 的航迹不画也不拾取；空表示全部
+    void setTrackMask(const QVector<bool> &mask);
+    bool isTrackShown(int index) const { return trackShown(index); }
+    // 只看显示集合和单独显示（不看状态栏的数据源显隐），即 RadarView displayTracks
+    bool isTrackShownIgnoringGroups(int index) const;
+    // 时间筛选：只画窗口内的点和两端都在窗口内的线段（RadarView useTrackFilter 第 3 步）
+    void setTimeFilter(bool active, qint64 minMs, qint64 maxMs);
+    // 显示所有对应点迹的航迹（下标）
+    void setPointDotTracks(const QVector<int> &indices);
+    void setPointDotPx(float px) { m_ptDotPx = px; }
+    float pointDotPx() const { return m_ptDotPx; }
+    int pointDotCount() const;                         // 上一帧画出的点迹数
+    // 屏幕上离 pos 最近的点迹（阈值 max(点径 + 30, 60) px），返回 true 并给出航迹下标和点下标
+    // 只在 track 这条航迹的点迹里找（与 RadarView 一致：先拾取到航迹，再找它的点迹）
+    bool pickPointDot(const QMatrix4x4 &mvp, const QVector3D &eye, const QSizeF &viewport,
+                      const QPointF &pos, int track, int *pointIndex) const;
+    bool hasPointDots(int track) const;
+    static QColor contrastColor(const QColor &c);
+
+    // 上一帧各显示航迹的端点位置（回放时为插值位置），供标签绘制
+    struct EndPoint {
+        int track;
+        double lon, lat;
+        EndPoint(int t = -1, double lo = 0.0, double la = 0.0) : track(t), lon(lo), lat(la) {}
+    };
+    const QVector<EndPoint> &endpoints() const { return m_endpoints; }
+    QColor trackColor(int index) const;
 
     // 屏幕拾取：返回离 pos 不超过 tolPx 的最近可见航迹，没有返回 -1。
     // viewport 与 pos 同为逻辑像素；只在 CPU 上计算，不需要 GL 上下文
@@ -82,6 +109,7 @@ private:
     struct PickTrack {
         QVector<QVector3D> pos;
         QVector<qint64> t;
+        QVector<qint64> t0;     // 所在线段的开始时刻（时间筛选用）
         QVector3D bmin, bmax;
     };
 
@@ -118,6 +146,41 @@ private:
     bool m_replay = false;
     qint64 m_replayTime = 0;
     double m_trailSeconds = 0.0;
+
+    float relTime(qint64 ms) const;
+    void ensureRanges() const;
+    void rebuildPointDots();
+
+    // 时间筛选
+    bool m_filterOn = false;
+    qint64 m_filterMin = 0, m_filterMax = 0;
+    mutable QVector<int> m_lo, m_hi;              // 每条航迹窗口内的点下标范围
+    mutable quint64 m_rangeVersion = ~quint64(0);
+
+    // 点迹
+    struct DotTrack {
+        int track = -1, first = 0, count = 0;
+        QColor color;
+        QVector<qint64> t;
+        QVector<QVector3D> pos;
+    };
+    int dotShownCount(const DotTrack &d) const;
+    QVector<int> m_ptDotTracks;
+    QVector<DotTrack> m_ptDots;
+    GLuint m_ptDotVbo = 0;
+    bool m_ptDotsDirty = true;
+    quint64 m_ptDotsBuiltVersion = ~quint64(0);
+    float m_ptDotPx = 7.0f;
+    int m_ptDotsDrawn = 0;
+    QVector<EndPoint> m_endpoints;
+    int m_uLineFilter = -1;
+
+    // 显示集合不是整组时，按组记下要画的连续片段（相邻航迹的片段合并成一次绘制）
+    QVector<bool> m_mask;
+    QVector<bool> m_groupFull;
+    QVector<QVector<Piece>> m_groupPieces;
+    bool m_rangesDirty = true;
+    void rebuildDrawRanges();
 
     // 悬停 / 单独显示：直接复用静态批次里该航迹的那几段，不另外上传
     int m_hoverTrack = -1, m_isoTrack = -1;
