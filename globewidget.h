@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "tilesource.h"
+#include "tracklayer.h"
 
 class QOpenGLShaderProgram;
 
@@ -34,6 +35,12 @@ public:
     void zoomBy(double steps);                          // 正数拉近，负数拉远
     void panPixels(const QPoint &from, const QPoint &to); // 把 from 处的地面拖到 to
     QString debugInfo() const;
+    // 相机对准某经纬度（度），altKm 为离地高度
+    void lookAt(double lonDeg, double latDeg, double altKm);
+
+    // 航迹图层：数据由外部 TrackStore 持有，变化后调用 update() 即可
+    void setTrackStore(const TrackStore *store);
+    TrackLayer *trackLayer() { return &m_trackLayer; }
 
     // 屏幕坐标 -> 经纬度（度），未落在地球上时返回 false
     bool geoAt(const QPointF &pos, double *lonDeg, double *latDeg);
@@ -42,7 +49,8 @@ public:
     int tileMaxZoom() const { return m_tiles ? m_tiles->maxZoom() : -1; }
     int drawnTileCount() const { return m_lastDrawn; }
     int glErrorCount() const { return m_glErrors; }
-    bool isGlReady() const { return m_prog != nullptr; }
+    quint64 frameCount() const { return m_frame; }
+    bool isGlReady() const { return m_prog != nullptr && m_trackLayer.isReady(); }
     double altitudeKm() const;
 
 signals:
@@ -73,6 +81,8 @@ private:
     void emitStatus();
 
     std::unique_ptr<TileSource> m_tiles;
+    TrackLayer m_trackLayer;
+    const TrackStore *m_trackStore = nullptr;
 
     QOpenGLShaderProgram *m_prog = nullptr;
     QOpenGLBuffer m_vbo{QOpenGLBuffer::VertexBuffer};

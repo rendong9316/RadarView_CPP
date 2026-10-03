@@ -21,6 +21,8 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
   - 着色器用 `attribute`/`varying`/`texture2D`，片元着色器带 `#ifdef GL_ES precision mediump float; #endif`。
   - 不用 VAO、GL3+ 功能、`glTexStorage`、`GL_TEXTURE_MAX_LEVEL` 等 ES2 没有的参数；不用 `QOpenGLTexture`（它会设置 ES2 不支持的参数，在 ANGLE 下产生 GL 错误），纹理用 `glTexImage2D(GL_RGBA, GL_UNSIGNED_BYTE)` 手动上传。
   - 索引用 `GLushort`；只对 2 的幂尺寸纹理生成 mipmap。
+  - 顶点和片元着色器共用的 uniform 在 ANGLE 下精度会不一致导致链接失败：片元要用的值经 varying 传过去。
+  - 宽线不能用 `glLineWidth`（ANGLE 只支持 1px），在顶点着色器里按屏幕像素展开成四边形（见 `tracklayer.cpp`）。
 - 新增 Qt 模块或插件时，同步在 `build_win7.sh` 的部署段里拷贝对应 dll。
 - 代码保持可移植（Windows 专有代码放在 `#ifdef Q_OS_WIN` 里），后续还要在 RHEL 7.6 上编译。
 
@@ -28,8 +30,9 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 
 1. `bash build_win7.sh`：用 7.3 重编、部署到 `build/win7/release` 并跑 `--selftest`，必须 `RESULT OK`。
 2. 在 `build/win7/release` 下分别用 `QT_OPENGL=angle`、`QT_OPENGL=software`、`QT_OPENGL=angle QT_ANGLE_PLATFORM=d3d9` 跑 `./HelloVscode.exe --selftest`，都要 `RESULT OK` 且 GL 错误数为 0。
-3. `powershell -NoProfile -ExecutionPolicy Bypass -File check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
-4. 最终确认需在 Win7 SP1 x64 虚拟机里双击运行整个 `build/win7/release` 目录。
+3. 航迹/回放自检（同样四种渲染模式）：`./HelloVscode.exe --tracktest "D:/Desktop/RadarView_BiuldByTauri/2026-04-27 09-30-00.csv" "D:/Desktop/RadarView_BiuldByTauri/track_20251210175946.mat"`，看 `tracktest.log`；纯解析自检用 `--parsetest <csv> <mat>`，看 `parsetest.log`。
+4. `powershell -NoProfile -ExecutionPolicy Bypass -File check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
+5. 最终确认需在 Win7 SP1 x64 虚拟机里双击运行整个 `build/win7/release` 目录。
 
 ### 环境注意事项
 

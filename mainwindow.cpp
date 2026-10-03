@@ -16,8 +16,16 @@
 #include <QMessageBox>
 #include <QDir>
 #include <QFileInfo>
+#include <QProgressBar>
+#include <QKeySequence>
+#include <QtMath>
+#include <cmath>
 
 #include "globewidget.h"
+#include "trackimporter.h"
+#include "replaycontroller.h"
+#include "replaybar.h"
+#include "tracklayer.h"
 
 // ---------------------------------------------------------------
 //  左侧活动栏：竖排 5 个图标
@@ -166,6 +174,30 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->addPermanentWidget(m_globeStatus, 1);
     connect(m_globe, &GlobeWidget::statusChanged, m_globeStatus, &QLabel::setText);
 
+    // 导入进度 + 航迹数
+    m_importProgress = new QProgressBar(this);
+    m_importProgress->setRange(0, 100);
+    m_importProgress->setFixedWidth(160);
+    m_importProgress->setTextVisible(true);
+    m_importProgress->hide();
+    statusBar()->addPermanentWidget(m_importProgress);
+    m_trackCount = new QLabel(tr("航迹: 0"), this);
+    statusBar()->addPermanentWidget(m_trackCount);
+
+    m_globe->setTrackStore(&m_store);
+
+    // 回放：控件放状态栏左侧（与 RadarView 一致）
+    m_replay = new ReplayController(this);
+    m_replayBar = new ReplayBar(m_replay, this);
+    statusBar()->addWidget(m_replayBar);
+    connect(m_replay, &ReplayController::timeChanged, this, &MainWindow::syncReplayToLayer);
+    connect(m_replay, &ReplayController::stateChanged, this, &MainWindow::syncReplayToLayer);
+    QAction *aPlay = new QAction(tr("播放/暂停"), this);
+    aPlay->setShortcut(Qt::Key_Space);
+    aPlay->setShortcutContext(Qt::WindowShortcut);
+    connect(aPlay, &QAction::triggered, m_replay, &ReplayController::togglePlay);
+    addAction(aPlay);
+
     statusBar()->showMessage(tr("就绪"), 3000);
 
     resize(1280, 800);
@@ -214,6 +246,78 @@ void MainWindow::openTileFile()
         openTiles(path);
 }
 
+void MainWindow::importFile(TrackSource kind, const QString &path, const QString &displayName)
+{
+    if (m_importer) {
+        statusBar()->showMessage(tr("正在导入，请稍候"), 3000);
+        return;
+    }
+    QString name = displayName;
+    if (name.isEmpty() && kind != TrackSource::Adsb)
+        name = m_store.uniqueFileName(kind);
+    m_importer = new TrackImporter(kind, path, name, this);
+    connect(m_importer, &TrackImporter::progressChanged, m_importProgress, &QProgressBar::setValue);
+    connect(m_importer, &TrackImporter::importDone, this, &MainWindow::onImportDone);
+    for (QAction *a : qAsConst(m_importActions))
+        a->setEnabled(false);
+    m_importProgress->setValue(0);
+    m_importProgress->setFormat(tr("导入 %p%"));
+    m_importProgress->show();
+    statusBar()->showMessage(tr("正在解析 %1 ...").arg(QFileInfo(path).fileName()));
+    m_importer->start();
+}
+
+void MainWindow::onImportDone()
+{
+    TrackImporter *imp = m_importer;
+    m_importer = nullptr;
+    imp->wait();
+    m_importProgress->hide();
+    for (QAction *a : qAsConst(m_importActions))
+        a->setEnabled(true);
+
+    QString msg;
+    const bool ok = imp->ok();
+    if (ok) {
+        const bool firstData = m_store.size() == 0;
+        const int before = m_store.size();
+        const int added = m_store.addTracks(std::move(imp->tracks()));
+        msg = tr("%1：新增 %2 条航迹（共 %3 条，%4 个点），解析 %5 ms")
+                  .arg(QFileInfo(imp->path()).fileName()).arg(added)
+                  .arg(m_store.size()).arg(m_store.pointCount()).arg(imp->elapsedMs());
+        m_trackCount->setText(tr("航迹: %1").arg(m_store.size()));
+        m_replay->setRange(m_store.minTime(), m_store.maxTime());
+        statusBar()->showMessage(msg, 8000);
+        // 第一次导入时把视角移到数据中心
+        if (firstData && m_store.size() > before) {
+            double sx = 0, sy = 0, sz = 0;
+            for (const Track &t : m_store.tracks()) {
+                const TrackPoint &p = t.points.first();
+                const double la = qDegreesToRadians(p.lat), lo = qDegreesToRadians(p.lon);
+                sx += std::cos(la) * std::cos(lo);
+                sy += std::cos(la) * std::sin(lo);
+                sz += std::sin(la);
+            }
+            m_globe->lookAt(qRadiansToDegrees(std::atan2(sy, sx)),
+                            qRadiansToDegrees(std::atan2(sz, std::sqrt(sx * sx + sy * sy))), 6000.0);
+        }
+        m_globe->update();
+    } else {
+        msg = imp->errorString();
+        statusBar()->showMessage(tr("导入失败：%1").arg(msg), 8000);
+        if (!property("noDialogs").toBool())
+            QMessageBox::warning(this, tr("导入失败"), msg);
+    }
+    imp->deleteLater();
+    emit importFinished(ok, msg);
+}
+
+void MainWindow::syncReplayToLayer()
+{
+    m_globe->trackLayer()->setReplay(m_replay->isActive(), m_replay->current());
+    m_globe->update();
+}
+
 void MainWindow::buildMenuBar()
 {
     QMenuBar *mb = menuBar();
@@ -226,9 +330,32 @@ void MainWindow::buildMenuBar()
 
     // 文件
     QMenu *mFile = mb->addMenu(tr("文件"));
-    QAction *aNew = mFile->addAction(tr("新建文件"));
-    QAction *aOpen = mFile->addAction(tr("打开文件"));
-    QAction *aSave = mFile->addAction(tr("保存"));
+    QAction *aImportAdsb = mFile->addAction(tr("导入 ADS-B 数据 (.csv)..."));
+    aImportAdsb->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_O));
+    QAction *aImportRadar = mFile->addAction(tr("导入雷达数据 (.mat)..."));
+    aImportRadar->setShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_O));
+    QAction *aImportRaw = mFile->addAction(tr("导入雷达原始量测数据 (.mat)..."));
+    m_importActions = { aImportAdsb, aImportRadar, aImportRaw };
+    auto pick = [this](TrackSource kind) {
+        const bool csv = kind == TrackSource::Adsb;
+        const QString path = QFileDialog::getOpenFileName(
+            this, csv ? tr("导入 ADS-B 数据") : tr("导入雷达数据"), QString(),
+            csv ? tr("ADS-B 数据 (*.csv);;所有文件 (*)") : tr("MATLAB 数据 (*.mat);;所有文件 (*)"));
+        if (!path.isEmpty())
+            importFile(kind, path);
+    };
+    connect(aImportAdsb, &QAction::triggered, this, [pick]() { pick(TrackSource::Adsb); });
+    connect(aImportRadar, &QAction::triggered, this, [pick]() { pick(TrackSource::Radar); });
+    connect(aImportRaw, &QAction::triggered, this, [pick]() { pick(TrackSource::RadarRaw); });
+    QAction *aClearTracks = mFile->addAction(tr("清空航迹"));
+    connect(aClearTracks, &QAction::triggered, this, [this]() {
+        if (m_importer)
+            return;
+        m_store.clear();
+        m_replay->setRange(0, 0);
+        m_trackCount->setText(tr("航迹: 0"));
+        m_globe->update();
+    });
     mFile->addSeparator();
     QAction *aOpenTiles = mFile->addAction(tr("打开瓦片 (.mbtiles)..."));
     connect(aOpenTiles, &QAction::triggered, this, &MainWindow::openTileFile);
@@ -274,12 +401,6 @@ void MainWindow::buildMenuBar()
     connect(aAbout, &QAction::triggered, this, &MainWindow::onMenuActionTriggered);
     connect(aAboutQt, &QAction::triggered, qApp, &QApplication::aboutQt);
 
-    // 文件菜单里的按钮点击：状态栏反馈
-    for (QAction *a : { aNew, aOpen, aSave }) {
-        connect(a, &QAction::triggered, this, [this, a]() {
-            statusBar()->showMessage(a->text() + tr(" 已点击"), 2000);
-        });
-    }
 }
 
 QStackedWidget *MainWindow::buildEditorArea()

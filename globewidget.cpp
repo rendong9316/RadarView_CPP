@@ -215,6 +215,21 @@ bool GlobeWidget::geoAt(const QPointF &pos, double *lonDeg, double *latDeg)
     return true;
 }
 
+void GlobeWidget::lookAt(double lonDeg, double latDeg, double altKm)
+{
+    m_camLon = qDegreesToRadians(lonDeg);
+    m_camLat = qBound(-qDegreesToRadians(89.9), qDegreesToRadians(latDeg), qDegreesToRadians(89.9));
+    m_alt = qBound(kMinAlt, altKm / kEarthRadiusKm, kMaxAlt);
+    update();
+}
+
+void GlobeWidget::setTrackStore(const TrackStore *store)
+{
+    m_trackStore = store;
+    m_trackLayer.setStore(store);
+    update();
+}
+
 double GlobeWidget::altitudeKm() const
 {
     return m_alt * kEarthRadiusKm;
@@ -327,6 +342,10 @@ void GlobeWidget::initializeGL()
     m_ibo.release();
     m_indexCount = idx.size();
 
+    if (!m_trackLayer.initialize(this))
+        m_glInfo += QStringLiteral(" | track shader error: ") + m_trackLayer.shaderLog();
+    m_trackLayer.setStore(m_trackStore);
+
     m_glReady = true;
 }
 
@@ -336,6 +355,7 @@ void GlobeWidget::cleanupGL()
         return;
     makeCurrent();
     clearTextures();
+    m_trackLayer.cleanup();
     m_vbo.destroy();
     m_ibo.destroy();
     delete m_prog;
@@ -604,6 +624,10 @@ void GlobeWidget::paintGL()
     m_prog->disableAttributeArray(0);
     m_vbo.release();
     m_prog->release();
+
+    // 航迹画在瓦片之上；深度测试保留，地球背面的航迹被遮挡
+    m_trackLayer.draw(m_mvp, QSize(int(width() * devicePixelRatioF()), int(height() * devicePixelRatioF())),
+                      float(devicePixelRatioF()));
 
     for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i)
         ++m_glErrors;
