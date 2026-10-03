@@ -12,6 +12,7 @@
 #include "lucide.h"
 #include "sidepanels.h"
 #include "track.h"
+#include "settingspanel.h"
 
 class GlobeWidget;
 class QLabel;
@@ -28,8 +29,8 @@ class RulerState;
 class DbSaveJob;
 namespace ui { class UndoToast; }
 
-// 侧栏面板（RadarView useActivityBar.ts PanelId）
-enum class PanelId { Tracks = 0, Manage, Layers, Flags, TimeFilter, Settings, Count };
+// 侧栏面板（RadarView useActivityBar.ts PanelId）：轨迹面板 / 图层控制已移除
+enum class PanelId { Manage = 0, Flags, TimeFilter, Settings, Count };
 
 // 左侧活动栏（ActivityBar.vue）：48px 宽，5 个面板图标 + 底部「设置」，当前项左侧 2px 强调色竖条
 class ActivityBar : public QWidget
@@ -106,6 +107,7 @@ public:
     FlagStore *flagStore() const { return m_flags; }
     RulerState *ruler() const { return m_ruler; }
     ui::UndoToast *undoToast() const { return m_undoToast; }
+    SettingsPanel *settingsPanel() const { return m_settingsPanel; }
     void toggleLabels();
     void togglePointDots(int index);     // 「显示/隐藏所有对应点迹」
     bool pointDotsShown(int index) const;
@@ -158,6 +160,7 @@ private:
     FlagStore *m_flags = nullptr;
     RulerState *m_ruler = nullptr;
     FlagPanel *m_flagPanel = nullptr;
+    SettingsPanel *m_settingsPanel = nullptr;
     ui::UndoToast *m_undoToast = nullptr;
     QString m_isoKey;                       // 单独显示的航迹（按 key 记，删除航迹后下标会变）
     QSet<QString> m_dotKeys;                // 显示点迹的航迹

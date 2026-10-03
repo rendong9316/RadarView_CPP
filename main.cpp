@@ -23,6 +23,8 @@
 #include "maptools.h"
 #include "sidepanels.h"
 #include "trackdb.h"
+#include "theme.h"
+#include "settingspanel.h"
 
 #include <QMouseEvent>
 #include <QDialog>
@@ -770,6 +772,42 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                                     check(g->rulerMarkersDrawn() == 2, QStringLiteral("地图上画出航点 %1 个").arg(g->rulerMarkersDrawn()));
                                     w->onEscape();
                                     check(!w->ruler()->isActive() && w->ruler()->waypoints().isEmpty(), QStringLiteral("Esc 关闭标尺"));
+                                    // 设置面板：字号全局缩放（10–20 钳制），回到 14 后 rem 换算还原
+                                    w->activatePanel(PanelId::Settings);
+                                    SettingsPanel *sp = w->settingsPanel();
+                                    check(int(PanelId::Count) == 4 && w->activePanel() == int(PanelId::Settings),
+                                          QStringLiteral("侧栏面板 %1 个，设置面板已打开").arg(int(PanelId::Count)));
+                                    sp->setFontValue(18);
+                                    check(UiScale::instance()->basePx() == 18 && ui::px(1.0) == 18 && ui::px(0.786) == 14,
+                                          QStringLiteral("字号 18：1rem=%1px 0.786rem=%2px").arg(ui::px(1.0)).arg(ui::px(0.786)));
+                                    check(Theme::instance()->qss(QStringLiteral("a { font-size: 11px; }")).contains(QStringLiteral("font-size: 14px")),
+                                          QStringLiteral("QSS 字号随根字号缩放"));
+                                    sp->setFontValue(30);
+                                    check(UiScale::instance()->basePx() == 20, QStringLiteral("字号上限钳制为 %1").arg(UiScale::instance()->basePx()));
+                                    sp->setFontValue(14);
+                                    check(ui::px(0.786) == 11, QStringLiteral("字号还原 14：0.786rem=%1px").arg(ui::px(0.786)));
+                                    // 批量数据管理：按批次从数据库硬删除 Radar 批次
+                                    qint64 radarId = -1;
+                                    int radarCount = 0;
+                                    for (const BatchInfo &b : trackdb::batches())
+                                        if (b.source == TrackSource::Radar) {
+                                            radarId = b.id;
+                                            radarCount = b.trackCount;
+                                        }
+                                    const int before = store->size();
+                                    QString derr;
+                                    const bool delOk = radarId >= 0 && w->manageState()->hardDeleteBatch(radarId, &derr);
+                                    const ManageStats after = trackdb::stats();
+                                    int radarLeft = 0;
+                                    for (const Track &tr : store->tracks())
+                                        radarLeft += tr.source == TrackSource::Radar;
+                                    check(delOk && after.totalBatches == 2 && after.totalTracks == 3522 - radarCount
+                                              && store->size() == before - radarCount && radarLeft == 0
+                                              && trackdb::loadBatchTracks(radarId).isEmpty(),
+                                          QStringLiteral("硬删除 Radar 批次 %1 条：库内剩 %2 条 / %3 批次，内存 %4 条 %5")
+                                              .arg(radarCount).arg(after.totalTracks).arg(after.totalBatches).arg(store->size()).arg(derr));
+                                    check(g->tileName().contains(QStringLiteral("Natural Earth")),
+                                          QStringLiteral("默认瓦片源 natural_earth4：%1").arg(g->tileName()));
                                     afterFrames([=]() {
                                         check(g->glErrorCount() == 0, QStringLiteral("新功能测试后 OpenGL 错误数 %1").arg(g->glErrorCount()));
                                         finish();
@@ -848,7 +886,11 @@ int main(int argc, char *argv[])
     }
 
     MainWindow w;
-    w.show();
+    // 启动自动最大化（保留任务栏）；自检/tracktest 保持普通窗口，便于断言布局
+    if (testRun)
+        w.show();
+    else
+        w.showMaximized();
     w.loadDefaultTiles();
 
     if (app.arguments().contains(QStringLiteral("--selftest")))

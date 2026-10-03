@@ -15,6 +15,8 @@
 #include <QVector4D>
 #include <functional>
 
+#include "track.h"
+
 class QOpenGLShaderProgram;
 class TrackStore;
 
@@ -42,6 +44,16 @@ public:
     bool isGroupVisible(const QString &groupKey) const;
     void setReplay(bool active, qint64 timeMs);
     void setTrailSeconds(double seconds);   // <= 0 表示显示全部历史
+
+    // 绘制属性（SettingsPanel）：全局线宽（像素）与按数据源的端点圆球缩放
+    void setLineWidthPx(float fullPx) { m_lineWidthPx = fullPx; }
+    float lineFullWidthPx() const { return m_lineWidthPx; }
+    void setDotScale(TrackSource s, double scale) { m_dotScale[int(s)] = scale; ++m_styleVersion; }
+    double dotScale(TrackSource s) const { return m_dotScale.value(int(s), 1.0); }
+    // 数据源级线颜色覆盖（SettingsPanel 线条颜色组，覆盖该源所有文件的默认文件色）
+    void setSourceColorOverride(TrackSource s, const QColor &c) { m_sourceColor[int(s)] = c; ++m_styleVersion; }
+    bool hasSourceColorOverride(TrackSource s) const { return m_sourceColor.contains(int(s)); }
+    void clearSourceColorOverride(TrackSource s) { if (m_sourceColor.remove(int(s))) ++m_styleVersion; }
 
     // 交互：参数为 TrackStore::tracks() 的下标，-1 表示无
     void setHoveredTrack(int index);
@@ -129,6 +141,8 @@ private:
 
     const TrackStore *m_store = nullptr;
     quint64 m_builtVersion = ~quint64(0);
+    quint64 m_styleVersion = 0;   // 线宽/圆球等样式变化计数
+    quint64 m_builtStyleVersion = 0;   // 静态批次对应的样式版本
     qint64 m_baseTime = 0;               // 顶点时间 = (t - m_baseTime) / 1000 秒
     QVector<Group> m_groups;
     QHash<QString, bool> m_hidden;       // 被用户隐藏的组（重建后保持）
@@ -145,7 +159,10 @@ private:
 
     bool m_replay = false;
     qint64 m_replayTime = 0;
+    float m_lineWidthPx = 2.0f;   // 全局线宽（SettingsPanel，RadarView 默认 2.0）
     double m_trailSeconds = 0.0;
+    QHash<int, double> m_dotScale;   // 按数据源下标的端点圆球缩放（默认 1.0）
+    QHash<int, QColor> m_sourceColor;  // 按数据源下标的线颜色覆盖
 
     float relTime(qint64 ms) const;
     void ensureRanges() const;

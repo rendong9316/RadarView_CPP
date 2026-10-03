@@ -281,6 +281,34 @@ QVector<BatchInfo> batches()
 }
 
 // 统计不含软删除的航迹（RadarView 的统计来自数据库全量，软删除只在前端过滤；这里删可见后统计随之减少更直观）
+QVector<Track> loadBatchTracks(qint64 batchId)
+{
+    QVector<Track> out;
+    QSqlQuery q(mainDb());
+    q.prepare(QStringLiteral("SELECT %1 FROM saved_tracks st JOIN batches b ON st.batch_id = b.id"
+                             " WHERE st.batch_id = ? ORDER BY st.rowid").arg(QLatin1String(kTrackCols)));
+    q.addBindValue(batchId);
+    if (q.exec())
+        while (q.next())
+            out.append(trackFromQuery(q));
+    return out;
+}
+
+QStringList batchKeys(qint64 batchId)
+{
+    QStringList out;
+    QSqlQuery q(mainDb());
+    q.prepare(QStringLiteral("SELECT st.icao_address, st.source, b.file_name FROM saved_tracks st"
+                             " JOIN batches b ON st.batch_id = b.id WHERE st.batch_id = ?"));
+    q.addBindValue(batchId);
+    if (!q.exec())
+        return out;
+    while (q.next())
+        out << q.value(0).toString() + QStringLiteral("::") + q.value(1).toString() + QStringLiteral("::")
+            + q.value(2).toString();
+    return out;
+}
+
 ManageStats stats()
 {
     ManageStats s;
@@ -461,6 +489,35 @@ QSet<QString> deletedKeys()
         out.insert(q.value(0).toString() + QStringLiteral("::") + q.value(1).toString() + QStringLiteral("::")
                    + q.value(2).toString());
     return out;
+}
+
+// 批次级硬删除：删该批次全部航迹 + 批次行。点序列存在 BLOB 里，无独立点表。不可撤销。
+bool deleteBatch(qint64 batchId, QString *error)
+{
+    QSqlDatabase db = mainDb();
+    if (!db.transaction()) {
+        if (error)
+            *error = db.lastError().text();
+        return false;
+    }
+    QSqlQuery q(db);
+    q.prepare(QStringLiteral("DELETE FROM saved_tracks WHERE batch_id = ?"));
+    q.addBindValue(batchId);
+    if (!q.exec()) {
+        db.rollback();
+        if (error)
+            *error = q.lastError().text();
+        return false;
+    }
+    q.prepare(QStringLiteral("DELETE FROM batches WHERE id = ?"));
+    q.addBindValue(batchId);
+    if (!q.exec()) {
+        db.rollback();
+        if (error)
+            *error = q.lastError().text();
+        return false;
+    }
+    return db.commit();
 }
 
 } // namespace trackdb

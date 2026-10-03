@@ -4,6 +4,10 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QWidget>
+#include <cmath>
+#include <QSettings>
+
+#include "apppaths.h"
 
 namespace {
 
@@ -170,6 +174,25 @@ QString Theme::qss(const QString &tmpl) const
         last = m.capturedEnd();
     }
     out += tmpl.midRef(last);
+
+    // 全局字号缩放：把 QSS 里的 font-size: Npx 按当前根字号放大/缩小（基准 14px 时不变）
+    const double s = UiScale::instance()->scale();
+    if (qAbs(s - 1.0) > 1e-4) {
+        static const QRegularExpression reSize(QStringLiteral("(font-size:\\s*)(\\d+)px"));
+        QString scaled;
+        scaled.reserve(out.size());
+        int pos = 0;
+        QRegularExpressionMatchIterator it = reSize.globalMatch(out);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            scaled += out.mid(pos, m.capturedStart() - pos);
+            const int pxv = m.captured(2).toInt();
+            scaled += QStringLiteral("font-size: %1px").arg(int(std::lround(double(pxv) * s)));
+            pos = m.capturedEnd();
+        }
+        scaled += out.mid(pos);
+        out = scaled;
+    }
     return out;
 }
 
@@ -177,17 +200,26 @@ void setThemedStyle(QWidget *w, const QString &tmpl)
 {
     const bool first = !w->property("_themeQss").isValid();
     w->setProperty("_themeQss", tmpl);
+    // 样式模板里可写 ui-scale: 让字号按全局根字号换算（见 Theme::qss 的占位替换）
     w->setStyleSheet(Theme::instance()->qss(tmpl));
     if (first) {
         QPointer<QWidget> guard(w);
-        QObject::connect(Theme::instance(), &Theme::changed, w, [guard]() {
+        auto reap = [guard]() {
             if (guard)
                 guard->setStyleSheet(Theme::instance()->qss(guard->property("_themeQss").toString()));
-        });
+        };
+        QObject::connect(Theme::instance(), &Theme::changed, w, reap);
+        QObject::connect(UiScale::instance(), &UiScale::changed, w, reap);
     }
 }
 
 namespace ui {
+
+int defaultFontPx()
+{
+    // 启动时读一次持久化的根字号；后续运行时改走 UiScale::setBasePx
+    return app::settings().value(QStringLiteral("display.font_size"), 14).toInt();
+}
 
 QString uiFamilies()
 {
@@ -202,3 +234,28 @@ QString monoFamilies()
 }
 
 } // namespace ui
+
+UiScale *UiScale::instance()
+{
+    static UiScale *s = new UiScale(qApp);
+    return s;
+}
+
+UiScale::UiScale(QObject *parent) : QObject(parent)
+{
+    m_basePx = qBound(10, ui::defaultFontPx(), 20);
+}
+
+int UiScale::px(double rem) const
+{
+    return qMax(1, int(std::lround(rem * m_basePx)));
+}
+
+void UiScale::setBasePx(int v)
+{
+    const int nv = qBound(10, v, 20);
+    if (nv == m_basePx)
+        return;
+    m_basePx = nv;
+    emit changed();
+}

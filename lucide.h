@@ -12,7 +12,8 @@ class QPainter;
 enum class LucideIcon {
     List, ChartColumn, Layers, Flag, Funnel, Settings, X, Eye, Circle, Trash2, ClipboardList,
     FileText, Dot, Download, RefreshCw, Sparkles, Loader, Hash, Clock, Package, RotateCcw,
-    HelpCircle, Pencil, TriangleAlert, Info, Eraser, ChevronDown, Check, ArrowUp
+    HelpCircle, Pencil, TriangleAlert, Info, Eraser, ChevronDown, Check, ArrowUp,
+    Palette, GripHorizontal, CircleDot, Type, Wrench, Database, Maximize2
 };
 
 // 在 box 里画图标；fill 不透明时先填充（如筛选面板的实心圆点）

@@ -56,6 +56,10 @@ public:
     // 航迹标签（RadarView Ctrl+T）
     void setShowLabels(bool on);
     bool showLabels() const { return m_showLabels; }
+    // 旗标整体缩放（RadarView useFlagScale，默认 1.2，范围 0.5–3.0）
+    void setFlagScale(double s) { m_flagScale = s; m_flagIcon = QPixmap(); update(); }
+    double flagScale() const { return m_flagScale; }
+
     // 经纬度在当前视角下的屏幕位置；在地球背面或相机后方返回 false
     bool visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos);
     QString flagAt(const QPointF &pos);          // 屏幕位置处的旗标 id
@@ -163,6 +167,7 @@ private:
     int m_pending = 0;
 
     QVector4D m_northCap, m_southCap, m_baseColor;
+    double m_flagScale = 1.2;     // 旗标整体缩放（RadarView useFlagScale）
 
     // 相机：星下点经纬度（弧度）+ 离地高度（单位：赤道半径），始终俯视星下点
     double m_camLon = 0.0, m_camLat = 0.0, m_alt = 2.5;

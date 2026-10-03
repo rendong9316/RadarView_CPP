@@ -37,6 +37,7 @@
 #include "tracklayer.h"
 #include "trackpointdialog.h"
 #include "uiwidgets.h"
+#include "settingspanel.h"
 
 namespace {
 
@@ -44,9 +45,7 @@ const int kSidebarDefault = 280, kSidebarMin = 200, kSidebarMax = 900;
 
 struct PanelDef { LucideIcon icon; const char *tooltip; const char *title; };
 const PanelDef kPanels[] = {
-    { LucideIcon::List, "轨迹面板 (Ctrl+Shift+T)", "轨迹面板" },
     { LucideIcon::ChartColumn, "航迹管理系统 (Ctrl+Shift+M)", "航迹管理系统" },
-    { LucideIcon::Layers, "图层控制 (Ctrl+Shift+L)", "图层控制" },
     { LucideIcon::Flag, "旗标面板 (Ctrl+Shift+F)", "旗标面板" },
     { LucideIcon::Funnel, "时间筛选 (Ctrl+Shift+E)", "筛选" },
     { LucideIcon::Settings, "设置", "设置" },
@@ -248,15 +247,26 @@ MainWindow::MainWindow(QWidget *parent)
     m_globe->setMapTools(m_flags, m_ruler);
     m_manage = new ManageState(&m_store, this);
 
-    // 侧栏面板（顺序同 PanelId）；轨迹 / 图层 / 设置面板暂为空
+    // 侧栏面板（顺序同 PanelId）
     m_managePanel = new ManagePanel(m_manage);
     m_managePanel->rowColor = [this](const ManageRow &r) { return m_store.fileColor(r.source, r.fileName); };
     m_filterPanel = new FilterPanel(&m_filter);
     m_flagPanel = new FlagPanel(m_flags, m_ruler);
+    SettingsPanel::Host host;
+    host.store = &m_store;
+    host.globe = m_globe;
+    host.manage = m_manage;
+    m_settingsPanel = new SettingsPanel(host, this);
+    connect(m_settingsPanel, &SettingsPanel::toggleLabelsRequested, this, &MainWindow::toggleLabels);
+    connect(m_settingsPanel, &SettingsPanel::resetViewRequested, this, [this]() { m_globe->resetView(); });
+    connect(m_settingsPanel, &SettingsPanel::clearDisplayRequested, this, [this]() { m_manage->clearVisible(); });
+    connect(m_settingsPanel, &SettingsPanel::openManageRequested, this, [this]() { activatePanel(PanelId::Manage); });
+    connect(m_manage, &ManageState::dataChanged, m_settingsPanel, &SettingsPanel::refresh);
     for (int i = 0; i < int(PanelId::Count); ++i) {
         QWidget *w = i == int(PanelId::Manage) ? static_cast<QWidget *>(m_managePanel)
                    : i == int(PanelId::Flags) ? static_cast<QWidget *>(m_flagPanel)
-                   : i == int(PanelId::TimeFilter) ? static_cast<QWidget *>(m_filterPanel) : new QWidget;
+                   : i == int(PanelId::TimeFilter) ? static_cast<QWidget *>(m_filterPanel)
+                   : i == int(PanelId::Settings) ? static_cast<QWidget *>(m_settingsPanel) : new QWidget;
         m_sidePanel->addPanel(w);
     }
     m_sidePanel->hide();
@@ -417,7 +427,8 @@ bool MainWindow::openTiles(const QString &path)
     return true;
 }
 
-// 启动时自动加载：优先 exe 旁 tiles/ 目录，其次 exe 同目录，取层级最高的那个
+// 启动时自动加载：优先 exe 旁 tiles/ 目录，其次 exe 同目录；默认选 natural_earth4（分层设色），
+// 找不到时回退到 maxZoom 最高的那个
 void MainWindow::loadDefaultTiles()
 {
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -427,13 +438,23 @@ void MainWindow::loadDefaultTiles()
 
     QString best;
     int bestZoom = -1;
+    bool foundNatural4 = false;
     for (const QFileInfo &fi : qAsConst(files)) {
+        if (fi.fileName() == QLatin1String("natural_earth4.mbtiles"))
+            foundNatural4 = true;
         TileSource probe;
         if (probe.open(fi.absoluteFilePath()) && probe.maxZoom() > bestZoom) {
             bestZoom = probe.maxZoom();
             best = fi.absoluteFilePath();
         }
     }
+    // 默认瓦片源：natural_earth4（参考项目 tile_server.rs 优先 natural_earth 系列）
+    if (foundNatural4)
+        for (const QFileInfo &fi : qAsConst(files))
+            if (fi.fileName() == QLatin1String("natural_earth4.mbtiles")) {
+                best = fi.absoluteFilePath();
+                break;
+            }
     if (!best.isEmpty())
         openTiles(best);
 }
@@ -910,9 +931,7 @@ void MainWindow::buildMenuBar()
     item(mEdit, tr("首选项设置"), QKeySequence(Qt::CTRL + Qt::Key_Comma), [this]() { activatePanel(PanelId::Settings); });
 
     QMenu *mView = mb->addMenu(tr("视图"));
-    item(mView, tr("轨迹面板"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_T), [this]() { activatePanel(PanelId::Tracks); });
     item(mView, tr("航迹管理系统"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_M), [this]() { activatePanel(PanelId::Manage); });
-    item(mView, tr("图层控制"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_L), [this]() { activatePanel(PanelId::Layers); });
     item(mView, tr("旗标面板"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_F), [this]() { activatePanel(PanelId::Flags); });
     item(mView, tr("时间过滤"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_E), [this]() { activatePanel(PanelId::TimeFilter); });
     mView->addSeparator();

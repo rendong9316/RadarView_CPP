@@ -39,14 +39,37 @@ private:
 void setThemedStyle(QWidget *w, const QString &tmpl);
 inline QColor themeColor(const char *var) { return Theme::instance()->color(QLatin1String(var)); }
 
-// 字号：RadarView 根字号 14px，各处用 rem
+// 全局字号缩放（对应 RadarView useFontSize.ts：根字号 10–20px，全 UI 文本按 rem 等比）。
+// 基准 14px 时各 rem 字号与 RadarView 一致（0.571rem=8px … 1rem=14px）。
+// 界面各控件/地图内文字统一经 ui::px() 取像素值，改这里即全局生效。
+class UiScale : public QObject
+{
+    Q_OBJECT
+public:
+    static UiScale *instance();
+    int basePx() const { return m_basePx; }      // 当前根字号（10–20）
+    double scale() const { return m_basePx / 14.0; }
+
+    // 逻辑 rem 值 -> 当前根字号下的像素值
+    int px(double rem) const;
+
+    // 设根字号（自动钳制 10–20），立即发 changed()；持久化由调用方负责
+    void setBasePx(int v);
+
+signals:
+    void changed();
+
+private:
+    explicit UiScale(QObject *parent = nullptr);
+    int m_basePx = 14;
+};
+
 namespace ui {
-const int kFont571 = 8;     // 0.571rem
-const int kFont643 = 9;     // 0.643rem
-const int kFont714 = 10;    // 0.714rem
-const int kFont786 = 11;    // 0.786rem
-const int kFont857 = 12;    // 0.857rem
-const int kFont1 = 14;      // 1rem
+// 字号：RadarView 根字号 14px，各处用 rem
+// 逻辑 rem 字号 -> 当前根字号下的像素值（原 kFont* 常量改成调用它）
+inline int px(double rem) { return UiScale::instance()->px(rem); }
+inline double fontScale() { return UiScale::instance()->scale(); }
+int defaultFontPx();      // 读 QSettings display.font_size，缺省 14
 // 界面字体列表（RadarView: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif；补 Linux 中文字体）
 QString uiFamilies();
 // 等宽：'Cascadia Code', 'JetBrains Mono', 'Consolas', 'Courier New', monospace

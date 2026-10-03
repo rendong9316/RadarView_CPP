@@ -2,6 +2,7 @@
 #include "replaycontroller.h"
 #include "track.h"
 #include "apppaths.h"
+#include "theme.h"
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -25,8 +26,9 @@ namespace {
 const int kBarHeight = 22;          // .statusbar { height: 22px; border-top: 1px }（border-box）
 const int kPadX = 8;                // padding: 0 8px
 const int kGap = 6;                 // .statusbar-left/right { gap: 6px }
-const int kFontPx = 11;             // 0.786rem（根字号 14px）
-const int kSmallFontPx = 10;        // 0.714rem
+// 字号随全局根字号缩放（0.786rem / 0.714rem），基准 14px 时等于 11 / 10px
+int kFontPx() { return ui::px(0.786); }
+int kSmallFontPx() { return ui::px(0.714); }
 const int kSpeedOptions[] = { 1, 10, 50, 100, 300, 500, 2000 };   // useReplay.ts SPEED_OPTIONS
 
 // 界面字体：RadarView 为 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif；补上 Linux 中文字体
@@ -317,7 +319,7 @@ public:
     explicit SpeedSelect(QWidget *parent) : QComboBox(parent)
     {
         setFocusPolicy(Qt::NoFocus);
-        setFont(monoFont(kSmallFontPx));
+        setFont(monoFont(kSmallFontPx()));
         setFixedHeight(16);
         setToolTip(QStringLiteral("选择回放倍速"));
         setCursor(Qt::PointingHandCursor);
@@ -400,7 +402,7 @@ class ErrorTag : public QWidget
 public:
     explicit ErrorTag(QWidget *parent) : QWidget(parent)
     {
-        setFont(uiFont(kFontPx));
+        setFont(uiFont(kFontPx()));
         setFixedHeight(kBarHeight - 1);
     }
     void setText(const QString &t)
@@ -439,7 +441,7 @@ class SourceButton : public QAbstractButton
 public:
     explicit SourceButton(QWidget *parent) : QAbstractButton(parent)
     {
-        setFont(uiFont(kFontPx));
+        setFont(uiFont(kFontPx()));
         setFocusPolicy(Qt::NoFocus);
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover);
@@ -495,7 +497,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     setObjectName(QStringLiteral("appStatusBar"));
     setFixedHeight(kBarHeight);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);   // 窗口变窄时右侧裁掉，不撑大主窗口
-    setFont(uiFont(kFontPx));
+    setFont(uiFont(kFontPx()));
 
     // ---- 左：回放控件 ----
     m_left = new QWidget(this);
@@ -507,7 +509,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_seek = new SeekBar(m_left);
     left->addWidget(m_seek, 1);
     m_time = new QLabel(m_left);
-    m_time->setFont(monoFont(kFontPx));
+    m_time->setFont(monoFont(kFontPx()));
     left->addWidget(m_time);
 
     QWidget *speedBox = m_speedBox = new QWidget(m_left);
@@ -521,7 +523,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_speed->addItem(QStringLiteral("自定义..."), 0);
     speedLay->addWidget(m_speed);
     m_customSpeed = new QLineEdit(speedBox);
-    m_customSpeed->setFont(monoFont(kSmallFontPx));
+    m_customSpeed->setFont(monoFont(kSmallFontPx()));
     m_customSpeed->setFixedSize(64, 16);
     m_customSpeed->setToolTip(QStringLiteral("输入自定义倍速，按回车键确认生效"));
     QDoubleValidator *val = new QDoubleValidator(0.0, 1e9, 3, m_customSpeed);
@@ -559,7 +561,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_lonLat = new QLabel(m_right);
     m_fps = new QLabel(m_right);
     for (QLabel *l : { m_height, m_lonLat, m_fps }) {
-        l->setFont(monoFont(kFontPx));
+        l->setFont(monoFont(kFontPx()));
         right->addWidget(l);
     }
     m_sourceLayout = new QHBoxLayout;
@@ -567,7 +569,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_sourceLayout->setContentsMargins(0, 0, 0, 0);
     right->addLayout(m_sourceLayout);
     m_count = new QLabel(m_right);
-    m_count->setFont(monoFont(kFontPx));
+    m_count->setFont(monoFont(kFontPx()));
     right->addWidget(m_count);
     m_themeBtn = new IconButton(Icon::Moon, 22, m_right);   // .status-theme { width: auto; padding: 0 4px }
     m_themeBtn->setToolTip(QStringLiteral("切换主题"));
@@ -595,6 +597,16 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
         syncState();
     });
     connect(m_themeBtn, &QAbstractButton::clicked, this, &AppStatusBar::cycleTheme);
+
+    // 全局字号变化时重套状态栏文字（字号随根字号缩放）
+    connect(UiScale::instance(), &UiScale::changed, this, [this]() {
+        setFont(uiFont(kFontPx()));
+        m_time->setFont(monoFont(kFontPx()));
+        m_customSpeed->setFont(monoFont(kSmallFontPx()));
+        for (QLabel *l : { m_height, m_lonLat, m_fps, m_count })
+            l->setFont(monoFont(kFontPx()));
+        syncState();
+    });
     connect(m_ctrl, &ReplayController::stateChanged, this, &AppStatusBar::syncState);
     connect(m_ctrl, &ReplayController::timeChanged, this, &AppStatusBar::syncTime);
 

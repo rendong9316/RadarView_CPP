@@ -43,6 +43,11 @@ public:
     bool undoDelete();
     const QVector<UndoEntry> &undoStack() const { return m_undo; }
 
+    // 加载某批次的航迹进内存（RadarView handleLoadBatch），返回是否加载到数据
+    bool loadBatch(qint64 batchId, QString *error = nullptr);
+    // 批次级硬删除（RadarView handleDeleteBatch）：从数据库彻底移除，不可撤销
+    bool hardDeleteBatch(qint64 batchId, QString *error = nullptr);
+
     const QSet<QString> &highlighted() const { return m_highlight; }
     void addHighlight(const QString &icao);
     void clearHighlights();
@@ -134,6 +139,7 @@ public:
     void clickDeleteVisible();
     void clickClearMap();
     void clickResetFilters();
+    void clickBatchManage();   // 打开「批量数据管理」：加载 / 永久删除批次
     void setPageSize(int n);
     bool exportVisible(const QString &path, QString *error = nullptr);
 

@@ -69,11 +69,16 @@ bool isOpen();
 QVector<Track> loadAll(QString *error = nullptr);            // 启动加载（不含软删除的）
 QVector<Track> loadTracks(const QStringList &trackKeys);      // 按 Track::key() 读取（含软删除的）
 QVector<BatchInfo> batches();                                 // id 倒序
+QVector<Track> loadBatchTracks(qint64 batchId);               // 该批次全部航迹（含软删除的）
+QStringList batchKeys(qint64 batchId);                        // 该批次航迹的 Track::key()
 ManageStats stats();
 QStringList distinctValues(const QString &column, const QString &source);   // airline / aircraft_type
 QVector<ManageRow> query(const ManageFilter &f, int limit, int offset, int *total);
 bool setDeleted(const QStringList &trackKeys, bool deleted);
 QSet<QString> deletedKeys();
+
+// 批次级硬删除（RadarView db.rs::delete_batch）：从数据库彻底移除某批次的全部航迹。不可撤销。
+bool deleteBatch(qint64 batchId, QString *error = nullptr);
 
 } // namespace trackdb
 

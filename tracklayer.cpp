@@ -376,6 +376,7 @@ void TrackLayer::rebuildStatic()
     m_groups.clear();
     m_trackGroup.clear();
     m_builtVersion = m_store->version();
+    m_builtStyleVersion = m_styleVersion;
     m_dynamicDirty = true;
     m_rangesDirty = true;
     const QVector<Track> &tracks = m_store->tracks();
@@ -395,9 +396,11 @@ void TrackLayer::rebuildStatic()
         if (g < 0) {
             Group grp;
             grp.key = key;
-            grp.color = m_store->fileColor(t.source, t.fileName);
+            grp.color = m_sourceColor.contains(int(t.source)) ? m_sourceColor.value(int(t.source))
+                                                          : m_store->fileColor(t.source, t.fileName);
             grp.alpha = t.source == TrackSource::RadarRaw ? 0.75f : 0.88f;
-            grp.radiusPx = t.source == TrackSource::RadarRaw ? 3.5f : 6.0f;
+            const double base = t.source == TrackSource::RadarRaw ? 3.5 : 6.0;
+            grp.radiusPx = float(base * m_dotScale.value(int(t.source), 1.0));
             grp.visible = !m_hidden.contains(key);
             g = m_groups.size();
             m_groups.append(grp);
@@ -623,7 +626,7 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
     m_hoverDrawn = false;
     if (!isReady() || !m_store)
         return;
-    if (m_store->version() != m_builtVersion)
+    if (m_store->version() != m_builtVersion || m_styleVersion != m_builtStyleVersion)
         rebuildStatic();
     if (m_groups.isEmpty())
         return;
@@ -636,7 +639,7 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
 
     QOpenGLFunctions *gl = m_gl;
     const QVector2D vp(float(qMax(1, viewportPx.width())), float(qMax(1, viewportPx.height())));
-    const float hw = kLineHalfWidthPx * dpr;
+    const float hw = m_lineWidthPx * 0.5f * dpr;
     const float hoverHw = kHoverHalfWidthPx * dpr;
     const bool hover = trackShown(m_hoverTrack);
 

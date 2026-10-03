@@ -2,6 +2,7 @@
 #include "track.h"
 #include "maptools.h"
 #include "geo.h"
+#include "theme.h"
 
 #include <QApplication>
 #include <QDateTime>
@@ -79,6 +80,12 @@ QFont pxFont(int px, bool bold = false)
     f.setPixelSize(px);
     f.setBold(bold);
     return f;
+}
+
+// 逻辑 rem 字号 -> 随全局根字号缩放的像素字号（地图内文字同样参与「字号大小」设置）
+QFont remFont(double rem, bool bold = false)
+{
+    return pxFont(ui::px(rem), bold);
 }
 
 // 椭球长半轴归一化为 1；顶点位置在着色器里由经纬度算出，所有瓦片共用一套网格
@@ -206,7 +213,8 @@ GlobeWidget::GlobeWidget(QWidget *parent)
     : QOpenGLWidget(parent),
       m_northCap(0.80f, 0.85f, 0.90f, 1.0f),
       m_southCap(0.92f, 0.94f, 0.96f, 1.0f),
-      m_baseColor(0.16f, 0.26f, 0.38f, 1.0f)
+      m_baseColor(0.16f, 0.26f, 0.38f, 1.0f),
+      m_flagScale(kFlagScale)
 {
     setMouseTracking(true);
     setMinimumSize(200, 200);
@@ -365,7 +373,7 @@ bool GlobeWidget::visiblePos(double lonDeg, double latDeg, double altM, QPointF 
 // 旗标图标：底边中点对准旗标位置，32px × 0.8 × 缩放
 QRectF GlobeWidget::flagIconRect(const QPointF &anchor) const
 {
-    const double s = 32.0 * 0.8 * kFlagScale;
+    const double s = 32.0 * 0.8 * m_flagScale;
     return QRectF(anchor.x() - s / 2.0, anchor.y() - s, s, s);
 }
 
@@ -467,7 +475,7 @@ void GlobeWidget::drawRuler(QPainter &p)
             p.drawPolyline(line);
     }
     // 航点：r=11 琥珀色圆、黑色描边、白色粗体序号
-    const QFont f = pxFont(12, true);
+    const QFont f = remFont(0.857, true);
     p.setFont(f);
     for (int i = 0; i < w.size(); ++i) {
         QPointF sp;
@@ -497,10 +505,10 @@ void GlobeWidget::drawFlags(QPainter &p)
         for (const QPolygonF &line : geodesicLines(a.lat, a.lon, b.lat, b.lon))
             p.drawPolyline(line);
     }
-    const qreal iconDpr = devicePixelRatioF() * 0.8 * kFlagScale;   // 按显示尺寸生成，缩放后不发虚
+    const qreal iconDpr = devicePixelRatioF() * 0.8 * m_flagScale;   // 按显示尺寸生成，缩放后不发虚
     if (m_flagIcon.isNull() || !qFuzzyCompare(m_flagIcon.devicePixelRatio(), iconDpr))
         m_flagIcon = makeFlagPin(iconDpr);
-    const QFont f = pxFont(int(std::lround(12 * kFlagScale)));
+    const QFont f = remFont(0.857 * m_flagScale);
     const QFontMetricsF fm(f);
     for (const MapFlag &fl : m_flags->flags()) {
         QPointF sp;
@@ -509,7 +517,7 @@ void GlobeWidget::drawFlags(QPainter &p)
         p.drawPixmap(flagIconRect(sp), m_flagIcon, QRectF(QPointF(0, 0), QSizeF(m_flagIcon.size())));
         // 标签：黄色，黑色描边 2，顶边在旗标位置下方 round(8 × 缩放) px
         const double w = fm.horizontalAdvance(fl.label);
-        const QPointF base(sp.x() - w / 2.0, sp.y() + std::lround(8 * kFlagScale) + fm.ascent());
+        const QPointF base(sp.x() - w / 2.0, sp.y() + std::lround(8 * m_flagScale) + fm.ascent());
         drawOutlinedText(p, base, fl.label, f, Qt::yellow, Qt::black, 2.0);
         ++m_flagsDrawn;
     }
@@ -523,7 +531,7 @@ void GlobeWidget::drawLabels(QPainter &p)
         return;
     const QVector<TrackLayer::EndPoint> &eps = m_trackLayer.endpoints();
     const QVector<Track> &tracks = m_trackStore->tracks();
-    const QFont f = pxFont(18);
+    const QFont f = remFont(1.286);
     const QFontMetricsF fm(f);
     const qreal dpr = devicePixelRatioF();
     if (m_labelCache.size() > 20000)
@@ -575,7 +583,7 @@ void GlobeWidget::drawPointTip(QPainter &p)
                            .arg(double(pt.heading), 0, 'f', 0);
     const QString l2 = QDateTime::fromMSecsSinceEpoch(pt.t, Qt::OffsetFromUTC, 8 * 3600)
                            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-    const QFont f = pxFont(14);
+    const QFont f = remFont(1.0);
     const QFontMetricsF fm(f);
     const double w = qMax(fm.horizontalAdvance(l1), fm.horizontalAdvance(l2));
     const double lineH = fm.height();
