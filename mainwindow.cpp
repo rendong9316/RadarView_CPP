@@ -10,13 +10,11 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QStyle>
-#include <QStatusBar>
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDir>
 #include <QFileInfo>
-#include <QProgressBar>
 #include <QKeySequence>
 #include <QEvent>
 #include <QDialog>
@@ -26,7 +24,7 @@
 #include "globewidget.h"
 #include "trackimporter.h"
 #include "replaycontroller.h"
-#include "replaybar.h"
+#include "appstatusbar.h"
 #include "tracklayer.h"
 #include "trackpointdialog.h"
 
@@ -129,14 +127,20 @@ MainWindow::MainWindow(QWidget *parent)
 
     buildMenuBar();
 
+    // 中央：上面是活动栏 + 侧栏 + 地图，下面是贯穿全宽的状态栏
     QWidget *central = new QWidget(this);
-    QHBoxLayout *h = new QHBoxLayout(central);
+    QVBoxLayout *v = new QVBoxLayout(central);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(0);
+    QWidget *row = new QWidget(central);
+    QHBoxLayout *h = new QHBoxLayout(row);
     h->setContentsMargins(0, 0, 0, 0);
     h->setSpacing(0);
+    v->addWidget(row, 1);
 
-    m_activityBar = new ActivityBar(central);
+    m_activityBar = new ActivityBar(row);
 
-    m_splitter = new QSplitter(Qt::Horizontal, central);
+    m_splitter = new QSplitter(Qt::Horizontal, row);
     m_sidePanel = new SidePanel();
     m_editor = buildEditorArea();
 
@@ -172,27 +176,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_activityBar, &ActivityBar::iconClicked,
             this, &MainWindow::onIconClicked);
 
-    // 状态栏常驻：瓦片名、层级、视点高度、鼠标经纬度
-    m_globeStatus = new QLabel(this);
-    statusBar()->addPermanentWidget(m_globeStatus, 1);
-    connect(m_globe, &GlobeWidget::statusChanged, m_globeStatus, &QLabel::setText);
-
-    // 导入进度 + 航迹数
-    m_importProgress = new QProgressBar(this);
-    m_importProgress->setRange(0, 100);
-    m_importProgress->setFixedWidth(160);
-    m_importProgress->setTextVisible(true);
-    m_importProgress->hide();
-    statusBar()->addPermanentWidget(m_importProgress);
-    m_trackCount = new QLabel(tr("航迹: 0"), this);
-    statusBar()->addPermanentWidget(m_trackCount);
-
     m_globe->setTrackStore(&m_store);
 
-    // 回放：控件放状态栏左侧（与 RadarView 一致）
+    // 状态栏：不用 QStatusBar。它的 showMessage() 会把 addWidget() 加入的左侧控件整体隐藏，
+    // 导入提示等临时消息显示期间回放进度条就“没加载出来”。改为常驻的自绘控件，只放 RadarView 有的那些项
     m_replay = new ReplayController(this);
-    m_replayBar = new ReplayBar(m_replay, this);
-    statusBar()->addWidget(m_replayBar);
+    m_statusBar = new AppStatusBar(m_replay, central);
+    v->addWidget(m_statusBar);
+    connect(m_globe, &GlobeWidget::viewStatusChanged, m_statusBar, &AppStatusBar::setViewStatus);
+    connect(m_statusBar, &AppStatusBar::sourceToggled, this, &MainWindow::toggleSource);
+    refreshSources();
     connect(m_replay, &ReplayController::timeChanged, this, &MainWindow::syncReplayToLayer);
     connect(m_replay, &ReplayController::stateChanged, this, &MainWindow::syncReplayToLayer);
     QAction *aPlay = new QAction(tr("播放/暂停"), this);
@@ -228,8 +221,6 @@ MainWindow::MainWindow(QWidget *parent)
     });
     addAction(aBackAll);
 
-    statusBar()->showMessage(tr("就绪"), 3000);
-
     resize(1280, 800);
 }
 
@@ -240,7 +231,6 @@ bool MainWindow::openTiles(const QString &path)
         QMessageBox::warning(this, tr("打开瓦片失败"), err);
         return false;
     }
-    statusBar()->showMessage(tr("已加载瓦片：%1").arg(QDir::toNativeSeparators(path)), 4000);
     return true;
 }
 
@@ -261,9 +251,7 @@ void MainWindow::loadDefaultTiles()
             best = fi.absoluteFilePath();
         }
     }
-    if (best.isEmpty())
-        statusBar()->showMessage(tr("未找到 .mbtiles，可通过“文件 → 打开瓦片”加载"), 6000);
-    else
+    if (!best.isEmpty())
         openTiles(best);
 }
 
@@ -278,22 +266,19 @@ void MainWindow::openTileFile()
 
 void MainWindow::importFile(TrackSource kind, const QString &path, const QString &displayName)
 {
-    if (m_importer) {
-        statusBar()->showMessage(tr("正在导入，请稍候"), 3000);
+    if (m_importer)
         return;
-    }
     QString name = displayName;
     if (name.isEmpty() && kind != TrackSource::Adsb)
         name = m_store.uniqueFileName(kind);
     m_importer = new TrackImporter(kind, path, name, this);
-    connect(m_importer, &TrackImporter::progressChanged, m_importProgress, &QProgressBar::setValue);
+    connect(m_importer, &TrackImporter::progressChanged, this,
+            [this](int percent) { m_statusBar->setLoading(true, percent); });
     connect(m_importer, &TrackImporter::importDone, this, &MainWindow::onImportDone);
     for (QAction *a : qAsConst(m_importActions))
         a->setEnabled(false);
-    m_importProgress->setValue(0);
-    m_importProgress->setFormat(tr("导入 %p%"));
-    m_importProgress->show();
-    statusBar()->showMessage(tr("正在解析 %1 ...").arg(QFileInfo(path).fileName()));
+    m_statusBar->setError(QString());       // 与 RadarView 一致：开始导入时清除上次的错误
+    m_statusBar->setLoading(true, 0);
     m_importer->start();
 }
 
@@ -302,7 +287,7 @@ void MainWindow::onImportDone()
     TrackImporter *imp = m_importer;
     m_importer = nullptr;
     imp->wait();
-    m_importProgress->hide();
+    m_statusBar->setLoading(false, 0);
     for (QAction *a : qAsConst(m_importActions))
         a->setEnabled(true);
 
@@ -315,9 +300,9 @@ void MainWindow::onImportDone()
         msg = tr("%1：新增 %2 条航迹（共 %3 条，%4 个点），解析 %5 ms")
                   .arg(QFileInfo(imp->path()).fileName()).arg(added)
                   .arg(m_store.size()).arg(m_store.pointCount()).arg(imp->elapsedMs());
-        m_trackCount->setText(tr("航迹: %1").arg(m_store.size()));
+        applyAdsbVisibility();
+        refreshSources();
         resetReplayRange();
-        statusBar()->showMessage(msg, 8000);
         // 第一次导入时把视角移到数据中心
         if (firstData && m_store.size() > before) {
             double sx = 0, sy = 0, sz = 0;
@@ -334,7 +319,7 @@ void MainWindow::onImportDone()
         m_globe->update();
     } else {
         msg = imp->errorString();
-        statusBar()->showMessage(tr("导入失败：%1").arg(msg), 8000);
+        m_statusBar->setError(msg);
         if (!property("noDialogs").toBool())
             QMessageBox::warning(this, tr("导入失败"), msg);
     }
@@ -371,10 +356,67 @@ void MainWindow::isolateTrack(int index)
         m_backAllBtn->adjustSize();
         placeBackAllButton();
         m_backAllBtn->raise();
-        statusBar()->showMessage(tr("单独显示 %1，单击空白处或按 Esc 返回全部").arg(t.flightNo.isEmpty() ? t.id : t.flightNo), 5000);
     }
     resetReplayRange();
     m_globe->update();
+}
+
+// 与 RadarView statusSources 相同：ADS-B 一项（整体），雷达 / 原始量测按导入文件各一项（按首次出现顺序）
+void MainWindow::refreshSources()
+{
+    QVector<AppStatusBar::SourceItem> items;
+    AppStatusBar::SourceItem adsb;
+    adsb.key = QStringLiteral("adsb");
+    adsb.label = QStringLiteral("ADS-B");
+    adsb.color = trackSourceColor(TrackSource::Adsb);
+    adsb.visible = m_adsbVisible;
+    QVector<AppStatusBar::SourceItem> radar, raw;
+    TrackLayer *layer = m_globe->trackLayer();
+    for (const Track &t : m_store.tracks()) {
+        if (t.source == TrackSource::Adsb) {
+            ++adsb.count;
+            continue;
+        }
+        QVector<AppStatusBar::SourceItem> &list = t.source == TrackSource::Radar ? radar : raw;
+        const QString key = trackSourceName(t.source) + QStringLiteral("::") + t.fileName;
+        int i = 0;
+        while (i < list.size() && list[i].key != key)
+            ++i;
+        if (i == list.size()) {
+            AppStatusBar::SourceItem it;
+            it.key = key;
+            it.label = t.fileName;
+            it.color = m_store.fileColor(t.source, t.fileName);
+            it.visible = layer->isGroupVisible(key);
+            list.append(it);
+        }
+        ++list[i].count;
+    }
+    items << adsb << radar << raw;
+    m_statusBar->setSources(items);
+    m_statusBar->setTrackCount(m_store.size());
+}
+
+void MainWindow::toggleSource(const QString &key)
+{
+    if (key == QLatin1String("adsb")) {
+        m_adsbVisible = !m_adsbVisible;
+        applyAdsbVisibility();
+    } else {
+        TrackLayer *layer = m_globe->trackLayer();
+        layer->setGroupVisible(key, !layer->isGroupVisible(key));
+    }
+    refreshSources();
+    m_globe->update();
+}
+
+// ADS-B 是整体开关：每个 ADS-B 文件组都跟随它（新导入的文件也一样）
+void MainWindow::applyAdsbVisibility()
+{
+    TrackLayer *layer = m_globe->trackLayer();
+    for (const Track &t : m_store.tracks())
+        if (t.source == TrackSource::Adsb)
+            layer->setGroupVisible(trackSourceName(t.source) + QStringLiteral("::") + t.fileName, m_adsbVisible);
 }
 
 void MainWindow::placeBackAllButton()
@@ -464,7 +506,7 @@ void MainWindow::buildMenuBar()
         m_store.clear();
         m_globe->trackLayer()->setHoveredTrack(-1);
         m_replay->setRange(0, 0);
-        m_trackCount->setText(tr("航迹: 0"));
+        refreshSources();
         m_globe->update();
     });
     mFile->addSeparator();
@@ -525,7 +567,6 @@ QStackedWidget *MainWindow::buildEditorArea()
 
 void MainWindow::onMenuActionTriggered()
 {
-    statusBar()->showMessage(tr("你点击了“关于”"), 2000);
 }
 
 void MainWindow::onIconClicked(int index)
@@ -542,8 +583,6 @@ void MainWindow::onIconClicked(int index)
     QList<int> sizes = m_splitter->sizes();
     if (sizes.value(0) < 100)
         m_splitter->setSizes(QList<int>() << 220 << 800);
-
-    statusBar()->showMessage(tr("已切换到：") + titles[index], 2000);
 }
 
 void MainWindow::toggleSidePanel()

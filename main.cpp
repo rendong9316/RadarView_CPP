@@ -15,9 +15,11 @@
 #include "tracklayer.h"
 #include "replaycontroller.h"
 #include "trackpointdialog.h"
+#include "appstatusbar.h"
 
 #include <QMouseEvent>
 #include <QDialog>
+#include <QWindow>
 
 #include <QFileInfo>
 #include <QDir>
@@ -235,13 +237,20 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             ++st->failures;
     };
     // 等到至少再画 3 帧，保证图层状态已刷新
-    auto afterFrames = [g](std::function<void()> next) {
+    auto afterFrames = [g, st](std::function<void()> next) {
         const quint64 target = g->frameCount() + 3;
         auto poll = std::make_shared<std::function<void()>>();
         QElapsedTimer t;
         t.start();
-        *poll = [g, target, next, poll, t]() {
+        *poll = [g, st, target, next, poll, t]() {
             if (g->frameCount() >= target || t.elapsed() > 10000) {
+                if (g->frameCount() < target) {
+                    QWindow *win = g->window()->windowHandle();
+                    st->out << "WAIT timeout: frames " << g->frameCount() << " < " << target
+                            << " at " << st->clock.elapsed() << " ms; exposed=" << (win ? win->isExposed() : false)
+                            << " visible=" << g->isVisible() << " minimized=" << g->window()->isMinimized()
+                            << " active=" << g->window()->isActiveWindow() << "\n";
+                }
                 next();
                 return;
             }
@@ -257,6 +266,29 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
         st->log.close();
         QCoreApplication::exit(st->failures == 0 ? 0 : 1);
     };
+
+    // 状态栏与回放时钟一致：进度条、时间文字都必须等于 ReplayController 当前值；回放控件任何时候都显示
+    AppStatusBar *sb = w->appStatusBar();
+    auto statusConsistent = [=](const QString &when) {
+        ReplayController *rp = w->replay();
+        const bool hasData = rp->end() > rp->start();
+        const QString expectTime = hasData ? formatBeijingTime(rp->current()) + QStringLiteral(" / ") + formatBeijingTime(rp->end())
+                                           : QString();
+        const double expectProg = hasData ? rp->progress() : 0.0;
+        QString layout;
+        const bool layoutOk = sb->checkLayout(&layout);
+        const bool ok = sb->areReplayControlsShown() && sb->isTimeShown() == hasData && sb->timeText() == expectTime
+                        && std::fabs(sb->seekProgress() - expectProg) < 1e-9 && layoutOk;
+        check(ok, QStringLiteral("状态栏一致（%1）：控件=%2 时间=[%3] 期望=[%4] 进度=%5/%6 布局=%7")
+                      .arg(when).arg(sb->areReplayControlsShown()).arg(sb->timeText(), expectTime)
+                      .arg(sb->seekProgress(), 0, 'f', 6).arg(expectProg, 0, 'f', 6).arg(layoutOk ? QStringLiteral("OK") : layout));
+    };
+    statusConsistent(QStringLiteral("无数据"));
+    check(sb->trackCountText() == QStringLiteral("航迹: 0") && sb->sourceTexts() == QStringList(QStringLiteral("ADS-B:0")),
+          QStringLiteral("无数据时：%1 | %2").arg(sb->trackCountText(), sb->sourceTexts().join(QLatin1Char(' '))));
+    check(sb->heightText().startsWith(QStringLiteral("高: ")) && sb->heightText().endsWith(QStringLiteral(" km"))
+              && sb->lonLatText().startsWith(QStringLiteral("经纬: ")) && sb->fpsText().startsWith(QStringLiteral("FPS: ")),
+          QStringLiteral("视图项：%1 | %2 | %3").arg(sb->heightText(), sb->lonLatText(), sb->fpsText()));
 
     // 依次导入 ADS-B、雷达、雷达原始量测
     struct Job { TrackSource kind; QString path; int expectTracks; };
@@ -281,6 +313,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             if (t.minTime() <= mid)
                 ++expectStarted;
         rp->seekTime(mid);
+        statusConsistent(QStringLiteral("跳转后"));
         afterFrames([=]() {
             check(rp->isActive() && !rp->isPlaying(), QStringLiteral("跳转后处于回放暂停状态"));
             check(layer->visibleTrackCount() == expectStarted,
@@ -288,10 +321,34 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                       .arg(layer->visibleTrackCount()).arg(expectStarted));
             // 播放 1 秒真实时间（500x）应前进约 500 秒
             rp->setSpeed(500);
+            check(sb->speedText() == QStringLiteral("500x") && !sb->isCustomSpeedShown(),
+                  QStringLiteral("倍速显示 %1").arg(sb->speedText()));
             const qint64 before = rp->current();
             rp->play();
+            // 播放中每 100 ms 采样一次：状态栏必须与回放时钟同步
+            auto samples = std::make_shared<int>(0);
+            auto sampleFails = std::make_shared<int>(0);
+            QTimer *sampler = new QTimer(w);
+            QObject::connect(sampler, &QTimer::timeout, w, [=]() {
+                ++*samples;
+                const QString expect = formatBeijingTime(rp->current()) + QStringLiteral(" / ") + formatBeijingTime(rp->end());
+                if (!sb->areReplayControlsShown() || sb->timeText() != expect
+                        || std::fabs(sb->seekProgress() - rp->progress()) > 1e-9)
+                    ++*sampleFails;
+            });
+            sampler->start(100);
             QTimer::singleShot(1000, w, [=]() {
+                sampler->stop();
+                sampler->deleteLater();
+                check(*samples >= 5 && *sampleFails == 0,
+                      QStringLiteral("播放中状态栏与时钟同步：采样 %1 次，不一致 %2 次").arg(*samples).arg(*sampleFails));
                 rp->pause();
+                statusConsistent(QStringLiteral("暂停后"));
+                rp->setSpeed(123);
+                check(sb->isCustomSpeedShown() && sb->speedText() == QStringLiteral("自定义... 123"),
+                      QStringLiteral("非预设倍速显示自定义输入 %1").arg(sb->speedText()));
+                rp->setSpeed(500);
+                check(!sb->isCustomSpeedShown(), QStringLiteral("回到预设倍速后收起输入框"));
                 const double gained = (rp->current() - before) / 1000.0;
                 check(gained > 350 && gained < 650, QStringLiteral("播放 1 s 前进 %1 s（期望约 500）").arg(gained, 0, 'f', 1));
                 // 一次推进到结尾
@@ -300,15 +357,25 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                 afterFrames([=]() {
                     check(!rp->isActive() && !rp->isPlaying() && rp->current() == rp->end(),
                           QStringLiteral("到达结尾自动退出回放"));
+                    statusConsistent(QStringLiteral("播放到结尾"));
                     check(layer->visibleTrackCount() == store->size(),
                           QStringLiteral("退出回放后恢复全部端点 %1").arg(layer->visibleTrackCount()));
                     // 再次播放应从头开始
                     rp->play();
                     check(rp->current() == rp->start() && rp->isPlaying(), QStringLiteral("结尾处再播放从头开始"));
                     rp->stop();
+                    statusConsistent(QStringLiteral("停止后"));
+                    // 窗口很窄时状态栏不能把主窗口撑大，回放控件仍要显示
+                    const QSize oldSize = w->size();
+                    w->resize(700, oldSize.height());
                     afterFrames([=]() {
-                        check(g->glErrorCount() == 0, QStringLiteral("回放后 OpenGL 错误数 %1").arg(g->glErrorCount()));
-                        finish();
+                        statusConsistent(QStringLiteral("窗口宽 %1").arg(w->width()));
+                        check(sb->width() <= w->width(), QStringLiteral("状态栏宽 %1 不超过窗口宽 %2").arg(sb->width()).arg(w->width()));
+                        w->resize(oldSize);
+                        afterFrames([=]() {
+                            check(g->glErrorCount() == 0, QStringLiteral("回放后 OpenGL 错误数 %1").arg(g->glErrorCount()));
+                            finish();
+                        });
                     });
                 });
             });
@@ -357,6 +424,10 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                 sendMouse(QEvent::MouseButtonPress, sp, Qt::LeftButton);
                 sendMouse(QEvent::MouseButtonRelease, sp, Qt::LeftButton);
                 afterFrames([=]() {
+                    if (hit < 0) {               // 前面已记 FAIL；没有命中就不再往下测，避免越界
+                        finish();
+                        return;
+                    }
                     const Track &ht = store->tracks()[hit];
                     check(w->isolatedTrack() == hit && layer->visibleTrackCount() == 1,
                           QStringLiteral("单击后单独显示 %1，可见端点 %2").arg(w->isolatedTrack()).arg(layer->visibleTrackCount()));
@@ -364,6 +435,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                           QStringLiteral("单独显示时回放范围为该航迹 %1 ~ %2")
                               .arg(formatBeijingTime(w->replay()->start()), formatBeijingTime(w->replay()->end())));
                     check(g->trackAt(sp) == hit, QStringLiteral("单独显示时只能拾取到该航迹"));
+                    statusConsistent(QStringLiteral("单独显示"));
 
                     // 点迹表 + CSV 导出
                     QDialog *dlg = w->showTrackPoints(hit);
@@ -449,19 +521,39 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             check(perPick < 30.0, QStringLiteral("全视野拾取平均 %1 ms").arg(perPick, 0, 'f', 2));
         }
 
-        // 隐藏 ADS-B 文件组后，可见端点应只剩雷达两组
-        const QString adsbKey = QStringLiteral("ADS-B::") + QFileInfo(csv).fileName();
-        layer->setGroupVisible(adsbKey, false);
-        g->update();
+        // 状态栏数据源项：ADS-B 整体一项，雷达 / 原始量测按文件各一项（与 RadarView 一致）
+        const QStringList expectSources = { QStringLiteral("ADS-B:2900"), QStringLiteral("Radar:311"), QStringLiteral("RadarRaw:311") };
+        check(sb->sourceTexts() == expectSources && sb->trackCountText() == QStringLiteral("航迹: 3522"),
+              QStringLiteral("状态栏数据源 %1 | %2").arg(sb->sourceTexts().join(QLatin1Char(' ')), sb->trackCountText()));
+        check(sb->errorText().isEmpty(), QStringLiteral("没有错误提示"));
+
+        // 点击状态栏 ADS-B 项隐藏，可见端点应只剩雷达两组；再点一次恢复
+        sb->clickSource(0);
         afterFrames([=]() {
-            check(layer->visibleTrackCount() == 622,
-                  QStringLiteral("隐藏 ADS-B 后可见端点 %1（期望 622）").arg(layer->visibleTrackCount()));
-            layer->setGroupVisible(adsbKey, true);
-            g->update();
+            check(layer->visibleTrackCount() == 622 && sb->sourceTexts().value(0) == QStringLiteral("off ADS-B:2900"),
+                  QStringLiteral("点击状态栏隐藏 ADS-B 后可见端点 %1（期望 622），%2")
+                      .arg(layer->visibleTrackCount()).arg(sb->sourceTexts().value(0)));
+            sb->clickSource(1);
             afterFrames([=]() {
-                check(layer->visibleTrackCount() == store->size(),
-                      QStringLiteral("恢复显示后可见端点 %1").arg(layer->visibleTrackCount()));
-                testInteraction();
+                check(layer->visibleTrackCount() == 311, QStringLiteral("再隐藏 Radar 后可见端点 %1（期望 311）").arg(layer->visibleTrackCount()));
+                sb->clickSource(0);
+                sb->clickSource(1);
+                afterFrames([=]() {
+                    check(layer->visibleTrackCount() == store->size() && sb->sourceTexts() == expectSources,
+                          QStringLiteral("恢复显示后可见端点 %1").arg(layer->visibleTrackCount()));
+                    // 主题循环 dark -> light -> hc -> dark
+                    const QString t0 = sb->theme().id;
+                    sb->clickTheme();
+                    const QString t1 = sb->theme().id;
+                    sb->clickTheme();
+                    const QString t2 = sb->theme().id;
+                    sb->clickTheme();
+                    const QStringList order = { QStringLiteral("dark"), QStringLiteral("light"), QStringLiteral("hc") };
+                    const int i0 = order.indexOf(t0);
+                    check(i0 >= 0 && t1 == order[(i0 + 1) % 3] && t2 == order[(i0 + 2) % 3] && sb->theme().id == t0,
+                          QStringLiteral("主题切换 %1 -> %2 -> %3 -> %4").arg(t0, t1, t2, sb->theme().id));
+                    testInteraction();
+                });
             });
         });
     };
@@ -474,10 +566,14 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
         }
         const Job &j = jobs->at(*step);
         w->importFile(j.kind, j.path);
+        check(sb->isLoadingShown(), QStringLiteral("导入 %1 时显示进度").arg(trackSourceName(j.kind)));
+        statusConsistent(QStringLiteral("导入中"));
     };
     *conn = QObject::connect(w, &MainWindow::importFinished, w, [=](bool ok, const QString &msg) {
         const Job &j = jobs->at(*step);
         check(ok, QStringLiteral("导入 %1：%2").arg(trackSourceName(j.kind), msg));
+        check(!sb->isLoadingShown(), QStringLiteral("导入完成后隐藏进度"));
+        statusConsistent(QStringLiteral("导入 %1 后").arg(trackSourceName(j.kind)));
         ++*step;
         QTimer::singleShot(0, *runNext);
     });

@@ -11,6 +11,8 @@
 #include <QHash>
 #include <QSet>
 #include <QPoint>
+#include <QElapsedTimer>
+#include <QTimer>
 #include <memory>
 
 #include "tilesource.h"
@@ -56,9 +58,11 @@ public:
     quint64 frameCount() const { return m_frame; }
     bool isGlReady() const { return m_prog != nullptr && m_trackLayer.isReady(); }
     double altitudeKm() const;
+    int fps() const;                  // 与 RadarView setupFpsTracking 相同的平滑帧率
 
 signals:
-    void statusChanged(const QString &text);
+    // 状态栏：相机离地高度（km）、鼠标经纬度（度，不在地球上时为 0）、帧率（0 表示暂无）
+    void viewStatusChanged(double heightKm, double lonDeg, double latDeg, int fps);
     void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
     void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
 
@@ -87,6 +91,7 @@ private:
     bool pick(const QPointF &pos, double *lon, double *lat);
     void drawPatch(const QVector4D &range);
     void emitStatus();
+    void trackFps();
     void updateHover(const QPoint &pos, const QPoint &globalPos);
     QString trackTooltip(int index) const;
 
@@ -125,7 +130,13 @@ private:
     QPoint m_pressPos;
     bool m_clickCandidate = false;   // 按下后移动不超过几个像素，松开时算单击
     bool m_cursorValid = false;
-    double m_cursorLon = 0.0, m_cursorLat = 0.0;
+    double m_cursorLon = 0.0, m_cursorLat = 0.0;   // 弧度
+
+    QTimer m_statusTimer;              // 状态合并发送，避免在 paintGL 里改动其他控件
+    QElapsedTimer m_fpsClock;
+    qint64 m_fpsLastSample = -1;
+    int m_fpsFrames = 0;
+    double m_fpsSmoothed = 0.0;
 };
 
 #endif // GLOBEWIDGET_H

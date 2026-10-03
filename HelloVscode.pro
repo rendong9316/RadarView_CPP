@@ -18,7 +18,7 @@ SOURCES += \
     tracklayer.cpp \
     trackimporter.cpp \
     replaycontroller.cpp \
-    replaybar.cpp \
+    appstatusbar.cpp \
     trackpointdialog.cpp
 
 HEADERS += \
@@ -31,7 +31,7 @@ HEADERS += \
     tracklayer.h \
     trackimporter.h \
     replaycontroller.h \
-    replaybar.h \
+    appstatusbar.h \
     trackpointdialog.h \
     geo.h
 

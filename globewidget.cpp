@@ -122,13 +122,6 @@ void tileBounds(int z, int x, int y, QVector3D *center, float *radius)
     *radius = rad * 1.05f + 1e-4f;
 }
 
-QString formatDeg(double rad, const char *pos, const char *neg)
-{
-    const double deg = qRadiansToDegrees(rad);
-    return QStringLiteral("%1°%2").arg(std::fabs(deg), 0, 'f', 4)
-                                  .arg(QLatin1String(deg >= 0 ? pos : neg));
-}
-
 } // namespace
 
 GlobeWidget::GlobeWidget(QWidget *parent)
@@ -139,6 +132,14 @@ GlobeWidget::GlobeWidget(QWidget *parent)
 {
     setMouseTracking(true);
     setMinimumSize(200, 200);
+    m_fpsClock.start();
+    m_statusTimer.setSingleShot(true);
+    m_statusTimer.setInterval(0);
+    connect(&m_statusTimer, &QTimer::timeout, this, [this]() {
+        emit viewStatusChanged(m_alt * kEarthRadiusKm,
+                               m_cursorValid ? qRadiansToDegrees(m_cursorLon) : 0.0,
+                               m_cursorValid ? qRadiansToDegrees(m_cursorLat) : 0.0, fps());
+    });
     m_camLon = qDegreesToRadians(105.0);
     m_camLat = qDegreesToRadians(35.0);
 }
@@ -657,6 +658,7 @@ void GlobeWidget::paintGL()
     m_lastDrawn = tiles.size();
     m_lastMaxZ = maxZ;
     evictTextures();
+    trackFps();
     emitStatus();
     if (m_pending > 0)
         update();
@@ -749,6 +751,8 @@ void GlobeWidget::contextMenuEvent(QContextMenuEvent *e)
 void GlobeWidget::leaveEvent(QEvent *e)
 {
     QOpenGLWidget::leaveEvent(e);
+    m_cursorValid = false;     // 与 RadarView 一致：鼠标离开地图后经纬度归零
+    emitStatus();
     if (m_trackLayer.hoveredTrack() >= 0) {
         m_trackLayer.setHoveredTrack(-1);
         QToolTip::hideText();
@@ -804,14 +808,40 @@ void GlobeWidget::wheelEvent(QWheelEvent *e)
     e->accept();
 }
 
+// 只排队：真正的信号在事件循环下一轮发出。paintGL 里会调到这里，绘制过程中直接改状态栏文字
+// 会触发其他控件的重绘和重新布局，可能让 QOpenGLWidget 的合成拖慢甚至错过更新
 void GlobeWidget::emitStatus()
 {
-    QString s = m_tiles ? tr("瓦片：%1").arg(m_tiles->name()) : tr("未加载瓦片");
-    const int z = m_tiles ? qMin(m_lastMaxZ, m_tiles->maxZoom()) : 0;
-    s += tr("  |  层级 %1").arg(z);
-    s += tr("  |  视点高度 %1 km").arg(m_alt * kEarthRadiusKm, 0, 'f', 0);
-    if (m_cursorValid)
-        s += QStringLiteral("  |  %1, %2").arg(formatDeg(m_cursorLon, "E", "W"),
-                                                formatDeg(m_cursorLat, "N", "S"));
-    emit statusChanged(s);
+    if (!m_statusTimer.isActive())
+        m_statusTimer.start();
+}
+
+int GlobeWidget::fps() const
+{
+    return int(std::lround(m_fpsSmoothed));
+}
+
+// 与 RadarView viewerCore.ts setupFpsTracking 相同：每 500 ms（且至少 5 帧）采样一次，
+// 与上次结果对半平滑；超过 1.5 s 没有新帧（画面静止）则归零，状态栏显示 "--"
+void GlobeWidget::trackFps()
+{
+    const qint64 now = m_fpsClock.elapsed();
+    if (m_fpsLastSample < 0) {
+        m_fpsLastSample = now;
+        m_fpsFrames = 1;
+        return;
+    }
+    ++m_fpsFrames;
+    const qint64 elapsed = now - m_fpsLastSample;
+    if (elapsed >= 500 && m_fpsFrames >= 5) {
+        const double instant = m_fpsFrames / (elapsed / 1000.0);
+        m_fpsSmoothed = m_fpsSmoothed == 0.0 ? instant : m_fpsSmoothed * 0.5 + instant * 0.5;
+        m_fpsFrames = 0;
+        m_fpsLastSample = now;
+    }
+    if (elapsed > 1500) {
+        m_fpsSmoothed = 0.0;
+        m_fpsFrames = 0;
+        m_fpsLastSample = now;
+    }
 }

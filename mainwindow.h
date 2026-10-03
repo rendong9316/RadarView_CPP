@@ -15,10 +15,9 @@ class SidePanel;
 class GlobeWidget;
 class QSplitter;
 class QStackedWidget;
-class QProgressBar;
 class TrackImporter;
 class ReplayController;
-class ReplayBar;
+class AppStatusBar;
 class QDialog;
 
 // 左侧活动栏（Activity Bar）：竖排 5 个图标，点击展开/收起右侧侧栏
@@ -71,6 +70,7 @@ public:
     int isolatedTrack() const;
     // 打开「查看点迹数据」窗口（非模态），返回窗口指针
     QDialog *showTrackPoints(int index);
+    AppStatusBar *appStatusBar() const { return m_statusBar; }
 
 signals:
     void importFinished(bool ok, const QString &message);
@@ -92,20 +92,21 @@ private:
     QSplitter     *m_splitter;
     QStackedWidget *m_editor;
     GlobeWidget   *m_globe = nullptr;
-    QLabel        *m_globeStatus = nullptr;
 
     TrackStore     m_store;
     TrackImporter *m_importer = nullptr;
-    QProgressBar  *m_importProgress = nullptr;
-    QLabel        *m_trackCount = nullptr;
     QList<QAction *> m_importActions;
     ReplayController *m_replay = nullptr;
-    ReplayBar     *m_replayBar = nullptr;
+    AppStatusBar  *m_statusBar = nullptr;   // 底部状态栏（逐项对应 RadarView StatusBar.vue）
+    bool           m_adsbVisible = true;    // ADS-B 整体显隐（雷达按文件单独控制）
     QPushButton   *m_backAllBtn = nullptr;   // 单独显示时地图顶部的「← 返回全部」
 
     bool eventFilter(QObject *obj, QEvent *e) override;
     void placeBackAllButton();
     void resetReplayRange();
+    void refreshSources();                  // 状态栏数据源项与航迹数
+    void toggleSource(const QString &key);
+    void applyAdsbVisibility();
 
     void syncReplayToLayer();
 };
