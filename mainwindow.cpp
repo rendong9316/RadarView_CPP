@@ -18,6 +18,8 @@
 #include <QFileInfo>
 #include <QProgressBar>
 #include <QKeySequence>
+#include <QEvent>
+#include <QDialog>
 #include <QtMath>
 #include <cmath>
 
@@ -26,6 +28,7 @@
 #include "replaycontroller.h"
 #include "replaybar.h"
 #include "tracklayer.h"
+#include "trackpointdialog.h"
 
 // ---------------------------------------------------------------
 //  左侧活动栏：竖排 5 个图标
@@ -198,6 +201,33 @@ MainWindow::MainWindow(QWidget *parent)
     connect(aPlay, &QAction::triggered, m_replay, &ReplayController::togglePlay);
     addAction(aPlay);
 
+    // 地图交互：单击航迹单独显示，单击空白处返回全部；右键菜单
+    connect(m_globe, &GlobeWidget::trackClicked, this, [this](int index) {
+        if (index >= 0)
+            isolateTrack(index);
+        else if (isolatedTrack() >= 0)
+            isolateTrack(-1);
+    });
+    connect(m_globe, &GlobeWidget::trackContextMenuRequested, this, &MainWindow::onTrackContextMenu);
+    m_backAllBtn = new QPushButton(tr("← 返回全部"), m_globe);
+    m_backAllBtn->setToolTip(tr("返回查看全部航迹（Esc）"));
+    m_backAllBtn->setCursor(Qt::PointingHandCursor);
+    m_backAllBtn->setStyleSheet(
+        "QPushButton { background-color: #0078d4; color: #ffffff; border: none; border-radius: 2px;"
+        " padding: 4px 12px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #1a8ae0; }");
+    m_backAllBtn->hide();
+    connect(m_backAllBtn, &QPushButton::clicked, this, [this]() { isolateTrack(-1); });
+    m_globe->installEventFilter(this);
+    QAction *aBackAll = new QAction(tr("返回全部"), this);
+    aBackAll->setShortcut(Qt::Key_Escape);
+    aBackAll->setShortcutContext(Qt::WindowShortcut);
+    connect(aBackAll, &QAction::triggered, this, [this]() {
+        if (isolatedTrack() >= 0)
+            isolateTrack(-1);
+    });
+    addAction(aBackAll);
+
     statusBar()->showMessage(tr("就绪"), 3000);
 
     resize(1280, 800);
@@ -286,7 +316,7 @@ void MainWindow::onImportDone()
                   .arg(QFileInfo(imp->path()).fileName()).arg(added)
                   .arg(m_store.size()).arg(m_store.pointCount()).arg(imp->elapsedMs());
         m_trackCount->setText(tr("航迹: %1").arg(m_store.size()));
-        m_replay->setRange(m_store.minTime(), m_store.maxTime());
+        resetReplayRange();
         statusBar()->showMessage(msg, 8000);
         // 第一次导入时把视角移到数据中心
         if (firstData && m_store.size() > before) {
@@ -310,6 +340,85 @@ void MainWindow::onImportDone()
     }
     imp->deleteLater();
     emit importFinished(ok, msg);
+}
+
+int MainWindow::isolatedTrack() const
+{
+    return m_globe->trackLayer()->isolatedTrack();
+}
+
+// 回放范围：单独显示时为该航迹的时间段，否则为全部数据（与 RadarView 一致）
+void MainWindow::resetReplayRange()
+{
+    const int iso = isolatedTrack();
+    if (iso >= 0 && iso < m_store.size())
+        m_replay->setRange(m_store.tracks()[iso].minTime(), m_store.tracks()[iso].maxTime());
+    else
+        m_replay->setRange(m_store.minTime(), m_store.maxTime());
+}
+
+void MainWindow::isolateTrack(int index)
+{
+    if (index >= m_store.size())
+        index = -1;
+    if (index == isolatedTrack())
+        return;
+    m_globe->trackLayer()->setIsolatedTrack(index);
+    m_backAllBtn->setVisible(index >= 0);
+    if (index >= 0) {
+        const Track &t = m_store.tracks()[index];
+        m_backAllBtn->setText(tr("← 返回全部（单独显示：%1）").arg(t.flightNo.isEmpty() ? t.id : t.flightNo));
+        m_backAllBtn->adjustSize();
+        placeBackAllButton();
+        m_backAllBtn->raise();
+        statusBar()->showMessage(tr("单独显示 %1，单击空白处或按 Esc 返回全部").arg(t.flightNo.isEmpty() ? t.id : t.flightNo), 5000);
+    }
+    resetReplayRange();
+    m_globe->update();
+}
+
+void MainWindow::placeBackAllButton()
+{
+    m_backAllBtn->move((m_globe->width() - m_backAllBtn->width()) / 2, 8);
+}
+
+bool MainWindow::eventFilter(QObject *obj, QEvent *e)
+{
+    if (obj == m_globe && e->type() == QEvent::Resize)
+        placeBackAllButton();
+    return QMainWindow::eventFilter(obj, e);
+}
+
+QDialog *MainWindow::showTrackPoints(int index)
+{
+    if (index < 0 || index >= m_store.size())
+        return nullptr;
+    TrackPointDialog *dlg = new TrackPointDialog(m_store.tracks()[index], this);
+    dlg->show();
+    return dlg;
+}
+
+void MainWindow::onTrackContextMenu(int index, const QPoint &globalPos)
+{
+    QMenu menu(this);
+    if (index >= 0) {
+        const Track &t = m_store.tracks()[index];
+        QAction *title = menu.addAction(t.flightNo.isEmpty() ? t.id : t.flightNo);
+        title->setEnabled(false);
+        menu.addSeparator();
+        QAction *aPoints = menu.addAction(tr("查看点迹数据"));
+        connect(aPoints, &QAction::triggered, this, [this, index]() { showTrackPoints(index); });
+        if (isolatedTrack() != index) {
+            QAction *aIso = menu.addAction(tr("单独显示该航迹"));
+            connect(aIso, &QAction::triggered, this, [this, index]() { isolateTrack(index); });
+        }
+    }
+    if (isolatedTrack() >= 0) {
+        QAction *aBack = menu.addAction(tr("← 返回全部"));
+        connect(aBack, &QAction::triggered, this, [this]() { isolateTrack(-1); });
+    }
+    if (!menu.isEmpty())
+        menu.exec(globalPos);
 }
 
 void MainWindow::syncReplayToLayer()
@@ -351,7 +460,9 @@ void MainWindow::buildMenuBar()
     connect(aClearTracks, &QAction::triggered, this, [this]() {
         if (m_importer)
             return;
+        isolateTrack(-1);
         m_store.clear();
+        m_globe->trackLayer()->setHoveredTrack(-1);
         m_replay->setRange(0, 0);
         m_trackCount->setText(tr("航迹: 0"));
         m_globe->update();

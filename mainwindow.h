@@ -19,6 +19,7 @@ class QProgressBar;
 class TrackImporter;
 class ReplayController;
 class ReplayBar;
+class QDialog;
 
 // 左侧活动栏（Activity Bar）：竖排 5 个图标，点击展开/收起右侧侧栏
 class ActivityBar : public QWidget
@@ -65,6 +66,12 @@ public:
     TrackStore *trackStore() { return &m_store; }
     ReplayController *replay() const { return m_replay; }
 
+    // 单独显示某条航迹（TrackStore 下标），-1 返回全部；回放范围随之切换
+    void isolateTrack(int index);
+    int isolatedTrack() const;
+    // 打开「查看点迹数据」窗口（非模态），返回窗口指针
+    QDialog *showTrackPoints(int index);
+
 signals:
     void importFinished(bool ok, const QString &message);
 
@@ -74,6 +81,7 @@ private slots:
     void toggleSidePanel();
     void openTileFile();
     void onImportDone();
+    void onTrackContextMenu(int index, const QPoint &globalPos);
 
 private:
     void buildMenuBar();
@@ -93,6 +101,11 @@ private:
     QList<QAction *> m_importActions;
     ReplayController *m_replay = nullptr;
     ReplayBar     *m_replayBar = nullptr;
+    QPushButton   *m_backAllBtn = nullptr;   // 单独显示时地图顶部的「← 返回全部」
+
+    bool eventFilter(QObject *obj, QEvent *e) override;
+    void placeBackAllButton();
+    void resetReplayRange();
 
     void syncReplayToLayer();
 };

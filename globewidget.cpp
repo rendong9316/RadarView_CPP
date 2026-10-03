@@ -1,9 +1,12 @@
 #include "globewidget.h"
+#include "track.h"
 
 #include <QOpenGLShaderProgram>
 #include <QOpenGLContext>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QContextMenuEvent>
+#include <QToolTip>
 #include <QImage>
 #include <QtMath>
 #include <algorithm>
@@ -21,6 +24,8 @@ const double kMaxAlt = 8.0;
 const float kRefinePx = 300.0f;                    // 瓦片投影尺寸超过此像素数就细分
 const int kLoadPerFrame = 8;                       // 每帧最多解码的瓦片数，避免卡顿
 const int kMaxTextures = 256;
+const float kPickTolPx = 6.0f;                     // 鼠标离航迹多近算命中
+const int kClickSlopPx = 4;                        // 按下到松开移动不超过它算单击
 
 // 椭球长半轴归一化为 1；顶点位置在着色器里由经纬度算出，所有瓦片共用一套网格
 const char *const kVertexSrc = R"(
@@ -213,6 +218,23 @@ bool GlobeWidget::geoAt(const QPointF &pos, double *lonDeg, double *latDeg)
     *lonDeg = qRadiansToDegrees(lon);
     *latDeg = qRadiansToDegrees(lat);
     return true;
+}
+
+bool GlobeWidget::screenPos(double lonDeg, double latDeg, double altM, QPointF *pos)
+{
+    updateMatrices();
+    const QVector4D c = m_mvp * QVector4D(ecef(qDegreesToRadians(lonDeg), qDegreesToRadians(latDeg),
+                                               altM / (kEarthRadiusKm * 1000.0)), 1.0f);
+    if (c.w() < 1e-6f)
+        return false;
+    *pos = QPointF((c.x() / c.w() + 1.0) * 0.5 * width(), (1.0 - c.y() / c.w()) * 0.5 * height());
+    return true;
+}
+
+int GlobeWidget::trackAt(const QPointF &pos)
+{
+    updateMatrices();
+    return m_trackLayer.pick(m_mvp, m_eye, QSizeF(width(), height()), pos, kPickTolPx);
 }
 
 void GlobeWidget::lookAt(double lonDeg, double latDeg, double altKm)
@@ -678,16 +700,26 @@ void GlobeWidget::mousePressEvent(QMouseEvent *e)
 {
     if (e->button() == Qt::LeftButton) {
         m_dragging = true;
-        m_lastPos = e->pos();
-        setCursor(Qt::ClosedHandCursor);
+        m_clickCandidate = true;
+        m_lastPos = m_pressPos = e->pos();
     }
 }
 
 void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
 {
     if (m_dragging) {
-        panPixels(m_lastPos, e->pos());
-        m_lastPos = e->pos();
+        if (m_clickCandidate && (e->pos() - m_pressPos).manhattanLength() > kClickSlopPx) {
+            m_clickCandidate = false;
+            setCursor(Qt::ClosedHandCursor);
+            QToolTip::hideText();
+            m_trackLayer.setHoveredTrack(-1);
+        }
+        if (!m_clickCandidate) {
+            panPixels(m_lastPos, e->pos());
+            m_lastPos = e->pos();
+        }
+    } else {
+        updateHover(e->pos(), e->globalPos());
     }
     updateMatrices();
     m_cursorValid = pick(e->pos(), &m_cursorLon, &m_cursorLat);
@@ -696,10 +728,74 @@ void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
 
 void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
 {
-    if (e->button() == Qt::LeftButton) {
-        m_dragging = false;
+    if (e->button() != Qt::LeftButton)
+        return;
+    const bool click = m_clickCandidate;
+    m_dragging = false;
+    m_clickCandidate = false;
+    unsetCursor();
+    if (click)
+        emit trackClicked(trackAt(e->pos()));
+    updateHover(e->pos(), e->globalPos());
+}
+
+void GlobeWidget::contextMenuEvent(QContextMenuEvent *e)
+{
+    QToolTip::hideText();
+    emit trackContextMenuRequested(trackAt(e->pos()), e->globalPos());
+    e->accept();
+}
+
+void GlobeWidget::leaveEvent(QEvent *e)
+{
+    QOpenGLWidget::leaveEvent(e);
+    if (m_trackLayer.hoveredTrack() >= 0) {
+        m_trackLayer.setHoveredTrack(-1);
+        QToolTip::hideText();
         unsetCursor();
+        update();
     }
+}
+
+// 悬停：红色高亮 + 提示框（航班号、来源、点数、时间范围）
+void GlobeWidget::updateHover(const QPoint &pos, const QPoint &globalPos)
+{
+    const int idx = trackAt(pos);
+    if (idx == m_trackLayer.hoveredTrack()) {
+        if (idx >= 0)
+            QToolTip::showText(globalPos, trackTooltip(idx), this);   // 跟随鼠标
+        return;
+    }
+    m_trackLayer.setHoveredTrack(idx);
+    if (idx >= 0) {
+        setCursor(Qt::PointingHandCursor);
+        QToolTip::showText(globalPos, trackTooltip(idx), this);
+    } else {
+        unsetCursor();
+        QToolTip::hideText();
+    }
+    update();
+}
+
+QString GlobeWidget::trackTooltip(int index) const
+{
+    if (!m_trackStore || index < 0 || index >= m_trackStore->size())
+        return QString();
+    const Track &t = m_trackStore->tracks().at(index);
+    QString title = t.flightNo.isEmpty() ? t.id : t.flightNo;
+    QStringList lines;
+    lines << QStringLiteral("<b>%1</b>").arg(title.toHtmlEscaped());
+    if (!t.flightNo.isEmpty() && t.flightNo != t.id)
+        lines << tr("ICAO：%1").arg(t.id.toHtmlEscaped());
+    lines << tr("来源：%1（%2）").arg(trackSourceName(t.source), t.fileName.toHtmlEscaped());
+    if (!t.aircraftType.isEmpty())
+        lines << tr("机型：%1").arg(t.aircraftType.toHtmlEscaped());
+    if (!t.origin.isEmpty() || !t.destination.isEmpty())
+        lines << tr("航线：%1 → %2").arg(t.origin.toHtmlEscaped(), t.destination.toHtmlEscaped());
+    lines << tr("点数：%1").arg(t.points.size());
+    lines << tr("时间：%1 ~ %2").arg(formatBeijingTime(t.minTime()), formatBeijingTime(t.maxTime()));
+    return QStringLiteral("<qt style='white-space:pre'>") + lines.join(QStringLiteral("<br>"))
+         + QStringLiteral("</qt>");
 }
 
 void GlobeWidget::wheelEvent(QWheelEvent *e)

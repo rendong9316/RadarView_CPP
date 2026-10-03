@@ -14,6 +14,10 @@
 #include "trackparsers.h"
 #include "tracklayer.h"
 #include "replaycontroller.h"
+#include "trackpointdialog.h"
+
+#include <QMouseEvent>
+#include <QDialog>
 
 #include <QFileInfo>
 #include <QDir>
@@ -21,6 +25,27 @@
 #include <memory>
 
 namespace {
+
+// 自检用：丢掉来自窗口系统的鼠标事件，只保留测试代码发出的。
+// Enter/Leave 由 QApplication 转发时不是 spontaneous，所以一律拦下，只放行 allowed 指向的那个
+class RealMouseBlocker : public QObject
+{
+public:
+    using QObject::QObject;
+    QEvent *allowed = nullptr;
+    bool eventFilter(QObject *, QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::Enter: case QEvent::Leave:
+            return e != allowed;
+        case QEvent::MouseMove: case QEvent::MouseButtonPress: case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick: case QEvent::ContextMenu: case QEvent::Wheel:
+            return e->spontaneous();
+        default:
+            return false;
+        }
+    }
+};
 
 // 解析自检：HelloVscode.exe --parsetest <adsb.csv> <radar.mat>
 // 输出各数据源的航迹数、点数、时间范围和首尾点，写到 exe 旁 parsetest.log
@@ -290,6 +315,111 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
         });
     };
 
+    // 地图交互：拾取、悬停高亮、单击单独显示 / 单击空白返回、点迹表与导出。
+    // 自检期间屏蔽真实鼠标（spontaneous 事件），否则桌面上鼠标的实际位置会触发 Leave/Move 干扰结果
+    RealMouseBlocker *blocker = new RealMouseBlocker(g);
+    g->installEventFilter(blocker);
+    auto sendMouse = [g](QEvent::Type type, const QPointF &pos, Qt::MouseButton button) {
+        const Qt::MouseButtons buttons = type == QEvent::MouseButtonPress ? Qt::MouseButtons(button) : Qt::NoButton;
+        QMouseEvent ev(type, pos, g->mapToGlobal(pos.toPoint()), button, buttons, Qt::NoModifier);
+        QCoreApplication::sendEvent(g, &ev);
+    };
+    auto testInteraction = [=]() {
+        TrackLayer *layer = g->trackLayer();
+        // 选一条点数较多的 ADS-B 航迹，镜头对准它的中间点
+        int ti = -1;
+        for (int i = 0; i < store->size() && ti < 0; ++i)
+            if (store->tracks()[i].source == TrackSource::Adsb && store->tracks()[i].points.size() >= 100)
+                ti = i;
+        check(ti >= 0, QStringLiteral("找到测试航迹 %1").arg(ti));
+        if (ti < 0) {
+            finish();
+            return;
+        }
+        const Track &t = store->tracks()[ti];
+        const TrackPoint mid = t.points[t.points.size() / 2];
+        g->lookAt(mid.lon, mid.lat, 300.0);
+        afterFrames([=]() {
+            QPointF sp;
+            const bool onScreen = g->screenPos(mid.lon, mid.lat, TrackLayer::kAltitudeM, &sp);
+            const QPointF center(g->width() / 2.0, g->height() / 2.0);
+            check(onScreen && (sp - center).manhattanLength() < 4.0,
+                  QStringLiteral("航迹点投影到屏幕中心 (%1, %2)").arg(sp.x(), 0, 'f', 1).arg(sp.y(), 0, 'f', 1));
+            const int hit = g->trackAt(sp);
+            check(hit >= 0, QStringLiteral("中心点拾取到航迹 %1").arg(hit));
+
+            // 悬停：移动鼠标到航迹上，下一帧应画出高亮
+            sendMouse(QEvent::MouseMove, sp, Qt::NoButton);
+            afterFrames([=]() {
+                check(layer->hoveredTrack() == hit && layer->hoverDrawn(),
+                      QStringLiteral("悬停高亮 hovered=%1 drawn=%2").arg(layer->hoveredTrack()).arg(layer->hoverDrawn()));
+                // 单击：单独显示
+                sendMouse(QEvent::MouseButtonPress, sp, Qt::LeftButton);
+                sendMouse(QEvent::MouseButtonRelease, sp, Qt::LeftButton);
+                afterFrames([=]() {
+                    const Track &ht = store->tracks()[hit];
+                    check(w->isolatedTrack() == hit && layer->visibleTrackCount() == 1,
+                          QStringLiteral("单击后单独显示 %1，可见端点 %2").arg(w->isolatedTrack()).arg(layer->visibleTrackCount()));
+                    check(w->replay()->start() == ht.minTime() && w->replay()->end() == ht.maxTime(),
+                          QStringLiteral("单独显示时回放范围为该航迹 %1 ~ %2")
+                              .arg(formatBeijingTime(w->replay()->start()), formatBeijingTime(w->replay()->end())));
+                    check(g->trackAt(sp) == hit, QStringLiteral("单独显示时只能拾取到该航迹"));
+
+                    // 点迹表 + CSV 导出
+                    QDialog *dlg = w->showTrackPoints(hit);
+                    TrackPointDialog *pd = qobject_cast<TrackPointDialog *>(dlg);
+                    check(pd && pd->rowCount() == ht.points.size(),
+                          QStringLiteral("点迹表行数 %1（期望 %2）").arg(pd ? pd->rowCount() : -1).arg(ht.points.size()));
+                    const QString csvOut = QCoreApplication::applicationDirPath() + QStringLiteral("/points_export_test.csv");
+                    QString err;
+                    const bool exported = pd && pd->exportCsv(csvOut, &err);
+                    QFile f(csvOut);
+                    int lines = 0;
+                    bool bom = false;
+                    if (exported && f.open(QIODevice::ReadOnly)) {
+                        const QByteArray all = f.readAll();
+                        bom = all.startsWith("\xEF\xBB\xBF");
+                        lines = all.count('\n');
+                        f.close();
+                    }
+                    QFile::remove(csvOut);
+                    check(exported && bom && lines == ht.points.size() + 1,
+                          QStringLiteral("导出 CSV：%1 行（期望 %2），BOM=%3 %4")
+                              .arg(lines).arg(ht.points.size() + 1).arg(bom).arg(err));
+                    if (dlg)
+                        dlg->close();
+
+                    // 单击空白处（屏幕外缘远离该航迹的位置）返回全部
+                    QPointF empty(4, 4);
+                    for (const QPointF &c : { QPointF(4, 4), QPointF(g->width() - 4.0, 4), QPointF(4, g->height() - 4.0) })
+                        if (g->trackAt(c) < 0) {
+                            empty = c;
+                            break;
+                        }
+                    sendMouse(QEvent::MouseButtonPress, empty, Qt::LeftButton);
+                    sendMouse(QEvent::MouseButtonRelease, empty, Qt::LeftButton);
+                    // 鼠标离开地图：悬停应取消（返回全部后 empty 处可能正好压着别的航迹，所以用 Leave 测）
+                    QEvent leave(QEvent::Leave);
+                    blocker->allowed = &leave;
+                    QCoreApplication::sendEvent(g, &leave);
+                    blocker->allowed = nullptr;
+                    afterFrames([=]() {
+                        check(w->isolatedTrack() < 0 && layer->visibleTrackCount() == store->size(),
+                              QStringLiteral("单击空白处返回全部，可见端点 %1").arg(layer->visibleTrackCount()));
+                        check(layer->hoveredTrack() < 0, QStringLiteral("移开后取消悬停"));
+                        // 拖动不应触发单击
+                        sendMouse(QEvent::MouseButtonPress, sp, Qt::LeftButton);
+                        sendMouse(QEvent::MouseMove, sp + QPointF(60, 0), Qt::NoButton);
+                        sendMouse(QEvent::MouseButtonRelease, sp + QPointF(60, 0), Qt::LeftButton);
+                        check(w->isolatedTrack() < 0, QStringLiteral("拖动不触发单独显示"));
+                        check(g->glErrorCount() == 0, QStringLiteral("交互后 OpenGL 错误数 %1").arg(g->glErrorCount()));
+                        testReplay();
+                    });
+                });
+            });
+        });
+    };
+
     auto verify = [=]() {
         TrackLayer *layer = g->trackLayer();
         st->out << "layer: segments=" << layer->segmentCount() << " visible=" << layer->visibleTrackCount()
@@ -308,6 +438,16 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
               QStringLiteral("已上传线段 %1（非重复线段 %2）").arg(layer->segmentCount()).arg(minSegs));
         check(layer->visibleTrackCount() == store->size(),
               QStringLiteral("可见端点 %1").arg(layer->visibleTrackCount()));
+        // 拾取耗时（全部航迹都在视野内时最慢；每次鼠标移动都会做一次）
+        {
+            QElapsedTimer pt;
+            pt.start();
+            const int n = 20;
+            for (int k = 0; k < n; ++k)
+                g->trackAt(QPointF(g->width() * (k + 1) / (n + 1.0), g->height() / 2.0));
+            const double perPick = pt.nsecsElapsed() / 1e6 / n;
+            check(perPick < 30.0, QStringLiteral("全视野拾取平均 %1 ms").arg(perPick, 0, 'f', 2));
+        }
 
         // 隐藏 ADS-B 文件组后，可见端点应只剩雷达两组
         const QString adsbKey = QStringLiteral("ADS-B::") + QFileInfo(csv).fileName();
@@ -321,7 +461,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             afterFrames([=]() {
                 check(layer->visibleTrackCount() == store->size(),
                       QStringLiteral("恢复显示后可见端点 %1").arg(layer->visibleTrackCount()));
-                testReplay();
+                testInteraction();
             });
         });
     };

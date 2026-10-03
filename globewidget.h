@@ -44,6 +44,10 @@ public:
 
     // 屏幕坐标 -> 经纬度（度），未落在地球上时返回 false
     bool geoAt(const QPointF &pos, double *lonDeg, double *latDeg);
+    // 经纬度（度）+ 高度（米）-> 屏幕坐标；在相机后方返回 false
+    bool screenPos(double lonDeg, double latDeg, double altM, QPointF *pos);
+    // 屏幕坐标处的航迹（TrackStore::tracks() 下标），没有返回 -1
+    int trackAt(const QPointF &pos);
     bool isLoading() const { return m_pending > 0; }
     int drawnMaxZoom() const { return m_lastMaxZ; }
     int tileMaxZoom() const { return m_tiles ? m_tiles->maxZoom() : -1; }
@@ -55,6 +59,8 @@ public:
 
 signals:
     void statusChanged(const QString &text);
+    void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
+    void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
 
 protected:
     void initializeGL() override;
@@ -63,6 +69,8 @@ protected:
     void mouseMoveEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
     void wheelEvent(QWheelEvent *e) override;
+    void contextMenuEvent(QContextMenuEvent *e) override;
+    void leaveEvent(QEvent *e) override;
 
 private:
     struct TileId { int z, x, y; };
@@ -79,6 +87,8 @@ private:
     bool pick(const QPointF &pos, double *lon, double *lat);
     void drawPatch(const QVector4D &range);
     void emitStatus();
+    void updateHover(const QPoint &pos, const QPoint &globalPos);
+    QString trackTooltip(int index) const;
 
     std::unique_ptr<TileSource> m_tiles;
     TrackLayer m_trackLayer;
@@ -112,6 +122,8 @@ private:
 
     bool m_dragging = false;
     QPoint m_lastPos;
+    QPoint m_pressPos;
+    bool m_clickCandidate = false;   // 按下后移动不超过几个像素，松开时算单击
     bool m_cursorValid = false;
     double m_cursorLon = 0.0, m_cursorLat = 0.0;
 };

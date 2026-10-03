@@ -18,7 +18,8 @@ SOURCES += \
     tracklayer.cpp \
     trackimporter.cpp \
     replaycontroller.cpp \
-    replaybar.cpp
+    replaybar.cpp \
+    trackpointdialog.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -31,6 +32,7 @@ HEADERS += \
     trackimporter.h \
     replaycontroller.h \
     replaybar.h \
+    trackpointdialog.h \
     geo.h
 
 # Windows 用 Qt5Core 内置并导出的 zlib；其他平台链接系统 zlib
