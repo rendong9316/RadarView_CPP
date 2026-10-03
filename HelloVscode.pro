@@ -35,3 +35,9 @@ HEADERS += \
 
 # Windows 用 Qt5Core 内置并导出的 zlib；其他平台链接系统 zlib
 unix: LIBS += -lz
+
+# ---- 兼容 RHEL 7.6 ----
+# 整包部署：程序优先从自身目录下的 lib/ 加载 Qt 库（配合 build_linux.sh 的打包布局）
+linux {
+    QMAKE_LFLAGS += -Wl,-rpath,"'\$$ORIGIN/lib'"
+}

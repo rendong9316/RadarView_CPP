@@ -16,6 +16,9 @@
 #include "replaycontroller.h"
 
 #include <QFileInfo>
+#include <QDir>
+#include <QFontDatabase>
+#include <memory>
 
 namespace {
 
@@ -341,11 +344,34 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
     QTimer::singleShot(200, *runNext);
 }
 
+// 加载 exe 旁 fonts/ 目录里的字体。Linux 上把它设为界面默认字体，保证中文能显示；
+// Windows 自带雅黑，只注册不替换
+void loadBundledFonts()
+{
+    const QDir dir(QCoreApplication::applicationDirPath() + QStringLiteral("/fonts"));
+    QStringList families;
+    const QFileInfoList files = dir.entryInfoList(
+        QStringList() << QStringLiteral("*.ttf") << QStringLiteral("*.ttc") << QStringLiteral("*.otf"), QDir::Files);
+    for (const QFileInfo &fi : files) {
+        const int id = QFontDatabase::addApplicationFont(fi.absoluteFilePath());
+        if (id >= 0)
+            families += QFontDatabase::applicationFontFamilies(id);
+    }
+#ifdef Q_OS_LINUX
+    if (!families.isEmpty()) {
+        QFont f = QApplication::font();
+        f.setFamily(families.first());
+        QApplication::setFont(f);
+    }
+#endif
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    loadBundledFonts();
     const QStringList args = app.arguments();
     const int pt = args.indexOf(QStringLiteral("--parsetest"));
     if (pt >= 0 && pt + 2 < args.size())

@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QMap>
 #include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -79,7 +80,7 @@ bool parseAdsbCsv(const QString &path, QVector<Track> *out, QString *error, cons
     const char *fs[19];
     int fl[19];
     while (p < end) {
-        const char *eol = static_cast<const char *>(memchr(p, '\n', size_t(end - p)));
+        const char *eol = static_cast<const char *>(std::memchr(p, '\n', size_t(end - p)));
         const char *lineEnd = eol ? eol : end;
         const char *next = eol ? eol + 1 : end;
         // 去掉行首尾空白（含 \r）

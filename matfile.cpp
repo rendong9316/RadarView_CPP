@@ -10,6 +10,9 @@
 #include <zlib.h>
 #endif
 
+// MAT 文件为小端；解析时直接按内存拷贝，仅支持小端主机（x86_64 / aarch64 / loongarch64 / mips64el 均是）
+static_assert(Q_BYTE_ORDER == Q_LITTLE_ENDIAN, "matfile.cpp 假定主机为小端字节序");
+
 namespace {
 
 // MAT v5 数据类型
@@ -19,7 +22,6 @@ enum {
     miCOMPRESSED = 15, miUTF8 = 16, miUTF16 = 17, miUTF32 = 18
 };
 
-// 文件为小端；x86/x86_64 主机直接按内存拷贝读取
 quint32 rd32(const char *p)
 {
     quint32 v;

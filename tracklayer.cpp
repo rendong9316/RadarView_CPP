@@ -3,6 +3,7 @@
 #include "geo.h"
 
 #include <QOpenGLShaderProgram>
+#include <QtMath>
 #include <algorithm>
 #include <cmath>
 

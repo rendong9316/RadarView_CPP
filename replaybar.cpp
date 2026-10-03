@@ -11,7 +11,7 @@
 #include <QSlider>
 #include <QStyle>
 #include <QStyleOptionSlider>
-#include <QDoubleValidator>
+#include <QFont>
 
 namespace {
 
@@ -67,7 +67,10 @@ ReplayBar::ReplayBar(ReplayController *ctrl, QWidget *parent)
     lay->addWidget(m_slider);
 
     m_time = new QLabel(this);
-    m_time->setStyleSheet(QStringLiteral("font-family: Consolas, 'Cascadia Code', monospace;"));
+    // Windows 上是 Consolas；Linux 上没有它，靠样式提示回退到 DejaVu Sans Mono 等系统等宽字体
+    QFont mono(QStringLiteral("Consolas"));
+    mono.setStyleHint(QFont::TypeWriter);
+    m_time->setFont(mono);
     lay->addWidget(m_time);
 
     m_speed = new QComboBox(this);
