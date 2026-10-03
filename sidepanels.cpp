@@ -56,7 +56,7 @@ class CheckBox : public QCheckBox
 public:
     explicit CheckBox(QWidget *parent) : QCheckBox(parent)
     {
-        setFixedSize(16, 16);
+        ui::bindSize(this, ui::SizeKind::Fixed, 16, 16);
         setCursor(Qt::PointingHandCursor);
         connect(Theme::instance(), &Theme::changed, this, [this]() { update(); });
     }
@@ -66,6 +66,7 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
+        p.scale(width() / 16.0, height() / 16.0);   // 按 16px 基准绘制，随字号缩放
         const QRectF box(1.5, 1.5, 13, 13);
         const bool on = isChecked();
         p.setPen(QPen(on ? themeColor("accent-primary") : themeColor("border-primary"), 1));
@@ -91,7 +92,7 @@ class Dot : public QWidget
 public:
     Dot(const char *colorVar, QWidget *parent) : QWidget(parent), m_var(colorVar)
     {
-        setFixedSize(8, 8);
+        ui::bindSize(this, ui::SizeKind::Fixed, 8, 8);
         connect(Theme::instance(), &Theme::changed, this, [this]() { update(); });
     }
 
@@ -312,7 +313,7 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
         row->addWidget(m_pcCheck[i]);
         QLabel *l = new QLabel(QLatin1String(labels[i]), this);
         l->setObjectName(QStringLiteral("pfLabel"));
-        l->setMinimumWidth(52);
+        ui::bindSize(l, ui::SizeKind::MinWidth, 52);
         row->addWidget(l);
         m_pcMin[i] = new QLineEdit(this);
         m_pcMax[i] = new QLineEdit(this);
@@ -324,7 +325,7 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
         dash->setObjectName(QStringLiteral("pfSep"));
         for (QLineEdit *e : { m_pcMin[i], m_pcMax[i] }) {
             e->setObjectName(QStringLiteral("pfInput"));
-            e->setFixedWidth(50);
+            ui::bindSize(e, ui::SizeKind::FixedWidth, 50);
             e->setValidator(new QIntValidator(0, 100000000, e));
         }
         row->addWidget(m_pcMin[i]);
@@ -772,7 +773,7 @@ void FlagPanel::rebuildFlags()
         h->addLayout(info, 1);
         ui::IconButton *del = new ui::IconButton(LucideIcon::X, 13, "error", "error", row);
         del->setToolTip(QStringLiteral("删除此旗标"));
-        del->setFixedSize(20, 20);
+        ui::bindSize(del, ui::SizeKind::Fixed, 20, 20);
         connect(del, &QToolButton::clicked, this, [this, id]() { m_flags->removeFlag(id); });
         h->addWidget(del);
         l->addWidget(row);
@@ -813,7 +814,7 @@ void FlagPanel::rebuildRuler()
         h->setSpacing(4);
         QLabel *idx = new QLabel(QString::number(i + 1), row);
         idx->setObjectName(QStringLiteral("rulerIndex"));
-        idx->setFixedSize(18, 18);
+        ui::bindSize(idx, ui::SizeKind::Fixed, 18, 18);
         idx->setAlignment(Qt::AlignCenter);
         h->addWidget(idx);
         QLabel *c = new QLabel(QStringLiteral("%1, %2").arg(w[i].lat, 0, 'f', 4).arg(w[i].lon, 0, 'f', 4), row);
@@ -821,7 +822,7 @@ void FlagPanel::rebuildRuler()
         h->addWidget(c, 1);
         ui::IconButton *del = new ui::IconButton(LucideIcon::X, 12, "error", "error", row);
         del->setToolTip(QStringLiteral("删除此航点"));
-        del->setFixedSize(18, 18);
+        ui::bindSize(del, ui::SizeKind::Fixed, 18, 18);
         const int id = w[i].id;
         connect(del, &QToolButton::clicked, this, [this, id]() { m_ruler->removeWaypoint(id); });
         h->addWidget(del);

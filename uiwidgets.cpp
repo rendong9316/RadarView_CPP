@@ -74,14 +74,14 @@ bool confirm(QWidget *parent, const QString &message, const QString &title, bool
         return true;
     OverlayDialog dlg(parent, 128);   // rgba(0,0,0,0.5)
     QWidget *card = dlg.card;
-    card->setMinimumWidth(320);
-    card->setMaximumWidth(440);
+    card->setMinimumWidth(sz(320));
+    card->setMaximumWidth(sz(440));
     QVBoxLayout *v = new QVBoxLayout(card);
-    v->setContentsMargins(32, 24, 32, 24);
+    v->setContentsMargins(sz(32), sz(24), sz(32), sz(24));
     v->setSpacing(0);
     QLabel *icon = new QLabel(card);
     icon->setAlignment(Qt::AlignCenter);
-    icon->setPixmap(lucidePixmap(danger ? LucideIcon::TriangleAlert : LucideIcon::Info, 32,
+    icon->setPixmap(lucidePixmap(danger ? LucideIcon::TriangleAlert : LucideIcon::Info, sz(32),
                                  themeColor(danger ? "error" : "accent-primary"), card->devicePixelRatioF()));
     v->addWidget(icon);
     v->addSpacing(8);
@@ -95,9 +95,9 @@ bool confirm(QWidget *parent, const QString &message, const QString &title, bool
     m->setAlignment(Qt::AlignCenter);
     m->setWordWrap(true);
     v->addWidget(m);
-    v->addSpacing(20);
+    v->addSpacing(sz(20));
     QHBoxLayout *btns = new QHBoxLayout;
-    btns->setSpacing(12);
+    btns->setSpacing(sz(12));
     btns->addStretch(1);
     QPushButton *cancel = new QPushButton(cancelText, card);
     cancel->setObjectName(QStringLiteral("cancel"));
@@ -137,10 +137,10 @@ bool prompt(QWidget *parent, const QString &message, const QString &defaultValue
     }
     OverlayDialog dlg(parent, 115);   // rgba(0,0,0,0.45)
     QWidget *card = dlg.card;
-    card->setMinimumWidth(320);
-    card->setMaximumWidth(440);
+    card->setMinimumWidth(sz(320));
+    card->setMaximumWidth(sz(440));
     QVBoxLayout *v = new QVBoxLayout(card);
-    v->setContentsMargins(24, 20, 24, 20);
+    v->setContentsMargins(sz(24), sz(20), sz(24), sz(20));
     v->setSpacing(0);
     QLabel *m = new QLabel(message, card);
     m->setWordWrap(true);
@@ -207,14 +207,15 @@ void IconButton::paintEvent(QPaintEvent *)
     QColor c = themeColor(hov ? m_hover.constData() : m_color.constData());
     if (!isEnabled())
         c.setAlphaF(c.alphaF() * 0.4);
-    const QRectF box((width() - m_px) / 2.0, (height() - m_px) / 2.0, m_px, m_px);
+    const double ipx = sz(m_px);
+    const QRectF box((width() - ipx) / 2.0, (height() - ipx) / 2.0, ipx, ipx);
     drawLucide(p, m_icon, box, c);
 }
 
 // ---------------------------------------------------------------
 HelpTip::HelpTip(const QString &text, QWidget *parent) : QToolButton(parent), m_text(text)
 {
-    setFixedSize(16, 16);
+    bindSize(this, SizeKind::Fixed, 16, 16);
     setCursor(Qt::PointingHandCursor);
     setToolTip(QStringLiteral("点击查看帮助"));
     connect(this, &QToolButton::clicked, this, [this]() {
@@ -243,8 +244,8 @@ void HelpTip::paintEvent(QPaintEvent *)
     if (m_hover)
         p.setBrush(QColor(0, 122, 204, 26));
     p.setPen(QPen(c, 1.0));
-    p.drawEllipse(QRectF(0.5, 0.5, 15, 15));
-    drawLucide(p, LucideIcon::HelpCircle, QRectF(1, 1, 14, 14), c);
+    p.drawEllipse(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5));
+    drawLucide(p, LucideIcon::HelpCircle, QRectF(rect()).adjusted(1, 1, -1, -1), c);
 }
 
 void HelpTip::enterEvent(QEvent *e)
@@ -278,7 +279,7 @@ public:
         f.setPixelSize(fontPx);
         setFont(f);
         const QFontMetrics fm(f);
-        setMinimumSize(pad.left() + iconPx + 6 + fm.horizontalAdvance(text) + pad.right(),
+        setMinimumSize(pad.left() + iconPx + sz(6) + fm.horizontalAdvance(text) + pad.right(),
                        pad.top() + qMax(fm.height(), iconPx) + pad.bottom());
     }
     bool small = false;
@@ -303,7 +304,7 @@ protected:
         const QRect inner = rect().marginsRemoved(m_pad);
         drawLucide(p, m_icon, QRectF(inner.left(), inner.center().y() - m_iconPx / 2.0 + 0.5, m_iconPx, m_iconPx), fg);
         p.setPen(fg);
-        p.drawText(inner.adjusted(m_iconPx + 6, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, m_text);
+        p.drawText(inner.adjusted(m_iconPx + sz(6), 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, m_text);
     }
     void enterEvent(QEvent *) override { update(); }
     void leaveEvent(QEvent *) override { update(); }
@@ -353,14 +354,14 @@ ContextMenu::ContextMenu(QWidget *parent) : QMenu(parent)
 {
     setAttribute(Qt::WA_TranslucentBackground);
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
-    setStyleSheet(QStringLiteral("QMenu { background: #1e1e2e; border: 1px solid #3a3a5c; border-radius: 6px;"
+    setStyleSheet(Theme::scalePx(QStringLiteral("QMenu { background: #1e1e2e; border: 1px solid #3a3a5c; border-radius: 6px;"
                                  " padding: 4px 0px; min-width: 120px; font-family: %1; font-size: 13px; color: #cdd6f4; }")
-                      .arg(uiFamilies()));
+                      .arg(uiFamilies())));
 }
 
 QAction *ContextMenu::addItem(LucideIcon icon, const QString &text, std::function<void()> fn, bool danger)
 {
-    MenuItem *w = new MenuItem(icon, text, danger, 13, QMargins(16, 8, 16, 8), 13, "accent-primary", this);
+    MenuItem *w = new MenuItem(icon, text, danger, sz(13), QMargins(sz(16), sz(8), sz(16), sz(8)), sz(13), "accent-primary", this);
     w->setStyleSheet(QStringLiteral("background: transparent;"));
     QPalette pal = w->palette();
     pal.setColor(QPalette::WindowText, themeColor("text-primary"));
@@ -382,7 +383,7 @@ SmallMenu::SmallMenu(QWidget *parent) : QMenu(parent)
 
 QAction *SmallMenu::addItem(LucideIcon icon, const QString &text, std::function<void()> fn, bool danger)
 {
-    MenuItem *w = new MenuItem(icon, text, danger, 10, QMargins(10, 4, 10, 4), 13, "button-hover", this);
+    MenuItem *w = new MenuItem(icon, text, danger, px(0.714), QMargins(sz(10), sz(4), sz(10), sz(4)), sz(13), "button-hover", this);
     w->small = true;
     QAction *a = addMenuItem(this, w, fn);
     w->removeEventFilter(this);
@@ -396,8 +397,8 @@ UndoToast::UndoToast(QWidget *parent) : QWidget(parent)
     setObjectName(QStringLiteral("undoToast"));
     setAttribute(Qt::WA_StyledBackground);
     QHBoxLayout *h = new QHBoxLayout(this);
-    h->setContentsMargins(16, 8, 16, 8);
-    h->setSpacing(10);
+    bindMargins(h, 16, 8, 16, 8);
+    bindSpacing(h, 10);
     m_icon = new QLabel(this);
     m_text = new QLabel(this);
     m_text->setTextFormat(Qt::RichText);
@@ -412,10 +413,16 @@ UndoToast::UndoToast(QWidget *parent) : QWidget(parent)
         "QPushButton { padding: 4px 12px; font-family: %1; font-size: 11px; font-weight: 600; color: #ffffff;"
         " background: var(--accent-primary); border: none; border-radius: 3px; }").arg(uiFamilies()));
     connect(m_btn, &QPushButton::clicked, this, &UndoToast::undoClicked);
-    connect(Theme::instance(), &Theme::changed, this, [this]() {
-        m_icon->setPixmap(lucidePixmap(LucideIcon::Trash2, 14, themeColor("text-primary"), devicePixelRatioF()));
-    });
-    m_icon->setPixmap(lucidePixmap(LucideIcon::Trash2, 14, themeColor("text-primary"), devicePixelRatioF()));
+    auto setIc = [this]() {
+        m_icon->setPixmap(lucidePixmap(LucideIcon::Trash2, sz(14), themeColor("text-primary"), devicePixelRatioF()));
+        if (isVisible()) {
+            adjustSize();
+            place();
+        }
+    };
+    connect(Theme::instance(), &Theme::changed, this, setIc);
+    connect(UiScale::instance(), &UiScale::changed, this, setIc);
+    setIc();
     parent->installEventFilter(this);
     hide();
 }

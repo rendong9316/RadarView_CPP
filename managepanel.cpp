@@ -23,6 +23,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
 #include <QTableView>
@@ -232,36 +233,6 @@ void ManageState::addHighlight(const QString &icao)
     emit highlightChanged();
 }
 
-// 加载某批次：把该批次软删除的航迹也一并读回内存（RadarView handleLoadBatch 走 load_batch_tracks）
-bool ManageState::loadBatch(qint64 batchId, QString *error)
-{
-    const QVector<BatchInfo> bs = trackdb::batches();
-    bool found = false;
-    for (const BatchInfo &b : bs) {
-        if (b.id != batchId)
-            continue;
-        found = true;
-        // 数据库读回该批次全部航迹（含软删除的），加进内存并加入可见集合
-        const QVector<Track> loaded = trackdb::loadBatchTracks(batchId);
-        if (!loaded.isEmpty()) {
-            QStringList keys;
-            for (const Track &t : loaded) {
-                m_visible.insert(t.key());
-                keys << t.key();
-            }
-            emit aboutToChangeStore();
-            m_store->addTracks(loaded);
-            emit storeChanged();
-        }
-        if (error)
-            *error = QString();
-        return true;
-    }
-    if (error)
-        *error = QStringLiteral("批次不存在或为空");
-    return found;
-}
-
 // 批次级硬删除：删数据库 + 从内存 / 可见集合移除该批次航迹（不可撤销）
 bool ManageState::hardDeleteBatch(qint64 batchId, QString *error)
 {
@@ -425,7 +396,7 @@ ManageDelegate::ManageDelegate(ManageState *state, QObject *parent) : QStyledIte
 
 QSize ManageDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const
 {
-    return QSize(40, kRowH);
+    return QSize(ui::sz(40), ui::sz(kRowH));
 }
 
 void ManageDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &index) const
@@ -456,7 +427,8 @@ void ManageDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const Q
 
     const int col = index.column();
     if (col == ManageModel::Eye) {
-        const QRectF box(rc.center().x() - 6.5 + 0.5, rc.center().y() - 6.5 + 0.5, 13, 13);
+        const double e = ui::sz(13);
+        const QRectF box(rc.center().x() - e / 2.0 + 0.5, rc.center().y() - e / 2.0 + 0.5, e, e);
         if (visible) {
             drawLucide(*p, LucideIcon::Eye, box, themeColor("accent-primary"));
         } else {
@@ -469,12 +441,13 @@ void ManageDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const Q
     }
     if (col == ManageModel::Act) {
         if (hover)
-            drawLucide(*p, LucideIcon::Trash2, QRectF(rc.center().x() - 6 + 0.5, rc.center().y() - 6 + 0.5, 12, 12),
-                       themeColor("text-tertiary"));
+            drawLucide(*p, LucideIcon::Trash2,
+                       QRectF(rc.center().x() - ui::sz(12) / 2.0 + 0.5, rc.center().y() - ui::sz(12) / 2.0 + 0.5,
+                              ui::sz(12), ui::sz(12)), themeColor("text-tertiary"));
         p->restore();
         return;
     }
-    QRect tr = rc.adjusted(4, 0, -4, 0);
+    QRect tr = rc.adjusted(ui::sz(4), 0, -ui::sz(4), 0);
     QFont f = opt.font;
     f.setPixelSize(ui::px(0.714));
     if (col == ManageModel::Icao)
@@ -487,8 +460,9 @@ void ManageDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const Q
         p->setRenderHint(QPainter::Antialiasing);
         p->setPen(Qt::NoPen);
         p->setBrush(rowColor ? rowColor(r) : trackSourceColor(r.source));
-        p->drawEllipse(QRectF(tr.left(), rc.center().y() - 3 + 0.5, 6, 6));
-        tr.setLeft(tr.left() + 10);
+        const double d = ui::sz(6);
+        p->drawEllipse(QRectF(tr.left(), rc.center().y() - d / 2.0 + 0.5, d, d));
+        tr.setLeft(tr.left() + ui::sz(10));
     }
     p->setPen(themeColor("text-primary"));
     const QString text = QFontMetrics(f).elidedText(ManageModel::cellText(r, col), Qt::ElideRight, tr.width());
@@ -503,6 +477,8 @@ ManagePanel::ManagePanel(ManageState *state, QWidget *parent) : QWidget(parent),
 {
     setObjectName(QStringLiteral("managePanel"));
     buildUi();
+    applySizes();
+    connect(UiScale::instance(), &UiScale::changed, this, &ManagePanel::applySizes);
     m_searchTimer.setSingleShot(true);
     m_searchTimer.setInterval(300);
     connect(&m_searchTimer, &QTimer::timeout, this, [this]() {
@@ -537,11 +513,25 @@ void ManagePanel::buildUi()
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(0);
 
+    // ---- 批量数据管理入口：强调色整行按钮 + 文件数，放在面板最上方 ----
+    QWidget *entryBox = new QWidget(this);
+    QHBoxLayout *eh = new QHBoxLayout(entryBox);
+    ui::bindMargins(eh, 8, 6, 8, 6);
+    m_batchEntry = new QPushButton(entryBox);
+    m_batchEntry->setObjectName(QStringLiteral("batchEntry"));
+    m_batchEntry->setCursor(Qt::PointingHandCursor);
+    m_batchEntry->setToolTip(QStringLiteral("批量数据管理：按导入文件从数据库永久删除数据"));
+    m_batchEntry->setProperty("_icon", int(LucideIcon::Database));
+    m_batchEntry->setText(QStringLiteral("批量数据管理 · 按文件删除导入数据"));
+    eh->addWidget(m_batchEntry);
+    v->addWidget(entryBox);
+    connect(m_batchEntry, &QPushButton::clicked, this, &ManagePanel::clickBatchManage);
+
     // ---- 统计栏 ----
     QWidget *statsBar = new QWidget(this);
     statsBar->setObjectName(QStringLiteral("statsBar"));
     FlowLayout *sl = new FlowLayout(statsBar, 2, 2);
-    sl->setContentsMargins(8, 4, 8, 4);
+    ui::bindMargins(sl, 8, 4, 8, 4);
     sl->lastRight = true;
     m_stats = new QLabel(statsBar);   // 由 reloadStats 填充子控件；这里只作容器标记
     m_stats->hide();
@@ -551,8 +541,8 @@ void ManagePanel::buildUi()
     QWidget *fb = new QWidget(this);
     fb->setObjectName(QStringLiteral("filterBar"));
     QVBoxLayout *fl = new QVBoxLayout(fb);
-    fl->setContentsMargins(8, 4, 8, 4);
-    fl->setSpacing(3);
+    ui::bindMargins(fl, 8, 4, 8, 4);
+    ui::bindSpacing(fl, 3);
     QHBoxLayout *r1 = new QHBoxLayout;
     r1->setSpacing(4);
     m_search = new QLineEdit(fb);
@@ -624,7 +614,7 @@ void ManagePanel::buildUi()
     QWidget *tb = new QWidget(this);
     tb->setObjectName(QStringLiteral("toolbar"));
     FlowLayout *tl = new FlowLayout(tb, 3, 2);
-    tl->setContentsMargins(8, 2, 8, 2);
+    ui::bindMargins(tl, 8, 2, 8, 2);
     m_toolbarInfo = new QLabel(tb);
     m_toolbarInfo->setObjectName(QStringLiteral("tbInfo"));
     tl->addWidget(m_toolbarInfo);
@@ -644,8 +634,6 @@ void ManagePanel::buildUi()
     QPushButton *bDelVis = tbBtn(LucideIcon::Trash2, true, QStringLiteral("删可见"), QStringLiteral("软删除所有地图可见航迹"), QStringLiteral("tbDanger"));
     QPushButton *bExport = tbBtn(LucideIcon::Download, true, QStringLiteral("导出"), QStringLiteral("导出当前筛选结果为 JSON 文件"), QStringLiteral("tbBtn"));
     QPushButton *bRefresh = tbBtn(LucideIcon::RefreshCw, true, QStringLiteral("刷新"), QStringLiteral("刷新数据库统计和元数据"), QStringLiteral("tbBtn"));
-    QPushButton *bBatches = tbBtn(LucideIcon::Package, true, QStringLiteral("批量管理"), QStringLiteral("批量数据管理：加载 / 从数据库永久删除批次"), QStringLiteral("tbBtn"));
-    connect(bBatches, &QPushButton::clicked, this, &ManagePanel::clickBatchManage);
     v->addWidget(tb);
 
     // ---- 表格 ----
@@ -690,8 +678,8 @@ void ManagePanel::buildUi()
     QWidget *pg = new QWidget(this);
     pg->setObjectName(QStringLiteral("pagination"));
     QHBoxLayout *pl = new QHBoxLayout(pg);
-    pl->setContentsMargins(8, 3, 8, 3);
-    pl->setSpacing(4);
+    ui::bindMargins(pl, 8, 3, 8, 3);
+    ui::bindSpacing(pl, 4);
     m_pageInfo = new QLabel(pg);
     m_pageInfo->setObjectName(QStringLiteral("pageInfo"));
     m_prev = new QPushButton(QStringLiteral("< 上一页"), pg);
@@ -720,22 +708,28 @@ void ManagePanel::buildUi()
             const QVariant ic = b->property("_icon");
             if (!ic.isValid())
                 continue;
+            const bool entry = b == m_batchEntry;
             const char *var = b->objectName() == QLatin1String("tbDanger") ? "error"
                             : b->objectName() == QLatin1String("tbHighlight") ? nullptr
                             : b->objectName() == QLatin1String("pbtnReset") ? nullptr : "text-secondary";
-            const QColor c = var ? themeColor(var)
+            const QColor c = entry ? QColor(Qt::white) : var ? themeColor(var)
                            : b->objectName() == QLatin1String("tbHighlight") ? QColor(0xe8, 0xa0, 0x20) : QColor(0xe8, 0xa0, 0x40);
-            b->setIcon(lucideQIcon(LucideIcon(ic.toInt()), 11, c));
-            b->setIconSize(QSize(11, 11));
+            const int px = ui::sz(entry ? 15 : 11);
+            b->setIcon(lucideQIcon(LucideIcon(ic.toInt()), px, c));
+            b->setIconSize(QSize(px, px));
         }
     };
     applyIcons();
     connect(Theme::instance(), &Theme::changed, this, applyIcons);
+    connect(UiScale::instance(), &UiScale::changed, this, applyIcons);
 
     // ---- 样式（逐项取自 ManagePanel.vue / ManageFilterBar.vue / ManageDataTable.vue / ManagePagination.vue）----
     setThemedStyle(this, QStringLiteral(
         "#managePanel { background: transparent; }"
         "QLabel { background: transparent; }"
+        "#batchEntry { font-size: 12px; font-weight: 600; padding: 6px 10px; text-align: left; color: #ffffff;"
+        " background: var(--accent-primary); border: 1px solid var(--accent-primary); border-radius: 4px; }"
+        "#batchEntry:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
         "#statsBar, #filterBar, #toolbar { border-bottom: 1px solid var(--border-secondary); }"
         "#statsBar QLabel { color: var(--text-secondary); font-size: 9px; }"
         "#statsBar QLabel[strong=\"true\"] { color: var(--text-primary); font-weight: bold; }"
@@ -988,8 +982,10 @@ void ManagePanel::reloadStats()
     QWidget *bar = findChild<QWidget *>(QStringLiteral("statsBar"));
     FlowLayout *fl = static_cast<FlowLayout *>(bar->layout());
     while (QLayoutItem *it = fl->takeAt(0)) {
-        if (it->widget() && it->widget() != m_stats)
+        if (it->widget() && it->widget() != m_stats) {
+            it->widget()->hide();          // 延后销毁前先隐藏，否则旧标签会叠在新标签下面
             it->widget()->deleteLater();
+        }
         delete it;
     }
     auto addText = [&](const QString &t, const char *prop = nullptr) {
@@ -1006,7 +1002,7 @@ void ManagePanel::reloadStats()
         h->setContentsMargins(0, 0, 0, 0);
         h->setSpacing(3);
         if (withIcon)
-            h->addWidget(iconLabel(icon, iconPx, "text-secondary", w));
+            h->addWidget(iconLabel(icon, ui::sz(iconPx), "text-secondary", w));
         if (!pre.isEmpty())
             h->addWidget(new QLabel(pre, w));
         if (!strong.isEmpty()) {
@@ -1196,75 +1192,155 @@ void ManagePanel::viewRowPoints(int row)
     emit viewPointsRequested(key);
 }
 
+// 批量数据管理（RadarView App.vue batch-overlay）：每个导入文件一个批次，逐个从数据库永久删除。
+// 已导入的数据启动时都已加载，所以不再提供「加载」；删除后列表立即重建
+// 表格行高 / 表头 / 列宽和几个固定宽度控件随全局字号缩放
+void ManagePanel::applySizes()
+{
+    const int rowH = ui::sz(kRowH);
+    m_table->verticalHeader()->setMinimumSectionSize(rowH);
+    m_table->verticalHeader()->setDefaultSectionSize(rowH);
+    QHeaderView *hh = m_table->horizontalHeader();
+    hh->setMinimumSectionSize(ui::sz(20));
+    hh->setFixedHeight(ui::sz(20));
+    static const int widths[] = { 28, 52, 74, 68, 64, 52, 48, 100, 56, 150, 28 };
+    for (int i = 0; i < ManageModel::ColumnCount; ++i)
+        if (i != ManageModel::Route)
+            hh->resizeSection(i, ui::sz(widths[i]));
+    m_clearSearch->setFixedSize(ui::sz(20), ui::sz(20));
+    m_source->setFixedWidth(ui::sz(90));
+    for (QLineEdit *e : { m_minPts, m_maxPts })
+        e->setFixedWidth(ui::sz(52));
+    if (property("_themeQss").isValid())
+        reloadStats();             // 统计栏图标按新尺寸重建
+    m_table->viewport()->update();
+}
+
 void ManagePanel::clickBatchManage()
 {
-    const QVector<BatchInfo> batches = trackdb::batches();
     QDialog dlg(this);
+    dlg.setObjectName(QStringLiteral("batchDialog"));
     dlg.setWindowTitle(QStringLiteral("批量数据管理"));
+    dlg.resize(ui::sz(560), ui::sz(380));
     QVBoxLayout *dv = new QVBoxLayout(&dlg);
-    dv->setContentsMargins(12, 12, 12, 12);
-    dv->setSpacing(8);
-    QLabel *hint = new QLabel(QStringLiteral("点击「加载」把该批次航迹读回地图；「删除」从数据库永久移除（不可撤销）。"), &dlg);
+    dv->setContentsMargins(ui::sz(14), ui::sz(12), ui::sz(14), ui::sz(12));
+    dv->setSpacing(ui::sz(8));
+
+    QLabel *title = new QLabel(&dlg);
+    title->setObjectName(QStringLiteral("batchTitle"));
+    dv->addWidget(title);
+    QLabel *hint = new QLabel(QStringLiteral("每个导入的数据文件对应一行。点击「删除」会把该文件的全部航迹从数据库中永久移除，"
+                                             "地图上同步消失，不可撤销（磁盘上的原文件不受影响）。"), &dlg);
     hint->setObjectName(QStringLiteral("batchHint"));
+    hint->setWordWrap(true);
     dv->addWidget(hint);
 
-    if (batches.isEmpty())
-        dv->addWidget(new QLabel(QStringLiteral("暂无已保存的数据"), &dlg));
+    QScrollArea *scroll = new QScrollArea(&dlg);
+    scroll->setObjectName(QStringLiteral("batchScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    QWidget *list = new QWidget(scroll);
+    list->setObjectName(QStringLiteral("batchList"));
+    QVBoxLayout *ll = new QVBoxLayout(list);
+    ll->setContentsMargins(0, 0, 0, 0);
+    ll->setSpacing(ui::sz(6));
+    scroll->setWidget(list);
+    dv->addWidget(scroll, 1);
 
-    for (const BatchInfo &b : batches) {
-        QWidget *row = new QWidget(&dlg);
-        row->setObjectName(QStringLiteral("batchRow"));
-        QHBoxLayout *rl = new QHBoxLayout(row);
-        rl->setContentsMargins(0, 0, 0, 0);
-        rl->setSpacing(6);
-        QLabel *info = new QLabel(QStringLiteral("%1 · %2 · %3 条 · %4")
-                                     .arg(filterSourceLabel(b.source), b.fileName,
-                                          QString::number(b.trackCount), b.importedAt), row);
-        info->setObjectName(QStringLiteral("batchInfo"));
-        rl->addWidget(info, 1);
-        QPushButton *load = new QPushButton(QStringLiteral("加载"), row);
-        load->setCursor(Qt::PointingHandCursor);
-        load->setObjectName(QStringLiteral("batchBtn"));
-        QPushButton *del = new QPushButton(QStringLiteral("删除"), row);
-        del->setCursor(Qt::PointingHandCursor);
-        del->setObjectName(QStringLiteral("batchDel"));
-        rl->addWidget(load);
-        rl->addWidget(del);
-        dv->addWidget(row);
+    QHBoxLayout *bottom = new QHBoxLayout;
+    bottom->addStretch(1);
+    QPushButton *closeBtn = new QPushButton(QStringLiteral("关闭"), &dlg);
+    closeBtn->setObjectName(QStringLiteral("batchClose"));
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    bottom->addWidget(closeBtn);
+    dv->addLayout(bottom);
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
 
-        connect(load, &QPushButton::clicked, this, [this, id = b.id]() {
-            QString err;
-            if (!m_state->loadBatch(id, &err) && !err.isEmpty())
-                ui::confirm(this, err, QStringLiteral("加载批次失败"));
-            m_state->markStale();
-            refresh();
-        });
-        connect(del, &QPushButton::clicked, this, [this, id = b.id, name = b.fileName]() {
-            if (!ui::confirm(this,
-                            QStringLiteral("确定从数据库中删除 \"%1\"？\n\n该操作不可撤销。").arg(name),
-                            QStringLiteral("删除批次"), true))
-                return;
-            QString err;
-            if (m_state->hardDeleteBatch(id, &err)) {
-                m_state->markStale();
-                refresh();
-            } else if (!err.isEmpty()) {
-                ui::confirm(this, QStringLiteral("删除失败：%1").arg(err), QStringLiteral("删除批次"));
+    std::function<void()> rebuild;
+    rebuild = [&]() {
+        // 旧行延后销毁：当前正在响应的「删除」按钮也在其中
+        while (QLayoutItem *it = ll->takeAt(0)) {
+            if (QWidget *w = it->widget()) {
+                w->hide();
+                w->deleteLater();
             }
-        });
-    }
+            delete it;
+        }
+        const QVector<BatchInfo> batches = trackdb::batches();
+        int tracks = 0;
+        for (const BatchInfo &b : batches)
+            tracks += b.trackCount;
+        title->setText(QStringLiteral("已导入 %1 个文件 · 共 %2 条航迹").arg(batches.size()).arg(tracks));
+        if (batches.isEmpty()) {
+            QLabel *e = new QLabel(QStringLiteral("暂无已保存的数据"), list);
+            e->setObjectName(QStringLiteral("batchEmpty"));
+            e->setAlignment(Qt::AlignCenter);
+            ll->addWidget(e);
+        }
+        for (const BatchInfo &b : batches) {
+            QWidget *row = new QWidget(list);
+            row->setObjectName(QStringLiteral("batchRow"));
+            row->setAttribute(Qt::WA_StyledBackground);
+            QHBoxLayout *rl = new QHBoxLayout(row);
+            rl->setContentsMargins(ui::sz(8), ui::sz(5), ui::sz(8), ui::sz(5));
+            rl->setSpacing(ui::sz(8));
+            QLabel *src = new QLabel(filterSourceLabel(b.source), row);
+            src->setObjectName(QStringLiteral("batchSrc"));
+            src->setStyleSheet(Theme::scalePx(QStringLiteral("color: %1; font-weight: 600; min-width: 46px;")
+                                                  .arg(trackSourceColor(b.source).name())));
+            QVBoxLayout *texts = new QVBoxLayout;
+            texts->setSpacing(ui::sz(1));
+            QLabel *file = new QLabel(b.fileName, row);
+            file->setObjectName(QStringLiteral("batchFile"));
+            QLabel *meta = new QLabel(QStringLiteral("%1 条航迹 · 导入于 %2").arg(b.trackCount).arg(b.importedAt), row);
+            meta->setObjectName(QStringLiteral("batchMeta"));
+            texts->addWidget(file);
+            texts->addWidget(meta);
+            QPushButton *del = new QPushButton(QStringLiteral("删除"), row);
+            del->setObjectName(QStringLiteral("batchDel"));
+            del->setCursor(Qt::PointingHandCursor);
+            del->setToolTip(QStringLiteral("从数据库中永久删除此文件的全部航迹"));
+            del->setIcon(lucideQIcon(LucideIcon::Trash2, ui::sz(12), themeColor("error"), QColor(Qt::white)));
+            del->setIconSize(QSize(ui::sz(12), ui::sz(12)));
+            rl->addWidget(src);
+            rl->addLayout(texts, 1);
+            rl->addWidget(del, 0, Qt::AlignVCenter);
+            ll->addWidget(row);
+            connect(del, &QPushButton::clicked, &dlg, [&, id = b.id, name = b.fileName, n = b.trackCount]() {
+                if (!ui::confirm(&dlg,
+                                 QStringLiteral("确定从数据库中删除 \"%1\"（%2 条航迹）？\n\n该操作不可撤销。").arg(name).arg(n),
+                                 QStringLiteral("删除文件数据"), true))
+                    return;
+                QString err;
+                if (!m_state->hardDeleteBatch(id, &err))   // 成功时发 dataChanged，管理面板随之刷新
+                    ui::confirm(&dlg, QStringLiteral("删除失败：%1").arg(err), QStringLiteral("删除文件数据"));
+                rebuild();
+            });
+        }
+        ll->addStretch(1);
+    };
+    rebuild();
 
     setThemedStyle(&dlg, QStringLiteral(
+        "#batchDialog, #batchScroll, #batchList { background: var(--bg-primary); }"
+        "QLabel { background: transparent; font-family: %1; }"
+        "#batchTitle { color: var(--text-primary); font-size: 13px; font-weight: 600; }"
         "#batchHint { color: var(--text-secondary); font-size: 11px; }"
-        "#batchRow { background: var(--bg-secondary); border: 1px solid var(--border-secondary); border-radius: 3px; padding: 4px 6px; }"
-        "#batchInfo { color: var(--text-primary); font-size: 11px; }"
-        "#batchBtn { font-size: 10px; padding: 2px 8px; background: var(--button-bg); color: var(--button-fg);"
-        " border: 1px solid var(--border-primary); border-radius: 3px; }"
-        "#batchBtn:hover { background: var(--button-hover); }"
-        "#batchDel { font-size: 10px; padding: 2px 8px; color: var(--error); background: transparent;"
+        "#batchEmpty { color: var(--text-tertiary); font-size: 12px; padding: 24px; }"
+        "#batchRow { background: var(--bg-secondary); border: 1px solid var(--border-secondary); border-radius: 4px; }"
+        "#batchRow:hover { border-color: var(--accent-primary); }"
+        "#batchSrc { font-size: 11px; }"
+        "#batchFile { color: var(--text-primary); font-size: 12px; font-weight: 600; }"
+        "#batchMeta { color: var(--text-tertiary); font-size: 10px; }"
+        "#batchDel { font-family: %1; font-size: 11px; padding: 4px 12px; color: var(--error); background: transparent;"
         " border: 1px solid var(--error); border-radius: 3px; }"
-        "#batchDel:hover { background: var(--error-bg); }"
-        "QDialog { background: var(--bg-primary); }"));
+        "#batchDel:hover { background: #d32f2f; color: #ffffff; border-color: #d32f2f; }"
+        "#batchClose { font-family: %1; font-size: 11px; padding: 4px 16px; background: var(--button-bg); color: var(--button-fg);"
+        " border: 1px solid var(--border-primary); border-radius: 3px; }"
+        "#batchClose:hover { background: var(--button-hover); }"
+        "QScrollBar:vertical { background: var(--scrollbar-bg); width: 10px; margin: 0px; }"
+        "QScrollBar::handle:vertical { background: var(--scrollbar-thumb); min-height: 20px; border-radius: 3px; }")
+        .arg(ui::uiFamilies()));
     dlg.exec();
 }
 

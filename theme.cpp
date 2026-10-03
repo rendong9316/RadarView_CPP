@@ -1,6 +1,7 @@
 #include "theme.h"
 
 #include <QApplication>
+#include <QLayout>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QWidget>
@@ -175,24 +176,46 @@ QString Theme::qss(const QString &tmpl) const
     }
     out += tmpl.midRef(last);
 
-    // 全局字号缩放：把 QSS 里的 font-size: Npx 按当前根字号放大/缩小（基准 14px 时不变）
+    return scalePx(out);
+}
+
+// 全局缩放：QSS 里所有 Npx（字号、内边距、外边距、宽高、圆角）按当前根字号换算，
+// 只有边框宽度（border / border-top ... 的线宽）保持原样。基准 14px 时不变
+QString Theme::scalePx(const QString &css)
+{
     const double s = UiScale::instance()->scale();
-    if (qAbs(s - 1.0) > 1e-4) {
-        static const QRegularExpression reSize(QStringLiteral("(font-size:\\s*)(\\d+)px"));
-        QString scaled;
-        scaled.reserve(out.size());
-        int pos = 0;
-        QRegularExpressionMatchIterator it = reSize.globalMatch(out);
-        while (it.hasNext()) {
-            const QRegularExpressionMatch m = it.next();
-            scaled += out.mid(pos, m.capturedStart() - pos);
-            const int pxv = m.captured(2).toInt();
-            scaled += QStringLiteral("font-size: %1px").arg(int(std::lround(double(pxv) * s)));
-            pos = m.capturedEnd();
+    if (qAbs(s - 1.0) < 1e-4)
+        return css;
+    static const QRegularExpression reDecl(QStringLiteral("([A-Za-z-]+)\\s*:\\s*([^;{}]*)"));
+    static const QRegularExpression rePx(QStringLiteral("(-?\\d+(?:\\.\\d+)?)px"));
+    QString out;
+    out.reserve(css.size() + 64);
+    int pos = 0;
+    QRegularExpressionMatchIterator it = reDecl.globalMatch(css);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const QString prop = m.captured(1).toLower();
+        const bool keep = prop.startsWith(QLatin1String("border")) && !prop.contains(QLatin1String("radius"));
+        if (keep || !m.captured(2).contains(QLatin1String("px")))
+            continue;
+        out += css.midRef(pos, m.capturedStart(2) - pos);
+        const QString val = m.captured(2);
+        int vp = 0;
+        QRegularExpressionMatchIterator pit = rePx.globalMatch(val);
+        while (pit.hasNext()) {
+            const QRegularExpressionMatch pm = pit.next();
+            out += val.midRef(vp, pm.capturedStart() - vp);
+            const double v = pm.captured(1).toDouble();
+            int nv = int(std::lround(v * s));
+            if (v > 0 && nv < 1)
+                nv = 1;
+            out += QString::number(nv) + QStringLiteral("px");
+            vp = pm.capturedEnd();
         }
-        scaled += out.mid(pos);
-        out = scaled;
+        out += val.midRef(vp);
+        pos = m.capturedEnd(2);
     }
+    out += css.midRef(pos);
     return out;
 }
 
@@ -243,7 +266,7 @@ UiScale *UiScale::instance()
 
 UiScale::UiScale(QObject *parent) : QObject(parent)
 {
-    m_basePx = qBound(10, ui::defaultFontPx(), 20);
+    m_basePx = qBound(ui::kFontMinPx, ui::defaultFontPx(), ui::kFontMaxPx);
 }
 
 int UiScale::px(double rem) const
@@ -251,11 +274,68 @@ int UiScale::px(double rem) const
     return qMax(1, int(std::lround(rem * m_basePx)));
 }
 
+int UiScale::sz(double basePx) const
+{
+    return qMax(1, int(std::lround(basePx * scale())));
+}
+
 void UiScale::setBasePx(int v)
 {
-    const int nv = qBound(10, v, 20);
+    const int nv = qBound(ui::kFontMinPx, v, ui::kFontMaxPx);
     if (nv == m_basePx)
         return;
     m_basePx = nv;
+    applyAppFont();
     emit changed();
 }
+
+// 没有单独指定字号的控件（对话框、表格、提示框等）跟随应用默认字体一起缩放
+void UiScale::applyAppFont()
+{
+    if (!m_haveAppFont) {
+        m_appFont = QApplication::font();
+        m_haveAppFont = true;
+    }
+    QFont f = m_appFont;
+    if (m_appFont.pixelSize() > 0)
+        f.setPixelSize(qMax(1, int(std::lround(m_appFont.pixelSize() * scale()))));
+    else
+        f.setPointSizeF(qMax(1.0, m_appFont.pointSizeF() * scale()));
+    QApplication::setFont(f);
+}
+
+namespace ui {
+
+void bindSize(QWidget *w, SizeKind kind, int a, int b)
+{
+    auto apply = [w, kind, a, b]() {
+        switch (kind) {
+        case SizeKind::Fixed: w->setFixedSize(sz(a), sz(b)); break;
+        case SizeKind::FixedWidth: w->setFixedWidth(sz(a)); break;
+        case SizeKind::FixedHeight: w->setFixedHeight(sz(a)); break;
+        case SizeKind::MinWidth: w->setMinimumWidth(sz(a)); break;
+        case SizeKind::MinHeight: w->setMinimumHeight(sz(a)); break;
+        case SizeKind::MaxWidth: w->setMaximumWidth(sz(a)); break;
+        }
+    };
+    apply();
+    QObject::connect(UiScale::instance(), &UiScale::changed, w, apply);   // 以 w 为上下文，销毁后自动断开
+}
+
+void bindMargins(QLayout *l, int left, int top, int right, int bottom)
+{
+    auto apply = [l, left, top, right, bottom]() {
+        l->setContentsMargins(sz(left), sz(top), sz(right), sz(bottom));
+    };
+    apply();
+    QObject::connect(UiScale::instance(), &UiScale::changed, l, apply);
+}
+
+void bindSpacing(QLayout *l, int spacing)
+{
+    auto apply = [l, spacing]() { l->setSpacing(sz(spacing)); };
+    apply();
+    QObject::connect(UiScale::instance(), &UiScale::changed, l, apply);
+}
+
+} // namespace ui

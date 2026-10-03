@@ -782,8 +782,36 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                                           QStringLiteral("字号 18：1rem=%1px 0.786rem=%2px").arg(ui::px(1.0)).arg(ui::px(0.786)));
                                     check(Theme::instance()->qss(QStringLiteral("a { font-size: 11px; }")).contains(QStringLiteral("font-size: 14px")),
                                           QStringLiteral("QSS 字号随根字号缩放"));
-                                    sp->setFontValue(30);
-                                    check(UiScale::instance()->basePx() == 20, QStringLiteral("字号上限钳制为 %1").arg(UiScale::instance()->basePx()));
+                                    sp->setFontValue(60);
+                                    check(UiScale::instance()->basePx() == ui::kFontMaxPx,
+                                          QStringLiteral("字号上限钳制为 %1").arg(UiScale::instance()->basePx()));
+                                    QCoreApplication::processEvents();
+                                    QCoreApplication::processEvents();
+                                    {
+                                        QString layout;
+                                        const bool lok = w->appStatusBar()->checkLayout(&layout);
+                                        check(lok, QStringLiteral("字号 50 时状态栏各项不重叠：%1").arg(layout));
+                                    }
+                                    if (qEnvironmentVariableIsSet("RV_SHOT")) {
+                                        auto settle = []() {
+                                            QElapsedTimer t;
+                                            t.start();
+                                            while (t.elapsed() < 500)
+                                                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+                                        };
+                                        const QString dir = QCoreApplication::applicationDirPath();
+                                        w->resize(1600, 1000);
+                                        w->activatePanel(PanelId::Manage);
+                                        settle();
+                                        w->grab().save(dir + QStringLiteral("/shot50_manage.png"));
+                                        w->activatePanel(PanelId::Settings);
+                                        settle();
+                                        w->grab().save(dir + QStringLiteral("/shot50_settings.png"));
+                                        sp->setFontValue(14);
+                                        w->activatePanel(PanelId::Manage);
+                                        settle();
+                                        w->grab().save(dir + QStringLiteral("/shot14_manage.png"));
+                                    }
                                     sp->setFontValue(14);
                                     check(ui::px(0.786) == 11, QStringLiteral("字号还原 14：0.786rem=%1px").arg(ui::px(0.786)));
                                     // 批量数据管理：按批次从数据库硬删除 Radar 批次
@@ -884,6 +912,7 @@ int main(int argc, char *argv[])
         app::setTestMode(true);
         ui::setAutoConfirm(true);
     }
+    UiScale::instance()->applyAppFont();   // 按保存的根字号缩放默认字体（自检时读的是临时设置）
 
     MainWindow w;
     // 启动自动最大化（保留任务栏）；自检/tracktest 保持普通窗口，便于断言布局

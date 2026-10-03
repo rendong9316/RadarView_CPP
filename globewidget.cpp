@@ -483,9 +483,10 @@ void GlobeWidget::drawRuler(QPainter &p)
             continue;
         p.setPen(QPen(Qt::black, 1.5));
         p.setBrush(kRulerColor);
-        p.drawEllipse(sp, 11.0, 11.0);
+        const double r = ui::sz(11);
+        p.drawEllipse(sp, r, r);
         p.setPen(Qt::white);
-        p.drawText(QRectF(sp.x() - 11, sp.y() - 11, 22, 22), Qt::AlignCenter, QString::number(i + 1));
+        p.drawText(QRectF(sp.x() - r, sp.y() - r, 2 * r, 2 * r), Qt::AlignCenter, QString::number(i + 1));
         ++m_rulerMarkersDrawn;
     }
     p.setBrush(Qt::NoBrush);
@@ -560,7 +561,7 @@ void GlobeWidget::drawLabels(QPainter &p)
             it = m_labelCache.insert(key, pm);
         }
         const QSizeF sz = QSizeF(it->size()) / dpr;
-        p.drawPixmap(QPointF(sp.x() - sz.width() / 2.0, sp.y() - 20.0 - sz.height() + 2.0), *it);
+        p.drawPixmap(QPointF(sp.x() - sz.width() / 2.0, sp.y() - ui::sz(20) - sz.height() + 2.0), *it);
         ++m_labelsDrawn;
     }
 }
@@ -587,12 +588,14 @@ void GlobeWidget::drawPointTip(QPainter &p)
     const QFontMetricsF fm(f);
     const double w = qMax(fm.horizontalAdvance(l1), fm.horizontalAdvance(l2));
     const double lineH = fm.height();
-    const QRectF box(sp.x() + m_trackLayer.pointDotPx() + 10.0, sp.y() - lineH - 6.0, w + 16.0, lineH * 2 + 12.0);
+    const double pad = ui::sz(8), padY = ui::sz(6);
+    const QRectF box(sp.x() + m_trackLayer.pointDotPx() + ui::sz(10), sp.y() - lineH - padY,
+                     w + 2 * pad, lineH * 2 + 2 * padY);
     p.fillRect(box, Qt::black);
     QColor outline(Qt::black);
     outline.setAlphaF(0.9);
-    drawOutlinedText(p, QPointF(box.left() + 8, box.top() + 6 + fm.ascent()), l1, f, Qt::white, outline, 2.0);
-    drawOutlinedText(p, QPointF(box.left() + 8, box.top() + 6 + lineH + fm.ascent()), l2, f, Qt::white, outline, 2.0);
+    drawOutlinedText(p, QPointF(box.left() + pad, box.top() + padY + fm.ascent()), l1, f, Qt::white, outline, 2.0);
+    drawOutlinedText(p, QPointF(box.left() + pad, box.top() + padY + lineH + fm.ascent()), l2, f, Qt::white, outline, 2.0);
 }
 
 void GlobeWidget::paintOverlay(QPainter &p)

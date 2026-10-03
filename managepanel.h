@@ -43,8 +43,6 @@ public:
     bool undoDelete();
     const QVector<UndoEntry> &undoStack() const { return m_undo; }
 
-    // 加载某批次的航迹进内存（RadarView handleLoadBatch），返回是否加载到数据
-    bool loadBatch(qint64 batchId, QString *error = nullptr);
     // 批次级硬删除（RadarView handleDeleteBatch）：从数据库彻底移除，不可撤销
     bool hardDeleteBatch(qint64 batchId, QString *error = nullptr);
 
@@ -139,7 +137,7 @@ public:
     void clickDeleteVisible();
     void clickClearMap();
     void clickResetFilters();
-    void clickBatchManage();   // 打开「批量数据管理」：加载 / 永久删除批次
+    void clickBatchManage();   // 打开「批量数据管理」：按导入文件永久删除
     void setPageSize(int n);
     bool exportVisible(const QString &path, QString *error = nullptr);
 
@@ -160,8 +158,10 @@ private:
     void onContextMenu(const QPoint &pos);
     void confirmDeleteRows(const QVector<ManageRow> &rows);
     void onExport();
+    void applySizes();         // 行高 / 表头 / 列宽等随全局字号缩放
 
     ManageState *m_state;
+    QPushButton *m_batchEntry = nullptr;   // 醒目的「批量数据管理」入口
     ManageModel *m_model = nullptr;
     ManageDelegate *m_delegate = nullptr;
     QTableView *m_table = nullptr;

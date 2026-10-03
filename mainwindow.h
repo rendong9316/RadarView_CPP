@@ -58,7 +58,8 @@ class SidePanel : public QWidget
     Q_OBJECT
 public:
     explicit SidePanel(QWidget *parent = nullptr);
-    void addPanel(QWidget *w);
+    void addPanel(QWidget *w);                    // 放进滚动区后加入
+    void replacePanel(int index, QWidget *w);     // 替换某个面板（旧的延后销毁）
     void showPanel(int index, const QString &title);
     int currentPanel() const;
     QString title() const;
@@ -143,7 +144,8 @@ private:
     QStackedWidget *m_editor = nullptr;
     GlobeWidget   *m_globe = nullptr;
     int m_panel = -1;
-    QHash<int, int> m_panelWidth;         // 每个面板各自记住宽度（默认 280）
+    QHash<int, int> m_panelWidth;         // 每个面板各自记住宽度（默认 280，随字号缩放）
+    double m_uiScale = 1.0;               // 上次应用的字号缩放比例
 
     TrackStore     m_store;
     TrackImporter *m_importer = nullptr;

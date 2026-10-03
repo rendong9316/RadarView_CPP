@@ -5,6 +5,7 @@
 #include <QMenu>
 #include <QAction>
 #include <QStackedWidget>
+#include <QScrollArea>
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -57,7 +58,7 @@ class ActivityButton : public QAbstractButton
 public:
     ActivityButton(LucideIcon icon, QWidget *parent) : QAbstractButton(parent), m_icon(icon)
     {
-        setFixedSize(48, 48);
+        ui::bindSize(this, ui::SizeKind::Fixed, 48, 48);
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover);
         setFocusPolicy(Qt::NoFocus);
@@ -69,9 +70,10 @@ protected:
     {
         QPainter p(this);
         if (active)
-            p.fillRect(QRect(0, 0, 2, height()), themeColor("activitybar-active-border"));
+            p.fillRect(QRect(0, 0, ui::sz(2), height()), themeColor("activitybar-active-border"));
         const QColor c = themeColor(active || underMouse() ? "activitybar-active" : "activitybar-fg");
-        drawLucide(p, m_icon, QRectF(13, 12, 24, 24), c);
+        const double ic = ui::sz(24);
+        drawLucide(p, m_icon, QRectF((width() - ic) / 2.0, (height() - ic) / 2.0, ic, ic), c);
     }
     void enterEvent(QEvent *) override { update(); }
     void leaveEvent(QEvent *) override { update(); }
@@ -104,7 +106,7 @@ QString menuQss()
 ActivityBar::ActivityBar(QWidget *parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("activityBar"));
-    setFixedWidth(48);
+    ui::bindSize(this, ui::SizeKind::FixedWidth, 48);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     QVBoxLayout *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
@@ -149,24 +151,24 @@ SidePanel::SidePanel(QWidget *parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("sidePanel"));
     setAttribute(Qt::WA_StyledBackground);
-    setMinimumWidth(kSidebarMin);
-    setMaximumWidth(kSidebarMax);
+    ui::bindSize(this, ui::SizeKind::MinWidth, kSidebarMin);
+    ui::bindSize(this, ui::SizeKind::MaxWidth, kSidebarMax);
     QVBoxLayout *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
     QWidget *header = new QWidget(this);
     header->setObjectName(QStringLiteral("sidebarHeader"));
     header->setAttribute(Qt::WA_StyledBackground);
-    header->setFixedHeight(32);
+    ui::bindSize(header, ui::SizeKind::FixedHeight, 32);
     QHBoxLayout *hh = new QHBoxLayout(header);
-    hh->setContentsMargins(12, 0, 12, 0);
+    ui::bindMargins(hh, 12, 0, 12, 0);
     m_title = new QLabel(header);
     m_title->setObjectName(QStringLiteral("sidebarTitle"));
     hh->addWidget(m_title);
     hh->addStretch(1);
     ui::IconButton *close = new ui::IconButton(LucideIcon::X, 14, "text-tertiary", "text-primary", header);
     close->setObjectName(QStringLiteral("sidebarClose"));
-    close->setFixedSize(20, 20);
+    ui::bindSize(close, ui::SizeKind::Fixed, 20, 20);
     close->setToolTip(QStringLiteral("关闭侧边栏"));
     hh->addWidget(close);
     lay->addWidget(header);
@@ -182,12 +184,40 @@ SidePanel::SidePanel(QWidget *parent) : QWidget(parent)
         "#sidebarClose { border: none; border-radius: 3px; background: transparent; }"
         "#sidebarClose:hover { background: var(--button-hover); }"
         "#sidebarBody { background: var(--sidebar-bg); }"
+        "#panelScroll, #panelScroll > QWidget > QWidget { background: transparent; border: none; }"
+        "#panelScroll QScrollBar:vertical { background: var(--scrollbar-bg); width: 10px; margin: 0px; }"
+        "#panelScroll QScrollBar::handle:vertical { background: var(--scrollbar-thumb); min-height: 20px; border-radius: 3px; }"
         "#sidebarBody QToolTip { font-size: 11px; }").arg(ui::uiFamilies()));
+}
+
+// 每个面板放进滚动区：字号调大后内容比侧栏高时改为滚动，控件不会被压缩重叠
+static QScrollArea *wrapScroll(QWidget *w)
+{
+    QScrollArea *sa = new QScrollArea;
+    sa->setObjectName(QStringLiteral("panelScroll"));
+    sa->setFrameShape(QFrame::NoFrame);
+    sa->setWidgetResizable(true);
+    sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sa->setWidget(w);
+    sa->viewport()->setAutoFillBackground(false);
+    w->setAutoFillBackground(false);
+    return sa;
 }
 
 void SidePanel::addPanel(QWidget *w)
 {
-    m_stack->addWidget(w);
+    m_stack->addWidget(wrapScroll(w));
+}
+
+void SidePanel::replacePanel(int index, QWidget *w)
+{
+    QScrollArea *sa = qobject_cast<QScrollArea *>(m_stack->widget(index));
+    if (!sa)
+        return;
+    QWidget *old = sa->takeWidget();
+    sa->setWidget(w);
+    if (old)
+        old->deleteLater();
 }
 
 void SidePanel::showPanel(int index, const QString &title)
@@ -303,10 +333,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_backAllBtn = new QPushButton(tr("← 返回全部"), m_globe);
     m_backAllBtn->setToolTip(tr("返回查看全部航迹（Esc）"));
     m_backAllBtn->setCursor(Qt::PointingHandCursor);
-    m_backAllBtn->setStyleSheet(
+    setThemedStyle(m_backAllBtn, QStringLiteral(
         "QPushButton { background-color: #0078d4; color: #ffffff; border: none; border-radius: 2px;"
-        " padding: 4px 12px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #1a8ae0; }");
+        " padding: 4px 12px; font-size: 12px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #1a8ae0; }"));
     m_backAllBtn->hide();
     connect(m_backAllBtn, &QPushButton::clicked, this, [this]() { isolateTrack(-1); });
     m_globe->installEventFilter(this);
@@ -337,6 +367,24 @@ MainWindow::MainWindow(QWidget *parent)
     };
     shortcut(Qt::Key_Space, [this]() { m_replay->togglePlay(); });
     shortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_R), [this]() { m_ruler->toggle(); });
+
+    // 全局字号变化：侧栏宽度按比例跟随，地图顶部按钮重新居中
+    m_uiScale = ui::fontScale();
+    connect(UiScale::instance(), &UiScale::changed, this, [this]() {
+        const double f = ui::fontScale() / m_uiScale;
+        m_uiScale = ui::fontScale();
+        for (auto it = m_panelWidth.begin(); it != m_panelWidth.end(); ++it)
+            it.value() = int(it.value() * f);
+        if (m_panel >= 0 && !m_sidePanel->isHidden()) {
+            const int total = m_splitter->width();
+            const int minW = m_sidePanel->minimumWidth();
+            const int w = qBound(minW, int(m_splitter->sizes().value(0) * f), qMax(minW, total - 200));
+            m_splitter->setSizes(QList<int>() << w << total - w);
+            m_panelWidth[m_panel] = w;
+        }
+        m_backAllBtn->adjustSize();
+        placeBackAllButton();
+    });
 
     loadPersisted();
     resize(1280, 800);
@@ -382,10 +430,7 @@ void MainWindow::loadPersisted()
     // 筛选面板控件按已恢复的筛选状态重建
     FilterPanel *fresh = new FilterPanel(&m_filter);
     connect(fresh, &FilterPanel::changed, this, &MainWindow::applyDisplay);
-    QStackedWidget *stack = m_sidePanel->findChild<QStackedWidget *>(QStringLiteral("sidebarBody"));
-    stack->insertWidget(int(PanelId::TimeFilter), fresh);
-    stack->removeWidget(m_filterPanel);
-    m_filterPanel->deleteLater();
+    m_sidePanel->replacePanel(int(PanelId::TimeFilter), fresh);   // 旧面板由 replacePanel 延后销毁
     m_filterPanel = fresh;
     m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
     m_managePanel->refresh();
@@ -987,7 +1032,7 @@ void MainWindow::activatePanel(PanelId id)
     m_panel = i;
     m_sidePanel->showPanel(i, QString::fromUtf8(kPanels[i].title));
     m_sidePanel->show();
-    const int w = qBound(kSidebarMin, m_panelWidth.value(i, kSidebarDefault), kSidebarMax);
+    const int w = qBound(ui::sz(kSidebarMin), m_panelWidth.value(i, ui::sz(kSidebarDefault)), ui::sz(kSidebarMax));
     const int total = qMax(m_splitter->width(), w + 200);
     m_splitter->setSizes(QList<int>() << w << total - w);
     m_activityBar->highlight(i);

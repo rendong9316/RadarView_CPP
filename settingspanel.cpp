@@ -96,14 +96,19 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
         lab->setObjectName(QStringLiteral("rowLabel"));
         lab->setStyleSheet(QStringLiteral("color: %1;").arg(trackSourceColor(src).name()));
         QPushButton *sw = new QPushButton(row);
-        sw->setFixedSize(26, 18);
+        ui::bindSize(sw, ui::SizeKind::Fixed, 26, 18);
         sw->setCursor(Qt::PointingHandCursor);
         QLabel *hex = new QLabel(row);
         hex->setObjectName(QStringLiteral("rowValue"));
         QPushButton *reset = new QPushButton(row);
         reset->setObjectName(QStringLiteral("resetBtn"));
-        reset->setFixedSize(20, 20);
-        reset->setIcon(lucideQIcon(LucideIcon::RotateCcw, 12, QColor("#888888")));
+        ui::bindSize(reset, ui::SizeKind::Fixed, 20, 20);
+        auto resetIcon = [reset]() {
+            reset->setIcon(lucideQIcon(LucideIcon::RotateCcw, ui::sz(12), QColor("#888888")));
+            reset->setIconSize(QSize(ui::sz(12), ui::sz(12)));
+        };
+        resetIcon();
+        connect(UiScale::instance(), &UiScale::changed, reset, resetIcon);
         reset->setToolTip(QStringLiteral("重置 %1 为默认颜色").arg(srcLabel(src)));
         rl->addWidget(lab);
         rl->addWidget(sw);
@@ -195,8 +200,8 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
 
     // ---- 字号大小（10–20 px，全局界面缩放）----
     g = addGroup(main, int(LucideIcon::Type), QStringLiteral("字号大小"),
-                 QStringLiteral("设置应用界面文字的基础字号，范围 10-20 px。影响侧栏、菜单栏、状态栏、地图标签等所有文本。"));
-    m_font = addSlider(g, QStringLiteral("应用字号"), themeColor("text-primary"), 10, 20, 1,
+                 QStringLiteral("设置应用界面文字的基础字号，范围 10-50 px。侧栏、菜单栏、状态栏、地图标签等所有文本及其容器同步缩放。"));
+    m_font = addSlider(g, QStringLiteral("应用字号"), themeColor("text-primary"), ui::kFontMinPx, ui::kFontMaxPx, 1,
                        UiScale::instance()->basePx(), QStringLiteral("px"),
                        [](double v) {
                            UiScale::instance()->setBasePx(int(v));
@@ -209,13 +214,19 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
                                 "重置视角：恢复地图默认视角。清除显示：清空地图可见集合。"));
     QWidget *grid = new QWidget(g->parentWidget());
     QGridLayout *gl = new QGridLayout(grid);
-    gl->setContentsMargins(0, 2, 0, 0);
-    gl->setSpacing(4);
+    ui::bindMargins(gl, 0, 2, 0, 0);
+    ui::bindSpacing(gl, 4);
     auto tool = [this, grid, gl](LucideIcon ic, const QString &text, int r, int c, bool danger, void (SettingsPanel::*sig)()) {
         QPushButton *b = new QPushButton(text, grid);
         b->setObjectName(danger ? QStringLiteral("actionDanger") : QStringLiteral("actionBtn"));
         b->setCursor(Qt::PointingHandCursor);
-        b->setIcon(lucideQIcon(ic, 13, danger ? themeColor("error") : themeColor("text-secondary")));
+        auto setIc = [b, ic, danger]() {
+            b->setIcon(lucideQIcon(ic, ui::sz(13), danger ? themeColor("error") : themeColor("text-secondary")));
+            b->setIconSize(QSize(ui::sz(13), ui::sz(13)));
+        };
+        setIc();
+        connect(UiScale::instance(), &UiScale::changed, b, setIc);
+        connect(Theme::instance(), &Theme::changed, b, setIc);
         gl->addWidget(b, r, c);
         connect(b, &QPushButton::clicked, this, sig);
     };
@@ -264,12 +275,17 @@ QVBoxLayout *SettingsPanel::addGroup(QVBoxLayout *main, int icon, const QString 
     QWidget *hdr = new QWidget(group);
     hdr->setCursor(Qt::PointingHandCursor);
     QHBoxLayout *hh = new QHBoxLayout(hdr);
-    hh->setContentsMargins(12, 8, 12, 6);
-    hh->setSpacing(6);
+    ui::bindMargins(hh, 12, 8, 12, 6);
+    ui::bindSpacing(hh, 6);
     QLabel *chev = new QLabel(QStringLiteral("▾"), hdr);
     chev->setObjectName(QStringLiteral("groupChevron"));
     QLabel *ic = new QLabel(hdr);
-    ic->setPixmap(lucidePixmap(LucideIcon(icon), 13, themeColor("text-tertiary"), devicePixelRatioF()));
+    auto setIc = [this, ic, icon]() {
+        ic->setPixmap(lucidePixmap(LucideIcon(icon), ui::sz(13), themeColor("text-tertiary"), devicePixelRatioF()));
+    };
+    setIc();
+    connect(UiScale::instance(), &UiScale::changed, ic, setIc);
+    connect(Theme::instance(), &Theme::changed, ic, setIc);
     QLabel *t = new QLabel(title, hdr);
     t->setObjectName(QStringLiteral("groupHeader"));
     hh->addWidget(chev);
@@ -281,8 +297,8 @@ QVBoxLayout *SettingsPanel::addGroup(QVBoxLayout *main, int icon, const QString 
 
     QWidget *body = new QWidget(group);
     QVBoxLayout *bv = new QVBoxLayout(body);
-    bv->setContentsMargins(12, 2, 12, 8);
-    bv->setSpacing(3);
+    ui::bindMargins(bv, 12, 2, 12, 8);
+    ui::bindSpacing(bv, 3);
     gv->addWidget(body);
     hdr->installEventFilter(new HeaderClick(body, chev, hdr));
     main->addWidget(group);
@@ -294,10 +310,10 @@ QSlider *SettingsPanel::addSlider(QVBoxLayout *body, const QString &label, const
                                   std::function<void(double)> onValue)
 {
     QWidget *row = new QWidget(body->parentWidget());
-    row->setMinimumHeight(26);
+    ui::bindSize(row, ui::SizeKind::MinHeight, 26);
     QHBoxLayout *rl = new QHBoxLayout(row);
     rl->setContentsMargins(0, 0, 0, 0);
-    rl->setSpacing(8);
+    ui::bindSpacing(rl, 8);
     QLabel *lab = new QLabel(label, row);
     lab->setObjectName(QStringLiteral("rowLabel"));
     lab->setStyleSheet(QStringLiteral("color: %1;").arg(color.name()));
@@ -306,7 +322,7 @@ QSlider *SettingsPanel::addSlider(QVBoxLayout *body, const QString &label, const
     sl->setValue(int(std::lround(qBound(minV, value, maxV) / step)));
     QLabel *val = new QLabel(row);
     val->setObjectName(QStringLiteral("rowValue"));
-    val->setMinimumWidth(36);
+    ui::bindSize(val, ui::SizeKind::MinWidth, 36);
     val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     const int dec = step < 1.0 ? 1 : 0;
     auto show = [val, dec, unit](double v) { val->setText(QString::number(v, 'f', dec) + unit); };

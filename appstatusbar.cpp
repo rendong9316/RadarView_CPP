@@ -184,7 +184,7 @@ class IconButton : public QAbstractButton
 public:
     IconButton(Icon icon, int width, QWidget *parent) : QAbstractButton(parent), m_icon(icon)
     {
-        setFixedSize(width, kBarHeight - 1);
+        ui::bindSize(this, ui::SizeKind::Fixed, width, kBarHeight - 1);   // 基准尺寸，随字号缩放
         setFocusPolicy(Qt::NoFocus);
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover);
@@ -204,7 +204,8 @@ protected:
             p.drawRoundedRect(rect(), 3, 3);
         }
         p.setOpacity(isEnabled() ? 1.0 : 0.4);
-        drawIcon(p, m_icon, QRectF((width() - 14) / 2.0, (height() - 14) / 2.0, 14, 14), m_color);
+        const double ic = ui::sz(14);
+        drawIcon(p, m_icon, QRectF((width() - ic) / 2.0, (height() - ic) / 2.0, ic, ic), m_color);
     }
     void changeEvent(QEvent *e) override
     {
@@ -226,9 +227,9 @@ public:
 
     explicit SeekBar(QWidget *parent) : QWidget(parent)
     {
-        setMinimumWidth(60);
-        setMaximumWidth(300);
-        setFixedHeight(kBarHeight - 1);
+        ui::bindSize(this, ui::SizeKind::MinWidth, 60);
+        ui::bindSize(this, ui::SizeKind::MaxWidth, 300);
+        ui::bindSize(this, ui::SizeKind::FixedHeight, kBarHeight - 1);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         setAttribute(Qt::WA_Hover);
         setToolTip(QStringLiteral("拖动或点击跳转回放位置"));
@@ -244,7 +245,7 @@ public:
     }
     double progress() const { return m_progress; }
     void setColors(const QColor &fg, const QColor &track) { m_fg = fg; m_track = track; update(); }
-    QSize sizeHint() const override { return QSize(300, kBarHeight - 1); }
+    QSize sizeHint() const override { return QSize(ui::sz(300), ui::sz(kBarHeight - 1)); }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -252,22 +253,23 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.setOpacity(isEnabled() ? 1.0 : 0.5);
-        const QRectF track(0, height() / 2.0 - 2.0, width(), 4.0);
+        const double th = ui::sz(4);
+        const QRectF track(0, height() / 2.0 - th / 2.0, width(), th);
         p.setPen(Qt::NoPen);
         p.setBrush(m_track);
         p.drawRoundedRect(track, 2, 2);
         const double x = m_progress * width();
         if (x > 0.0) {
             p.setBrush(m_fg);
-            p.drawRoundedRect(QRectF(0, track.top(), x, 4.0), 2, 2);
+            p.drawRoundedRect(QRectF(0, track.top(), x, th), 2, 2);
         }
         if (isEnabled() && (underMouse() || m_dragging)) {
             const QPointF c(x, height() / 2.0);
             p.setBrush(QColor(0, 0, 0, 60));               // box-shadow: 0 0 4px rgba(0,0,0,0.4)
-            p.drawEllipse(c, 8.0, 8.0);
+            p.drawEllipse(c, double(ui::sz(8)), double(ui::sz(8)));
             p.setBrush(m_fg);
             p.setPen(QPen(QColor(255, 255, 255, 230), 2.0));
-            p.drawEllipse(c, 5.0, 5.0);
+            p.drawEllipse(c, double(ui::sz(5)), double(ui::sz(5)));
         }
     }
     void mousePressEvent(QMouseEvent *e) override
@@ -320,7 +322,7 @@ public:
     {
         setFocusPolicy(Qt::NoFocus);
         setFont(monoFont(kSmallFontPx()));
-        setFixedHeight(16);
+        ui::bindSize(this, ui::SizeKind::FixedHeight, 16);
         setToolTip(QStringLiteral("选择回放倍速"));
         setCursor(Qt::PointingHandCursor);
     }
@@ -330,7 +332,7 @@ public:
         int w = 0;
         for (int i = 0; i < count(); ++i)
             w = qMax(w, fontMetrics().horizontalAdvance(itemText(i)));
-        return QSize(qMin(72, w + 2 * 2 + 2 + 10), 16);   // max-width: 72px
+        return QSize(qMin(ui::sz(72), w + ui::sz(16)), ui::sz(16));   // max-width: 72px
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
 
@@ -345,13 +347,13 @@ protected:
         p.drawRoundedRect(r, 2, 2);
         p.setPen(m_fg);
         p.setFont(font());
-        const QRect textRect = rect().adjusted(3, 0, -11, 0);
+        const QRect textRect = rect().adjusted(ui::sz(3), 0, -ui::sz(11), 0);
         p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
                    fontMetrics().elidedText(currentText(), Qt::ElideRight, textRect.width()));
         // 下拉箭头
         QPen pen(m_fg, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
         p.setPen(pen);
-        const double cx = width() - 6.0, cy = height() / 2.0;
+        const double cx = width() - ui::sz(6), cy = height() / 2.0;
         const QPointF chevron[3] = { QPointF(cx - 2.5, cy - 1.2), QPointF(cx, cy + 1.3), QPointF(cx + 2.5, cy - 1.2) };
         p.drawPolyline(chevron, 3);
     }
@@ -366,7 +368,7 @@ class Spinner : public QWidget
 public:
     explicit Spinner(QWidget *parent) : QWidget(parent)
     {
-        setFixedSize(10, 10);
+        ui::bindSize(this, ui::SizeKind::Fixed, 10, 10);
         m_timer.setInterval(16);
         QObject::connect(&m_timer, &QTimer::timeout, this, [this]() {
             m_angle = std::fmod(m_angle + 360.0 * 16.0 / 600.0, 360.0);
@@ -382,7 +384,7 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
-        const QRectF r(1, 1, 8, 8);
+        const QRectF r = QRectF(rect()).adjusted(1, 1, -1, -1);
         p.setPen(QPen(QColor(255, 255, 255, 51), 2.0));
         p.drawEllipse(r);
         p.setPen(QPen(m_color, 2.0, Qt::SolidLine, Qt::FlatCap));
@@ -403,7 +405,7 @@ public:
     explicit ErrorTag(QWidget *parent) : QWidget(parent)
     {
         setFont(uiFont(kFontPx()));
-        setFixedHeight(kBarHeight - 1);
+        ui::bindSize(this, ui::SizeKind::FixedHeight, kBarHeight - 1);
     }
     void setText(const QString &t)
     {
@@ -416,7 +418,7 @@ public:
     void setColor(const QColor &c) { m_color = c; update(); }
     QSize sizeHint() const override
     {
-        return QSize(qMin(200, 12 + 3 + fontMetrics().horizontalAdvance(m_text)), kBarHeight - 1);
+        return QSize(qMin(ui::sz(200), ui::sz(15) + fontMetrics().horizontalAdvance(m_text)), ui::sz(kBarHeight - 1));
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
 
@@ -424,9 +426,10 @@ protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        drawIcon(p, Icon::Alert, QRectF(0, (height() - 12) / 2.0, 12, 12), m_color);
+        const double ic = ui::sz(12);
+        drawIcon(p, Icon::Alert, QRectF(0, (height() - ic) / 2.0, ic, ic), m_color);
         p.setPen(m_color);
-        const QRect tr = rect().adjusted(15, 0, 0, 0);
+        const QRect tr = rect().adjusted(ui::sz(15), 0, 0, 0);
         p.drawText(tr, Qt::AlignVCenter | Qt::AlignLeft, fontMetrics().elidedText(m_text, Qt::ElideRight, tr.width()));
     }
 
@@ -458,7 +461,7 @@ public:
     void setTextColor(const QColor &c) { m_fg = c; update(); }
     QSize sizeHint() const override
     {
-        return QSize(4 + 7 + 3 + fontMetrics().horizontalAdvance(text()) + 4, fontMetrics().height() + 2);
+        return QSize(ui::sz(18) + fontMetrics().horizontalAdvance(text()), fontMetrics().height() + 2);
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
 
@@ -474,9 +477,10 @@ protected:
         }
         p.setPen(Qt::NoPen);
         p.setBrush(withAlpha(m_item.color, m_item.visible ? 1.0 : 0.3));
-        p.drawEllipse(QRectF(4, (height() - 7) / 2.0, 7, 7));
+        const double d = ui::sz(7);
+        p.drawEllipse(QRectF(ui::sz(4), (height() - d) / 2.0, d, d));
         p.setPen(m_fg);
-        p.drawText(rect().adjusted(4 + 7 + 3, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, text());
+        p.drawText(rect().adjusted(ui::sz(14), 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, text());
     }
 
 private:
@@ -495,7 +499,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     : QWidget(parent), m_ctrl(replay)
 {
     setObjectName(QStringLiteral("appStatusBar"));
-    setFixedHeight(kBarHeight);
+    ui::bindSize(this, ui::SizeKind::FixedHeight, kBarHeight);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);   // 窗口变窄时右侧裁掉，不撑大主窗口
     setFont(uiFont(kFontPx()));
 
@@ -503,7 +507,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_left = new QWidget(this);
     QHBoxLayout *left = new QHBoxLayout(m_left);
     left->setContentsMargins(0, 0, 0, 0);
-    left->setSpacing(kGap);
+    ui::bindSpacing(left, kGap);
     m_play = new IconButton(Icon::Play, kBarHeight, m_left);
     left->addWidget(m_play);
     m_seek = new SeekBar(m_left);
@@ -524,7 +528,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     speedLay->addWidget(m_speed);
     m_customSpeed = new QLineEdit(speedBox);
     m_customSpeed->setFont(monoFont(kSmallFontPx()));
-    m_customSpeed->setFixedSize(64, 16);
+    ui::bindSize(m_customSpeed, ui::SizeKind::Fixed, 64, 16);
     m_customSpeed->setToolTip(QStringLiteral("输入自定义倍速，按回车键确认生效"));
     QDoubleValidator *val = new QDoubleValidator(0.0, 1e9, 3, m_customSpeed);
     val->setNotation(QDoubleValidator::StandardNotation);
@@ -540,7 +544,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_right = new QWidget(rightClip);
     QHBoxLayout *right = new QHBoxLayout(m_right);
     right->setContentsMargins(0, 0, 0, 0);
-    right->setSpacing(kGap);
+    ui::bindSpacing(right, kGap);
     m_spinner = new Spinner(m_right);
     m_loading = new QLabel(m_right);
     QWidget *loadingBox = m_loadingBox = new QWidget(m_right);
@@ -565,7 +569,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
         right->addWidget(l);
     }
     m_sourceLayout = new QHBoxLayout;
-    m_sourceLayout->setSpacing(kGap);
+    ui::bindSpacing(m_sourceLayout, kGap);
     m_sourceLayout->setContentsMargins(0, 0, 0, 0);
     right->addLayout(m_sourceLayout);
     m_count = new QLabel(m_right);
@@ -605,7 +609,16 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
         m_customSpeed->setFont(monoFont(kSmallFontPx()));
         for (QLabel *l : { m_height, m_lonLat, m_fps, m_count })
             l->setFont(monoFont(kFontPx()));
+        m_speed->setFont(monoFont(kSmallFontPx()));
+        m_error->setFont(uiFont(kFontPx()));
+        for (SourceButton *b : qAsConst(m_sourceButtons)) {
+            b->setFont(uiFont(kFontPx()));
+            b->updateGeometry();
+        }
+        m_speed->updateGeometry();
+        applyTheme();
         syncState();
+        QTimer::singleShot(0, this, &AppStatusBar::updateSeekWidth);
     });
     connect(m_ctrl, &ReplayController::stateChanged, this, &AppStatusBar::syncState);
     connect(m_ctrl, &ReplayController::timeChanged, this, &AppStatusBar::syncTime);
@@ -783,9 +796,9 @@ void AppStatusBar::applyTheme()
     m_speed->view()->setStyleSheet(QStringLiteral("QAbstractItemView { background: %1; color: %2;"
                                                   " selection-background-color: %3; selection-color: %2; }")
                                        .arg(m_theme.bg.name(), m_theme.fg.name(), cssColor(withAlpha(m_theme.fg, 0.2))));
-    m_customSpeed->setStyleSheet(QStringLiteral("QLineEdit { padding: 0 4px; background: rgba(255,255,255,0.08);"
+    m_customSpeed->setStyleSheet(Theme::scalePx(QStringLiteral("QLineEdit { padding: 0px 4px; background: rgba(255,255,255,0.08);"
                                                 " border: 1px solid rgba(255,255,255,0.15); border-radius: 2px; color: %1; }")
-                                     .arg(m_theme.fg.name()));
+                                     .arg(m_theme.fg.name())));
     setLabelColor(m_time, 1.0);
     for (QLabel *l : { m_height, m_lonLat, m_fps })
         setLabelColor(l, 0.85);
@@ -826,14 +839,15 @@ bool AppStatusBar::eventFilter(QObject *obj, QEvent *e)
 // 左侧占满剩余宽度（flex: 1），右侧按内容宽度靠右（flex: 0 1 auto），太窄时右侧从左边裁掉
 void AppStatusBar::updateSeekWidth()
 {
-    const int avail = qMax(0, width() - 2 * kPadX);
-    const int h = kBarHeight - 1;
+    const int pad = ui::sz(kPadX);
+    const int avail = qMax(0, width() - 2 * pad);
+    const int h = height() - 1;
     const int rightHint = m_right->sizeHint().width();
     const int leftMin = m_left->minimumSizeHint().width();
     const int rightW = qBound(0, qMin(rightHint, avail - leftMin), avail);
     const int leftW = avail - rightW;
-    m_left->setGeometry(kPadX, 1, leftW, h);
-    m_rightClip->setGeometry(kPadX + leftW, 1, rightW, h);
+    m_left->setGeometry(pad, 1, leftW, h);
+    m_rightClip->setGeometry(pad + leftW, 1, rightW, h);
     m_right->setGeometry(rightW - rightHint, 0, rightHint, h);
 }
 

@@ -1,4 +1,5 @@
 #include "trackpointdialog.h"
+#include "theme.h"
 
 #include <QDateTime>
 #include <QDialogButtonBox>
@@ -133,9 +134,9 @@ TrackPointDialog::TrackPointDialog(const Track &track, QWidget *parent)
     info << tr("%1（%2）").arg(trackSourceName(track.source), track.fileName);
     info << tr("%L1 个点迹").arg(track.points.size());
     QLabel *dot = new QLabel(this);
-    dot->setFixedSize(10, 10);
-    dot->setStyleSheet(QStringLiteral("background:%1; border-radius:5px;")
-                           .arg(trackSourceColor(track.source).name()));
+    dot->setFixedSize(ui::sz(10), ui::sz(10));
+    dot->setStyleSheet(QStringLiteral("background:%1; border-radius:%2px;")
+                           .arg(trackSourceColor(track.source).name()).arg(ui::sz(5)));
     QLabel *meta = new QLabel(info.join(QStringLiteral("    ")), this);
     QPushButton *exportBtn = new QPushButton(tr("导出 CSV..."), this);
     exportBtn->setToolTip(tr("按当前排序把点迹导出为 CSV 文件"));
