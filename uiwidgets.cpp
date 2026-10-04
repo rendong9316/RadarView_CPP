@@ -213,56 +213,6 @@ void IconButton::paintEvent(QPaintEvent *)
 }
 
 // ---------------------------------------------------------------
-HelpTip::HelpTip(const QString &text, QWidget *parent) : QToolButton(parent), m_text(text)
-{
-    bindSize(this, SizeKind::Fixed, 16, 16);
-    setCursor(Qt::PointingHandCursor);
-    setToolTip(QStringLiteral("点击查看帮助"));
-    connect(this, &QToolButton::clicked, this, [this]() {
-        // 弹出说明框：max-width 280，bg-primary，10px 12px 内边距
-        QLabel *pop = new QLabel(m_text, this, Qt::Popup);
-        pop->setAttribute(Qt::WA_DeleteOnClose);
-        pop->setWordWrap(true);
-        pop->setMaximumWidth(280);
-        setThemedStyle(pop, QStringLiteral("QLabel { background: var(--bg-primary); color: var(--text-primary);"
-                                           " border: 1px solid var(--border-primary); border-radius: 4px;"
-                                           " padding: 10px 12px; font-family: %1; font-size: 11px; }")
-                                .arg(uiFamilies()));
-        pop->adjustSize();
-        const QPoint below = mapToGlobal(QPoint(width() / 2, height() + 6));
-        pop->move(below.x() - pop->width() / 2, below.y());
-        pop->show();
-    });
-    connect(Theme::instance(), &Theme::changed, this, [this]() { update(); });
-}
-
-void HelpTip::paintEvent(QPaintEvent *)
-{
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    const QColor c = themeColor(m_hover ? "accent-primary" : "text-tertiary");
-    if (m_hover)
-        p.setBrush(QColor(0, 122, 204, 26));
-    p.setPen(QPen(c, 1.0));
-    p.drawEllipse(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5));
-    drawLucide(p, LucideIcon::HelpCircle, QRectF(rect()).adjusted(1, 1, -1, -1), c);
-}
-
-void HelpTip::enterEvent(QEvent *e)
-{
-    m_hover = true;
-    update();
-    QToolButton::enterEvent(e);
-}
-
-void HelpTip::leaveEvent(QEvent *e)
-{
-    m_hover = false;
-    update();
-    QToolButton::leaveEvent(e);
-}
-
-// ---------------------------------------------------------------
 namespace {
 // 菜单项：图标 + 文字，用 QWidgetAction 才能分别控制普通项和危险项的悬停色
 class MenuItem : public QWidget

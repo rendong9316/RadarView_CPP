@@ -35,3 +35,6 @@
     { LucideIcon::Wrench, "P:M14.7 6.3a1 1 0 0 0-3.4-3.4l1.4 1.4-2.4 2.4L6.3 7.3a2.4 2.4 0 0 0 0 3.4l3.0 3a2.4 2.4 0 0 0 3.4 0l3.4-3.4-2.4-2.4z" },
     { LucideIcon::Database, "P:M12 8c4.4 0 8-1.3 8-3s-3.6-3-8-3-8 1.3-8 3 3.6 3 8 3|P:M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5|P:M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" },
     { LucideIcon::Maximize2, "P:M15 3h6v6|P:M9 21H3v-6|P:M21 3l-7 7|P:M3 21l7-7" },
+    { LucideIcon::Calendar, "P:M8 2v4|P:M16 2v4|R:3 4 18 18 2|P:M3 10h18" },
+    { LucideIcon::ChevronLeft, "P:m15 18-6-6 6-6" },
+    { LucideIcon::ChevronRight, "P:m9 18 6-6-6-6" },

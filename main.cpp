@@ -2,6 +2,7 @@
 #include "globewidget.h"
 
 #include <QApplication>
+#include <QDateTime>
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QTextStream>
@@ -723,6 +724,30 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                               QStringLiteral("时间筛选后显示 %1 条（期望 %2），回放 %3 ~ %4").arg(w->displayedTrackCount()).arg(expect)
                                   .arg(formatBeijingTime(w->replay()->start()), formatBeijingTime(w->replay()->end())));
                         fp->clickClear();
+                        // 宽松格式输入：斜杠日期、紧凑格式、只填时间、只填日期
+                        {
+                            const QDateTime b = QDateTime::fromMSecsSinceEpoch(lo + 8LL * 3600 * 1000, Qt::UTC);
+                            const QString d1 = b.toString(QStringLiteral("yyyy/M/d H:mm"));
+                            const QString d2 = b.addSecs(3600).toString(QStringLiteral("yyyyMMdd HHmm"));
+                            fp->setInputTexts(d1, d2);
+                            fp->clickApply();
+                            check(fp->errorText().isEmpty() && w->displayedTrackCount() == expect,
+                                  QStringLiteral("宽松格式「%1」~「%2」：%3 条（期望 %4）%5").arg(d1, d2).arg(w->displayedTrackCount())
+                                      .arg(expect).arg(fp->errorText()));
+                            fp->setInputTexts(b.toString(QStringLiteral("yyyy-MM-dd HH:mm")), b.addSecs(3600).toString(QStringLiteral("H:mm")));
+                            fp->clickApply();
+                            check(fp->errorText().isEmpty() && w->displayedTrackCount() == expect,
+                                  QStringLiteral("结束只填时间：%1 条 %2").arg(w->displayedTrackCount()).arg(fp->errorText()));
+                            fp->setInputTexts(b.toString(QStringLiteral("yyyy年M月d日")), b.toString(QStringLiteral("yyyy-MM-dd")));
+                            fp->clickApply();
+                            check(fp->errorText().isEmpty() && w->displayedTrackCount() > 0,
+                                  QStringLiteral("只填日期（整天）：%1 条 %2").arg(w->displayedTrackCount()).arg(fp->errorText()));
+                            fp->setInputTexts(QStringLiteral("abc"), QStringLiteral("2026-13-40"));
+                            fp->clickApply();
+                            check(fp->errorText().contains(QStringLiteral("格式无法识别")),
+                                  QStringLiteral("非法格式提示：%1").arg(fp->errorText()));
+                            fp->clickClear();
+                        }
                         // 点数筛选（按原始总点数）
                         int expectPc = 0;
                         for (const Track &tr : store->tracks())
@@ -807,6 +832,14 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                                         w->activatePanel(PanelId::Settings);
                                         settle();
                                         w->grab().save(dir + QStringLiteral("/shot50_settings.png"));
+                                        w->activatePanel(PanelId::TimeFilter);
+                                        w->filterPanel()->openCalendar(0);
+                                        settle();
+                                        w->grab().save(dir + QStringLiteral("/shot50_filter.png"));
+                                        sp->setFontValue(14);
+                                        settle();
+                                        w->grab().save(dir + QStringLiteral("/shot14_filter.png"));
+                                        w->filterPanel()->openCalendar(0);   // 收起
                                         sp->setFontValue(14);
                                         w->activatePanel(PanelId::Manage);
                                         settle();

@@ -1,12 +1,14 @@
 #ifndef SIDEPANELS_H
 #define SIDEPANELS_H
 
+#include <QList>
 #include <QWidget>
 
 #include "track.h"
 
+class QCalendarWidget;
 class QCheckBox;
-class QDateTimeEdit;
+class QDate;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -46,16 +48,29 @@ public:
     QString errorText() const;
     QString rangeText() const;
     void setPointCount(TrackSource s, bool enabled, int min, int max);
+    void setInputTexts(const QString &start, const QString &end);   // 模拟手动键入
+    void openCalendar(int which);           // 0 起始 / 1 结束；再次点击同一个则收起
 
 signals:
     void changed();
 
 private:
     void syncUi();
+    // 解析输入框（北京时间，宽松格式），成功返回 UTC 毫秒；空串或格式错误返回 false
+    bool parseInput(int which, qint64 *ms) const;
+    void pickDate(const QDate &d);
+    void closeCalendar();
+    void fillRange(qint64 startMs, qint64 endMs);
+    void updateCalendarMarks();
     TrackFilterState *m_state;
     QLabel *m_timeIndicator = nullptr, *m_pcIndicator = nullptr, *m_range = nullptr, *m_error = nullptr;
-    QDateTimeEdit *m_start = nullptr, *m_end = nullptr;
-    bool m_startSet = false, m_endSet = false;
+    QLineEdit *m_start = nullptr, *m_end = nullptr;
+    QLabel *m_duration = nullptr;           // 「时长 2 小时 30 分」或格式提示
+    QWidget *m_calBox = nullptr;            // 内嵌日历（不用弹窗）
+    QLabel *m_calTitle = nullptr;
+    QCalendarWidget *m_cal = nullptr;
+    int m_calTarget = -1;
+    QList<QPushButton *> m_presets;         // 全部数据 / 最早 1 小时 / 最后 1 小时
     QPushButton *m_apply = nullptr, *m_clear = nullptr;
     QCheckBox *m_pcCheck[3];
     QLineEdit *m_pcMin[3], *m_pcMax[3];

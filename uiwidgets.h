@@ -42,23 +42,6 @@ private:
     QByteArray m_color, m_hover;
 };
 
-// HelpTip.vue：16px 圆形问号，悬停显示说明
-class HelpTip : public QToolButton
-{
-    Q_OBJECT
-public:
-    HelpTip(const QString &text, QWidget *parent = nullptr);
-
-protected:
-    void paintEvent(QPaintEvent *e) override;
-    void enterEvent(QEvent *e) override;
-    void leaveEvent(QEvent *e) override;
-
-private:
-    QString m_text;
-    bool m_hover = false;
-};
-
 // CesiumMap.vue 右键菜单：#1e1e2e 底、#3a3a5c 边框、圆角 6、13px，项内边距 8px 16px，
 // 悬停为主题强调色，危险项悬停 #ef4444
 class ContextMenu : public QMenu

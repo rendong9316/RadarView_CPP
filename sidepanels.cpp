@@ -7,10 +7,15 @@
 #include "uiwidgets.h"
 
 #include <QCheckBox>
+#include <QCalendarWidget>
 #include <QDateTime>
-#include <QDateTimeEdit>
 #include <QEvent>
+#include <QLocale>
+#include <QRegularExpression>
+#include <QTextCharFormat>
+#include <QToolButton>
 #include <QHBoxLayout>
+#include <QIntValidator>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -29,9 +34,79 @@ namespace {
 
 const qint64 kBjMs = 8LL * 3600 * 1000;
 
+// 北京时间文本；整分钟只显示到分，否则带秒
 QString bjMinute(qint64 ms)
 {
-    return QDateTime::fromMSecsSinceEpoch(ms + kBjMs, Qt::UTC).toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+    return QDateTime::fromMSecsSinceEpoch(ms + kBjMs, Qt::UTC)
+        .toString(ms % 60000 == 0 ? QStringLiteral("yyyy-MM-dd HH:mm") : QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+}
+
+QDate bjDate(qint64 ms)
+{
+    return QDateTime::fromMSecsSinceEpoch(ms + kBjMs, Qt::UTC).date();
+}
+
+// 宽松解析北京时间（结果为数值上加了 8 小时的 UTC QDateTime）。支持：
+//   2026-04-27 09:30[:15]、2026/4/27 9:30、2026.4.27、2026年4月27日 9:30、20260427 0930、202604270930、
+//   只有日期（起始取 00:00:00，结束取 23:59:59）、只有时间 9:30（日期用 fallback）
+bool parseLoose(const QString &input, bool isEnd, const QDate &fallback, QDateTime *out)
+{
+    QString s = input.trimmed();
+    if (s.isEmpty())
+        return false;
+    s.replace(QLatin1Char('/'), QLatin1Char('-')).replace(QLatin1Char('.'), QLatin1Char('-'))
+        .replace(QStringLiteral("年"), QStringLiteral("-")).replace(QStringLiteral("月"), QStringLiteral("-"))
+        .replace(QStringLiteral("日"), QStringLiteral(" ")).replace(QStringLiteral("："), QStringLiteral(":"))
+        .replace(QLatin1Char('T'), QLatin1Char(' '));
+    s = s.simplified();
+
+    QDate date;
+    int h = -1, mi = 0, sec = 0;
+    static const QRegularExpression full(QStringLiteral(
+        "^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:\\s+(\\d{1,2})(?::(\\d{1,2}))?(?::(\\d{1,2}))?)?$"));
+    static const QRegularExpression compact(QStringLiteral("^(\\d{4})(\\d{2})(\\d{2})(?:\\s*(\\d{2})(\\d{2})?(\\d{2})?)?$"));
+    static const QRegularExpression timeOnly(QStringLiteral("^(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?$"));
+    QRegularExpressionMatch m = full.match(s);
+    if (!m.hasMatch())
+        m = compact.match(s);
+    if (m.hasMatch()) {
+        date = QDate(m.captured(1).toInt(), m.captured(2).toInt(), m.captured(3).toInt());
+        if (!m.captured(4).isEmpty()) {
+            h = m.captured(4).toInt();
+            mi = m.captured(5).toInt();
+            sec = m.captured(6).toInt();
+        }
+    } else {
+        m = timeOnly.match(s);
+        if (!m.hasMatch() || !fallback.isValid())
+            return false;
+        date = fallback;
+        h = m.captured(1).toInt();
+        mi = m.captured(2).toInt();
+        sec = m.captured(3).toInt();
+    }
+    if (!date.isValid())
+        return false;
+    const QTime time = h < 0 ? (isEnd ? QTime(23, 59, 59) : QTime(0, 0)) : QTime(h, mi, sec);
+    if (!time.isValid())
+        return false;
+    *out = QDateTime(date, time, Qt::UTC);
+    return true;
+}
+
+// 「2 天 3 小时 15 分」
+QString durationText(qint64 ms)
+{
+    const qint64 totalMin = ms / 60000;
+    const qint64 d = totalMin / 1440, h = totalMin % 1440 / 60, mi = totalMin % 60;
+    QStringList parts;
+    if (d)
+        parts << QStringLiteral("%1 天").arg(d);
+    if (h)
+        parts << QStringLiteral("%1 小时").arg(h);
+    if (mi || parts.isEmpty())
+        parts << QStringLiteral("%1 分").arg(mi);
+    return parts.join(QLatin1Char(' '));
 }
 
 // 「数据源 key」与 TrackSource 下标
@@ -236,33 +311,111 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
     m_range->setWordWrap(true);
     v->addWidget(m_range);
 
-    QHBoxLayout *ir = new QHBoxLayout;
-    ir->setSpacing(4);
-    m_start = new QDateTimeEdit(this);
-    m_end = new QDateTimeEdit(this);
-    for (QDateTimeEdit *e : { m_start, m_end }) {
+    // 快捷范围：一键填入并立即应用
+    QHBoxLayout *pr = new QHBoxLayout;
+    pr->setSpacing(4);
+    static const char *const presetNames[3] = { "全部数据", "最早 1 小时", "最后 1 小时" };
+    for (int i = 0; i < 3; ++i) {
+        QPushButton *b = new QPushButton(QString::fromUtf8(presetNames[i]), this);
+        b->setObjectName(QStringLiteral("presetBtn"));
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(QStringLiteral("填入该时间段并立即应用过滤"));
+        b->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        pr->addWidget(b, 1);
+        m_presets << b;
+        connect(b, &QPushButton::clicked, this, [this, i]() {
+            const qint64 hour = 3600000;
+            if (i == 0)
+                fillRange(m_dataMin, m_dataMax);
+            else if (i == 1)
+                fillRange(m_dataMin, qMin(m_dataMax, m_dataMin + hour));
+            else
+                fillRange(qMax(m_dataMin, m_dataMax - hour), m_dataMax);
+            clickApply();
+        });
+    }
+    v->addLayout(pr);
+
+    // 起止输入：可直接键入（宽松格式），或点右侧日历按钮在下方内嵌日历里选日期
+    for (int which = 0; which < 2; ++which) {
+        QHBoxLayout *row = new QHBoxLayout;
+        row->setSpacing(4);
+        QLabel *l = new QLabel(which == 0 ? QStringLiteral("起始") : QStringLiteral("结束"), this);
+        l->setObjectName(QStringLiteral("timeSep"));
+        QLineEdit *e = new QLineEdit(this);
         e->setObjectName(QStringLiteral("timeInput"));
-        e->setTimeSpec(Qt::UTC);                 // 显示值 = 北京时间（数值上加了 8 小时的 UTC）
-        e->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm"));
-        e->setCalendarPopup(true);
-        e->setSpecialValueText(QStringLiteral("年 /月/日 --:--"));
         e->setMinimumWidth(0);
         e->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        e->setClearButtonEnabled(true);
+        e->setToolTip(QStringLiteral("北京时间。支持 2026-04-27 09:30、2026/4/27 9:30、20260427 0930；"
+                                     "只填日期时起始取 00:00、结束取 23:59；只填时间时日期取另一框或数据起始日"));
+        ui::IconButton *cal = new ui::IconButton(LucideIcon::Calendar, 14, "text-tertiary", "accent-primary", this);
+        ui::bindSize(cal, ui::SizeKind::Fixed, 24, 24);
+        cal->setCursor(Qt::PointingHandCursor);
+        cal->setToolTip(QStringLiteral("从日历选择日期"));
+        row->addWidget(l);
+        row->addWidget(e, 1);
+        row->addWidget(cal);
+        v->addLayout(row);
+        (which == 0 ? m_start : m_end) = e;
+        connect(cal, &QToolButton::clicked, this, [this, which]() { openCalendar(which); });
+        connect(e, &QLineEdit::textChanged, this, [this]() { syncUi(); });
+        connect(e, &QLineEdit::returnPressed, this, [this]() { clickApply(); });
     }
-    QLabel *sep = new QLabel(QStringLiteral("至"), this);
-    sep->setObjectName(QStringLiteral("timeSep"));
-    ir->addWidget(m_start, 1);
-    ir->addWidget(sep);
-    ir->addWidget(m_end, 1);
-    v->addLayout(ir);
-    connect(m_start, &QDateTimeEdit::dateTimeChanged, this, [this]() {
-        m_startSet = m_start->dateTime() != m_start->minimumDateTime();
-        syncUi();
-    });
-    connect(m_end, &QDateTimeEdit::dateTimeChanged, this, [this]() {
-        m_endSet = m_end->dateTime() != m_end->minimumDateTime();
-        syncUi();
-    });
+
+    // 内嵌日历（不用弹出窗口）：数据覆盖的日期加粗，已选区间底色高亮
+    m_calBox = new QWidget(this);
+    m_calBox->setObjectName(QStringLiteral("calBox"));
+    m_calBox->setAttribute(Qt::WA_StyledBackground);
+    QVBoxLayout *cv = new QVBoxLayout(m_calBox);
+    ui::bindMargins(cv, 6, 4, 6, 6);
+    ui::bindSpacing(cv, 4);
+    QHBoxLayout *ch = new QHBoxLayout;
+    m_calTitle = new QLabel(m_calBox);
+    m_calTitle->setObjectName(QStringLiteral("calTitle"));
+    ui::IconButton *calClose = new ui::IconButton(LucideIcon::X, 13, "text-tertiary", "text-primary", m_calBox);
+    ui::bindSize(calClose, ui::SizeKind::Fixed, 20, 20);
+    calClose->setToolTip(QStringLiteral("收起日历"));
+    ch->addWidget(m_calTitle, 1);
+    ch->addWidget(calClose);
+    cv->addLayout(ch);
+    m_cal = new QCalendarWidget(m_calBox);
+    m_cal->setLocale(QLocale(QLocale::Chinese, QLocale::China));
+    m_cal->setFirstDayOfWeek(Qt::Monday);
+    m_cal->setGridVisible(false);
+    m_cal->setVerticalHeaderFormat(QCalendarWidget::NoVerticalHeader);
+    m_cal->setHorizontalHeaderFormat(QCalendarWidget::SingleLetterDayNames);
+    m_cal->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    if (QWidget *nav = m_cal->findChild<QWidget *>(QStringLiteral("qt_calendar_navigationbar")))
+        nav->setAttribute(Qt::WA_StyledBackground);   // 默认用调色板高亮色铺底，换成 QSS 背景
+    cv->addWidget(m_cal);
+    v->addWidget(m_calBox);
+    m_calBox->hide();
+    connect(calClose, &QToolButton::clicked, this, &FilterPanel::closeCalendar);
+    connect(m_cal, &QCalendarWidget::clicked, this, &FilterPanel::pickDate);
+    connect(m_cal, &QCalendarWidget::activated, this, &FilterPanel::pickDate);
+    m_cal->installEventFilter(new EscFilter(m_cal, [this]() { closeCalendar(); }));
+    // 翻月按钮换成 lucide 箭头，随主题和字号刷新
+    auto navIcons = [this]() {
+        const char *names[2] = { "qt_calendar_prevmonth", "qt_calendar_nextmonth" };
+        const LucideIcon icons[2] = { LucideIcon::ChevronLeft, LucideIcon::ChevronRight };
+        for (int i = 0; i < 2; ++i)
+            if (QToolButton *b = m_cal->findChild<QToolButton *>(QLatin1String(names[i]))) {
+                const int px = ui::sz(14);
+                b->setIcon(QIcon(lucidePixmap(icons[i], px, themeColor("text-primary"), devicePixelRatioF())));
+                b->setIconSize(QSize(px, px));
+            }
+        updateCalendarMarks();
+    };
+    navIcons();
+    connect(Theme::instance(), &Theme::changed, m_cal, navIcons);
+    connect(UiScale::instance(), &UiScale::changed, m_cal, navIcons);
+
+    m_duration = new QLabel(this);
+    m_duration->setObjectName(QStringLiteral("timeHint"));
+    m_duration->setAlignment(Qt::AlignCenter);
+    m_duration->setWordWrap(true);
+    v->addWidget(m_duration);
 
     QHBoxLayout *br = new QHBoxLayout;
     br->setSpacing(4);
@@ -297,8 +450,6 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
     QLabel *sec = new QLabel(QStringLiteral("航迹点长度筛选"), this);
     sec->setObjectName(QStringLiteral("sectionLabel"));
     lh->addWidget(sec);
-    lh->addWidget(new ui::HelpTip(QStringLiteral("按航迹点数过滤各数据源。勾选数据源后设置最小和最大点数阈值，仅显示点数在范围内的航迹。"
-                                                 "可用于过滤掉采样点过少的低质量航迹。"), this));
     lh->addStretch(1);
     v->addLayout(lh);
 
@@ -363,8 +514,29 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
         "#timeInput { padding: 4px 6px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 2px;"
         " color: var(--input-fg); font-family: %2; font-size: 11px; }"
         "#timeInput:focus { border-color: var(--accent-primary); }"
-        "#timeInput::drop-down { border: none; width: 14px; }"
+        "#timeInput[invalid=\"true\"] { border-color: var(--error); }"
         "#timeSep { color: var(--text-tertiary); font-size: 11px; }"
+        "#timeHint { color: var(--text-tertiary); font-size: 10px; }"
+        "#timeHint[invalid=\"true\"] { color: var(--error); }"
+        "#presetBtn { padding: 3px 4px; background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--border-primary);"
+        " border-radius: 2px; %1 font-size: 10px; }"
+        "#presetBtn:hover { background: var(--button-hover); border-color: var(--accent-primary); }"
+        "#presetBtn:disabled { color: var(--text-tertiary); }"
+        "#calBox { background: var(--bg-primary); border: 1px solid var(--accent-primary); border-radius: 4px; }"
+        "#calTitle { color: var(--accent-primary); font-size: 11px; font-weight: 600; }"
+        "QCalendarWidget QWidget#qt_calendar_navigationbar { background: var(--bg-secondary); border-radius: 2px; }"
+        "QCalendarWidget QToolButton { background: transparent; color: var(--text-primary); border: none; border-radius: 2px;"
+        " padding: 2px 6px; %1 font-size: 12px; font-weight: 600; }"
+        "QCalendarWidget QToolButton:hover { background: var(--button-hover); }"
+        "QCalendarWidget QToolButton::menu-indicator { image: none; width: 0px; }"
+        "QCalendarWidget QSpinBox { background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--input-border);"
+        " %1 font-size: 12px; padding: 1px 2px; }"
+        "QCalendarWidget QMenu { background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-primary);"
+        " %1 font-size: 11px; }"
+        "QCalendarWidget QMenu::item:selected { background: var(--accent-primary); color: #ffffff; }"
+        "QCalendarWidget QAbstractItemView { background: var(--bg-primary); color: var(--text-primary); outline: none;"
+        " selection-background-color: var(--accent-primary); selection-color: #ffffff; %1 font-size: 11px; }"
+        "QCalendarWidget QAbstractItemView:disabled { color: var(--text-tertiary); }"
         "#applyBtn { padding: 4px 8px; background: var(--accent-primary); color: #ffffff; border: none; border-radius: 2px;"
         " %1 font-size: 11px; font-weight: 600; }"
         "#applyBtn:disabled { background: #66007acc; color: #66ffffff; }"
@@ -400,57 +572,179 @@ void FilterPanel::setDataRange(qint64 minMs, qint64 maxMs)
 {
     m_dataMin = minMs;
     m_dataMax = maxMs;
-    m_range->setVisible(maxMs > minMs);
-    if (maxMs > minMs)
+    const bool has = maxMs > minMs;
+    m_range->setVisible(has);
+    if (has)
         m_range->setText(QStringLiteral("数据范围: %1 — %2").arg(bjMinute(minMs), bjMinute(maxMs)));
-    // 可选范围为数据范围前后各 1 小时；最小值本身作为「未设置」
-    const QDateTime lo = maxMs > minMs ? QDateTime::fromMSecsSinceEpoch(minMs - 3600000 + kBjMs, Qt::UTC)
-                                       : QDateTime(QDate(2000, 1, 1), QTime(0, 0), Qt::UTC);
-    const QDateTime hi = maxMs > minMs ? QDateTime::fromMSecsSinceEpoch(maxMs + 3600000 + kBjMs, Qt::UTC)
-                                       : QDateTime(QDate(2100, 1, 1), QTime(0, 0), Qt::UTC);
-    for (QDateTimeEdit *e : { m_start, m_end }) {
-        const bool set = e == m_start ? m_startSet : m_endSet;
-        const QDateTime keep = e->dateTime();
-        e->blockSignals(true);
-        e->setDateTimeRange(lo.addSecs(-60), hi);
-        e->setDateTime(set ? keep : e->minimumDateTime());
-        e->blockSignals(false);
+    for (QPushButton *b : m_presets)
+        b->setEnabled(has);
+    // 日历只能选有数据的日期段
+    if (has)
+        m_cal->setDateRange(bjDate(minMs), bjDate(maxMs));
+    else
+        m_cal->setDateRange(QDate(2000, 1, 1), QDate(2100, 12, 31));
+    updateCalendarMarks();
+    syncUi();
+}
+
+bool FilterPanel::parseInput(int which, qint64 *ms) const
+{
+    const QLineEdit *self = which == 0 ? m_start : m_end;
+    const QLineEdit *other = which == 0 ? m_end : m_start;
+    // 只填时间时，日期取另一个输入框的日期，否则取数据起始日
+    QDate fallback;
+    QDateTime od;
+    if (parseLoose(other->text(), which != 0, QDate(), &od))
+        fallback = od.date();
+    else if (m_dataMax > m_dataMin)
+        fallback = bjDate(which == 0 ? m_dataMin : m_dataMax);
+    QDateTime dt;
+    if (!parseLoose(self->text(), which == 1, fallback, &dt))
+        return false;
+    if (ms)
+        *ms = dt.toMSecsSinceEpoch() - kBjMs;
+    return true;
+}
+
+void FilterPanel::fillRange(qint64 startMs, qint64 endMs)
+{
+    if (endMs <= startMs)
+        return;
+    m_start->setText(bjMinute(startMs));
+    m_end->setText(bjMinute((endMs + 59999) / 60000 * 60000));   // 结束向上取整到分钟，不丢最后几秒
+    m_error->hide();
+    updateCalendarMarks();
+}
+
+void FilterPanel::openCalendar(int which)
+{
+    if (m_calBox->isVisible() && m_calTarget == which) {
+        closeCalendar();
+        return;
+    }
+    m_calTarget = which;
+    m_calTitle->setText(which == 0 ? QStringLiteral("选择起始日期") : QStringLiteral("选择结束日期"));
+    qint64 ms = 0;
+    QDate d;
+    if (parseInput(which, &ms) || parseInput(1 - which, &ms))
+        d = bjDate(ms);
+    else if (m_dataMax > m_dataMin)
+        d = bjDate(which == 0 ? m_dataMin : m_dataMax);
+    else
+        d = QDate::currentDate();
+    m_cal->setSelectedDate(d);
+    m_cal->setCurrentPage(d.year(), d.month());
+    updateCalendarMarks();
+    m_calBox->show();
+    m_cal->setFocus();
+}
+
+void FilterPanel::closeCalendar()
+{
+    m_calBox->hide();
+    m_calTarget = -1;
+}
+
+void FilterPanel::pickDate(const QDate &d)
+{
+    if (m_calTarget < 0 || !d.isValid())
+        return;
+    const int which = m_calTarget;
+    QLineEdit *self = which == 0 ? m_start : m_end;
+    QLineEdit *other = which == 0 ? m_end : m_start;
+    // 保留已填的时分；没填时起始取 00:00、结束取 23:59
+    qint64 ms = 0;
+    QTime t = which == 0 ? QTime(0, 0) : QTime(23, 59);
+    if (parseInput(which, &ms))
+        t = QDateTime::fromMSecsSinceEpoch(ms + kBjMs, Qt::UTC).time();
+    const QString fmt = QStringLiteral("yyyy-MM-dd HH:mm");
+    self->setText(QDateTime(d, t, Qt::UTC).toString(fmt));
+    // 另一个框还空着时一并填上同一天，选完一天就能直接应用
+    if (other->text().trimmed().isEmpty())
+        other->setText(QDateTime(d, which == 0 ? QTime(23, 59) : QTime(0, 0), Qt::UTC).toString(fmt));
+    m_error->hide();
+    if (which == 0) {
+        // 选完起始接着选结束
+        openCalendar(1);
+    } else {
+        closeCalendar();
+    }
+    updateCalendarMarks();
+}
+
+void FilterPanel::updateCalendarMarks()
+{
+    if (!m_cal)
+        return;
+    m_cal->setDateTextFormat(QDate(), QTextCharFormat());   // 清空全部
+    QTextCharFormat wk;
+    wk.setForeground(themeColor("text-primary"));
+    for (int d = Qt::Monday; d <= Qt::Sunday; ++d)
+        m_cal->setWeekdayTextFormat(Qt::DayOfWeek(d), wk);
+    QTextCharFormat hdr;
+    hdr.setForeground(themeColor("text-tertiary"));
+    hdr.setBackground(themeColor("bg-primary"));
+    m_cal->setHeaderTextFormat(hdr);
+    // 有数据的日期加粗、强调色
+    if (m_dataMax > m_dataMin) {
+        QTextCharFormat f;
+        f.setFontWeight(QFont::Bold);
+        f.setForeground(themeColor("accent-primary"));
+        const QDate last = bjDate(m_dataMax);
+        int guard = 0;
+        for (QDate d = bjDate(m_dataMin); d <= last && guard < 400; d = d.addDays(1), ++guard)
+            m_cal->setDateTextFormat(d, f);
+    }
+    // 已填区间铺底色
+    qint64 a = 0, b = 0;
+    if (parseInput(0, &a) && parseInput(1, &b) && a < b) {
+        QColor bg = themeColor("accent-primary");
+        bg.setAlpha(60);
+        const QDate last = bjDate(b);
+        int guard = 0;
+        for (QDate d = bjDate(a); d <= last && guard < 400; d = d.addDays(1), ++guard) {
+            QTextCharFormat f = m_cal->dateTextFormat(d);
+            f.setBackground(bg);
+            m_cal->setDateTextFormat(d, f);
+        }
     }
 }
 
 void FilterPanel::setInputs(qint64 startMs, qint64 endMs)
 {
-    auto toEdit = [](qint64 ms) {
-        const qint64 m = (ms + kBjMs) / 60000 * 60000;   // 分钟精度
-        return QDateTime::fromMSecsSinceEpoch(m, Qt::UTC);
-    };
-    for (QDateTimeEdit *e : { m_start, m_end }) {
-        const QDateTime v = toEdit(e == m_start ? startMs : endMs);
-        if (v <= e->minimumDateTime())
-            e->setMinimumDateTime(v.addSecs(-60));
-        if (v > e->maximumDateTime())
-            e->setMaximumDateTime(v);
-        e->setDateTime(v);
-    }
-    m_startSet = m_endSet = true;
+    m_start->setText(bjMinute(startMs));
+    m_end->setText(bjMinute(endMs));
     syncUi();
+}
+
+void FilterPanel::setInputTexts(const QString &start, const QString &end)
+{
+    m_start->setText(start);
+    m_end->setText(end);
 }
 
 void FilterPanel::clickApply()
 {
     m_error->hide();
-    if (!m_startSet || !m_endSet) {
-        m_error->setText(QStringLiteral("请设置起始和结束时间"));
+    auto fail = [this](const QString &msg) {
+        m_error->setText(msg);
         m_error->show();
-        return;
-    }
-    const qint64 start = m_start->dateTime().toMSecsSinceEpoch() - kBjMs;
-    const qint64 end = m_end->dateTime().toMSecsSinceEpoch() - kBjMs;
-    if (start >= end) {
-        m_error->setText(QStringLiteral("起始时间必须早于结束时间"));
-        m_error->show();
-        return;
-    }
+    };
+    if (m_start->text().trimmed().isEmpty() || m_end->text().trimmed().isEmpty())
+        return fail(QStringLiteral("请设置起始和结束时间"));
+    qint64 start = 0, end = 0;
+    if (!parseInput(0, &start))
+        return fail(QStringLiteral("起始时间格式无法识别，示例：2026-04-27 09:30"));
+    if (!parseInput(1, &end))
+        return fail(QStringLiteral("结束时间格式无法识别，示例：2026-04-27 18:00"));
+    if (start >= end)
+        return fail(QStringLiteral("起始时间必须早于结束时间"));
+    if (m_dataMax > m_dataMin && (end < m_dataMin || start > m_dataMax))
+        return fail(QStringLiteral("该时间段内没有数据（数据范围 %1 — %2）").arg(bjMinute(m_dataMin), bjMinute(m_dataMax)));
+    // 把宽松输入规范成统一格式，让用户看到实际生效的时间
+    m_start->setText(bjMinute(start));
+    m_end->setText(bjMinute(end));
+    closeCalendar();
     m_state->timeActive = true;
     m_state->timeMin = start;
     m_state->timeMax = end;
@@ -464,12 +758,9 @@ void FilterPanel::clickClear()
     m_state->timeActive = false;
     m_state->timeMin = m_state->timeMax = 0;
     m_state->save();
-    for (QDateTimeEdit *e : { m_start, m_end }) {
-        e->blockSignals(true);
-        e->setDateTime(e->minimumDateTime());
-        e->blockSignals(false);
-    }
-    m_startSet = m_endSet = false;
+    m_start->clear();
+    m_end->clear();
+    closeCalendar();
     m_error->hide();
     syncUi();
     emit changed();
@@ -503,8 +794,37 @@ void FilterPanel::setPointCount(TrackSource s, bool enabled, int min, int max)
 void FilterPanel::syncUi()
 {
     m_timeIndicator->setVisible(m_state->timeActive);
-    m_clear->setVisible(m_state->timeActive);
-    m_apply->setEnabled(m_startSet && m_endSet);
+    m_clear->setVisible(m_state->timeActive || !m_start->text().isEmpty() || !m_end->text().isEmpty());
+    // 输入框逐个校验：格式错误时红框，下方提示改为示例格式
+    qint64 a = 0, b = 0;
+    const bool okA = parseInput(0, &a), okB = parseInput(1, &b);
+    const bool badA = !m_start->text().trimmed().isEmpty() && !okA;
+    const bool badB = !m_end->text().trimmed().isEmpty() && !okB;
+    auto setInvalid = [](QWidget *w, bool bad) {
+        if (w->property("invalid").toBool() == bad)
+            return;
+        w->setProperty("invalid", bad);
+        w->style()->unpolish(w);
+        w->style()->polish(w);
+    };
+    setInvalid(m_start, badA);
+    setInvalid(m_end, badB);
+    bool hintBad = false;
+    if (badA || badB) {
+        m_duration->setText(QStringLiteral("格式无法识别，示例：2026-04-27 09:30 或 2026/4/27 9:30"));
+        hintBad = true;
+    } else if (okA && okB && a < b) {
+        m_duration->setText(QStringLiteral("时长 %1").arg(durationText(b - a)));
+    } else if (okA && okB) {
+        m_duration->setText(QStringLiteral("起始时间必须早于结束时间"));
+        hintBad = true;
+    } else {
+        m_duration->setText(QStringLiteral("可直接输入、点日历选日期，或用上方快捷范围"));
+    }
+    setInvalid(m_duration, hintBad);
+    m_apply->setEnabled(okA && okB && a < b);
+    if (m_calBox->isVisible())
+        updateCalendarMarks();
     m_pcIndicator->setVisible(m_state->hasPointCountFilter());
     for (int i = 0; i < 3; ++i) {
         m_pcMin[i]->setEnabled(m_pcCheck[i]->isChecked());
@@ -540,9 +860,6 @@ FlagPanel::FlagPanel(FlagStore *flags, RulerState *ruler, QWidget *parent)
     place->setToolTip(QStringLiteral("在地图上放置旗标"));
     place->setCursor(Qt::PointingHandCursor);
     ir->addWidget(place);
-    ir->addWidget(new ui::HelpTip(QStringLiteral("旗标是地图上的标记点。双击地图可放置旗标，或在此输入经纬度手动放置。"
-                                                 "选中两个旗标可计算两点间的距离（Vincenty 公式）和方位角。"), this),
-                  0, Qt::AlignVCenter);
     v->addLayout(ir);
     connect(place, &QPushButton::clicked, this, [this]() { placeFlag(m_lat->text(), m_lon->text()); });
     for (QLineEdit *e : { m_lat, m_lon })
@@ -589,8 +906,6 @@ FlagPanel::FlagPanel(FlagStore *flags, RulerState *ruler, QWidget *parent)
     QLabel *rt = new QLabel(QStringLiteral("航线标尺"), rs);
     rt->setObjectName(QStringLiteral("rulerTitle"));
     rh->addWidget(rt);
-    rh->addWidget(new ui::HelpTip(QStringLiteral("航线规划测距工具。启用后单击地图依次放置航点，自动计算每段距离和方位角，"
-                                                 "显示总距离和首尾方位。Esc 键退出标尺模式。"), rs));
     rh->addStretch(1);
     m_rulerToggle = new QPushButton(rs);
     m_rulerToggle->setObjectName(QStringLiteral("rulerToggle"));

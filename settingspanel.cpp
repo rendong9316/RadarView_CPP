@@ -291,7 +291,7 @@ QVBoxLayout *SettingsPanel::addGroup(QVBoxLayout *main, int icon, const QString 
     hh->addWidget(chev);
     hh->addWidget(ic);
     hh->addWidget(t);
-    hh->addWidget(new ui::HelpTip(tip, hdr));
+    hdr->setToolTip(tip);
     hh->addStretch(1);
     gv->addWidget(hdr);
 
