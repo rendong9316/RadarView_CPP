@@ -360,6 +360,17 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                       QStringLiteral("非预设倍速显示自定义输入 %1").arg(sb->speedText()));
                 rp->setSpeed(500);
                 check(!sb->isCustomSpeedShown(), QStringLiteral("回到预设倍速后收起输入框"));
+                // 在预设倍速下点「自定义...」必须出现输入框，键入后倍速生效
+                sb->chooseCustomSpeed();
+                check(sb->isCustomSpeedShown(), QStringLiteral("点「自定义...」后显示输入框：%1").arg(sb->speedText()));
+                sb->typeCustomSpeed(QStringLiteral("37.5"));
+                check(rp->speed() == 37.5 && sb->isCustomSpeedShown(),
+                      QStringLiteral("自定义倍速 37.5 生效：speed=%1 显示 %2").arg(rp->speed()).arg(sb->speedText()));
+                sb->chooseCustomSpeed();
+                sb->typeCustomSpeed(QStringLiteral("50"));
+                check(rp->speed() == 50 && !sb->isCustomSpeedShown() && sb->speedText() == QStringLiteral("50x"),
+                      QStringLiteral("自定义输入预设值 50 收回下拉：%1").arg(sb->speedText()));
+                rp->setSpeed(500);
                 const double gained = (rp->current() - before) / 1000.0;
                 check(gained > 350 && gained < 650, QStringLiteral("播放 1 s 前进 %1 s（期望约 500）").arg(gained, 0, 'f', 1));
                 // 一次推进到结尾

@@ -587,17 +587,27 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_seek->onSeek = [this](double f) { m_ctrl->seek(f); };
     connect(m_speed, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
         const int v = m_speed->itemData(i).toInt();
-        if (v <= 0) {                     // 「自定义...」：只显示输入框，倍速不变
+        if (v <= 0) {                     // 「自定义...」：显示输入框并聚焦，倍速不变
             m_showCustom = true;
-        } else {
-            m_showCustom = false;
-            m_ctrl->setSpeed(v);
+            syncState();
+            m_customSpeed->setFocus(Qt::OtherFocusReason);
+            m_customSpeed->selectAll();
+            return;
         }
+        m_showCustom = false;
+        m_ctrl->setSpeed(v);
         syncState();
     });
     connect(m_customSpeed, &QLineEdit::textEdited, this, &AppStatusBar::applyCustomSpeed);
     connect(m_customSpeed, &QLineEdit::editingFinished, this, [this]() {
         applyCustomSpeed(m_customSpeed->text());
+        // 输入完正好是预设值时收回下拉框显示（如输入 50 → 显示「50x」）
+        bool isPreset = false;
+        for (int s : kSpeedOptions)
+            isPreset = isPreset || s == m_ctrl->speed();
+        if (isPreset)
+            m_showCustom = false;
+        m_customSpeed->clearFocus();
         syncState();
     });
     connect(m_themeBtn, &QAbstractButton::clicked, this, &AppStatusBar::cycleTheme);
@@ -652,8 +662,11 @@ void AppStatusBar::syncState()
     for (int i = 0; i < m_speed->count() - 1; ++i)
         if (m_speed->itemData(i).toInt() == speed)
             preset = i;
-    if (preset >= 0 && !m_customSpeed->hasFocus())
-        m_showCustom = false;              // StatusBar.vue: watch(speed) 命中预设时收起输入框
+    // StatusBar.vue: watch(speed) —— 只在倍速「变化」为预设值时收起输入框；
+    // 不能每次同步都收，否则刚点「自定义...」时倍速仍是预设值，输入框会被立刻收掉
+    if (speed != m_lastSpeed && preset >= 0 && !m_customSpeed->hasFocus())
+        m_showCustom = false;
+    m_lastSpeed = speed;
     const bool custom = m_showCustom || preset < 0;
     m_speed->setCurrentIndex(custom ? m_speed->count() - 1 : preset);
     m_customSpeed->setVisible(custom || m_customSpeed->hasFocus());
@@ -890,6 +903,20 @@ bool AppStatusBar::isTimeShown() const
 }
 
 bool AppStatusBar::isCustomSpeedShown() const { return m_customSpeed->isVisible(); }
+
+void AppStatusBar::chooseCustomSpeed()
+{
+    const int idx = m_speed->count() - 1;
+    m_speed->setCurrentIndex(idx);
+    emit m_speed->activated(idx);
+}
+
+void AppStatusBar::typeCustomSpeed(const QString &text)
+{
+    m_customSpeed->setText(text);
+    emit m_customSpeed->textEdited(text);
+    emit m_customSpeed->editingFinished();
+}
 double AppStatusBar::seekProgress() const { return m_seek->progress(); }
 
 void AppStatusBar::clickSource(int index)

@@ -75,6 +75,8 @@ public:
     bool areReplayControlsShown() const;        // 播放按钮和进度条（任何时候都应显示）
     bool isTimeShown() const;                   // 时间和倍速（有数据时显示）
     bool isCustomSpeedShown() const;
+    void chooseCustomSpeed();                   // 模拟在下拉框里选「自定义...」
+    void typeCustomSpeed(const QString &text);  // 模拟在输入框里键入并回车
     double seekProgress() const;                // 进度条当前显示的进度 0..1
     void clickSource(int index);
     void clickTheme();
@@ -114,6 +116,7 @@ private:
     statusbar_detail::SpeedSelect *m_speed = nullptr;
     QLineEdit *m_customSpeed = nullptr;
     bool m_showCustom = false;
+    double m_lastSpeed = -1.0;                  // 上次同步时的倍速，用来判断倍速是否变化
 
     statusbar_detail::Spinner *m_spinner = nullptr;
     QLabel *m_loading = nullptr;
