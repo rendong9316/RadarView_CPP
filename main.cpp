@@ -971,6 +971,14 @@ int main(int argc, char *argv[])
     if (ok >= 0 && ok + 1 < args.size())
         w.openOnlineMap(args.at(ok + 1), args.contains(QStringLiteral("--amap")));
 
+    // 指定视角后再抓帧（回归验证用）：--look 经度,纬度,视高km
+    const int lookIdx = args.indexOf(QStringLiteral("--look"));
+    if (lookIdx >= 0 && lookIdx + 1 < args.size()) {
+        const QStringList p = args.at(lookIdx + 1).split(QLatin1Char(','));
+        if (p.size() >= 3)
+            w.globe()->lookAt(p[0].toDouble(), p[1].toDouble(), p[2].toDouble());
+    }
+
     // 抓一帧地球画面后退出（回归验证用）：--shot <png> [--shot-delay 毫秒]
     const int shotIdx = args.indexOf(QStringLiteral("--shot"));
     if (shotIdx >= 0 && shotIdx + 1 < args.size()) {

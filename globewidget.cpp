@@ -1146,7 +1146,9 @@ void GlobeWidget::paintGL()
     m_vbo.release();
     m_prog->release();
 
-    // 航迹画在瓦片之上；深度测试保留，地球背面的航迹被遮挡
+    // 航迹贴地绘制：关掉深度测试（否则与瓦片同深度会 z-fighting），
+    // 地球背面的遮挡由着色器按相机位置做地平线剔除
+    m_trackLayer.setEye(m_eye);
     m_trackLayer.draw(m_mvp, QSize(int(width() * devicePixelRatioF()), int(height() * devicePixelRatioF())),
                       float(devicePixelRatioF()));
 

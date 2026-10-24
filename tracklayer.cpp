@@ -8,7 +8,10 @@
 #include <cmath>
 #include <limits>
 
-const double TrackLayer::kAltitudeM = 10000.0;
+// 航迹贴地：抬高 0，视差严格为零（航迹与底图完全重合）。
+// 不被瓦片遮挡靠两件事：绘制时关掉深度测试 + 着色器里按地平线精确剔除背面。
+// 不能靠"抬到 10km 压过深度"——那样近距离视差极大：20km 视高时屏上错位上百像素。
+const double TrackLayer::kAltitudeM = 0.0;
 
 namespace {
 
@@ -31,6 +34,7 @@ uniform vec2 u_viewport;        // 视口像素尺寸
 uniform vec2 u_halfWidth;       // x: 线宽一半, y: 含抗锯齿余量
 uniform vec2 u_window;          // 回放显示的时间窗口（按线段结束时刻）
 uniform vec2 u_filter;          // 时间筛选：线段两端都要落在窗口内
+uniform vec3 u_eye;             // 相机位置（场景单位），用于地平线背面剔除
 varying float v_edge;
 varying float v_hw;             // 线宽一半，经 varying 传给片元（uniform 两段精度不同时 ES2 链接会失败）
 void main()
@@ -39,8 +43,12 @@ void main()
     vec4 c0 = u_mvp * vec4(a_p0, 1.0);
     vec4 c1 = u_mvp * vec4(a_p1, 1.0);
     v_edge = 0.0;
+    // 贴着地表画，深度测试已关，地球背面的遮挡改由这里判断：
+    // dot(p, eye-p) > 0 即"相机在 p 点的切平面外侧"，对球面与地平线判据完全等价。
+    // 两端任一在背面就整段剔除——半段留着会拉出细长的三角形。
     if (a_param.z < u_window.x || a_param.z > u_window.y || a_param.w < u_filter.x || a_param.z > u_filter.y
-            || c0.w < 1e-6 || c1.w < 1e-6) {
+            || c0.w < 1e-6 || c1.w < 1e-6
+            || dot(a_p0, u_eye - a_p0) < 0.0 || dot(a_p1, u_eye - a_p1) < 0.0) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);    // 移出裁剪空间
         return;
     }
@@ -76,6 +84,7 @@ attribute vec2 a_corner;
 uniform mat4 u_mvp;
 uniform vec2 u_viewport;
 uniform float u_radius;
+uniform vec3 u_eye;             // 相机位置（场景单位），用于地平线背面剔除
 varying vec2 v_uv;
 varying float v_r;
 void main()
@@ -83,7 +92,7 @@ void main()
     v_r = u_radius;
     vec4 c = u_mvp * vec4(a_pos, 1.0);
     v_uv = a_corner * (u_radius + 1.0);
-    if (c.w < 1e-6) {
+    if (c.w < 1e-6 || dot(a_pos, u_eye - a_pos) < 0.0) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         return;
     }
@@ -211,10 +220,12 @@ bool TrackLayer::initialize(QOpenGLFunctions *gl)
     m_uLineWindow = m_lineProg->uniformLocation("u_window");
     m_uLineColor = m_lineProg->uniformLocation("u_color");
     m_uLineFilter = m_lineProg->uniformLocation("u_filter");
+    m_uLineEye = m_lineProg->uniformLocation("u_eye");
     m_uDotMvp = m_dotProg->uniformLocation("u_mvp");
     m_uDotViewport = m_dotProg->uniformLocation("u_viewport");
     m_uDotRadius = m_dotProg->uniformLocation("u_radius");
     m_uDotColor = m_dotProg->uniformLocation("u_color");
+    m_uDotEye = m_dotProg->uniformLocation("u_eye");
 
     // 所有四边形共用一份索引：(0,1,2) (1,3,2)
     QVector<GLushort> idx;
@@ -646,12 +657,16 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
     gl->glEnable(GL_BLEND);
     gl->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     gl->glDepthMask(GL_FALSE);
+    // 航迹贴地（抬高 0），与瓦片同深度必然 z-fighting，所以整个航迹关掉深度测试；
+    // 地球背面的遮挡改在顶点着色器里按地平线判据剔除（见 kLineVs/kDotVs 的 u_eye）。
+    gl->glDisable(GL_DEPTH_TEST);
     gl->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_quadIbo);
 
     // ---- 线：静态批次 + 回放头部段 ----
     m_lineProg->bind();
     m_lineProg->setUniformValue(m_uLineMvp, mvp);
     m_lineProg->setUniformValue(m_uLineViewport, vp);
+    m_lineProg->setUniformValue(m_uLineEye, m_eye);
     m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(hw, hw + 1.0f));
     const float nowRel = float((m_replayTime - m_baseTime) / 1000.0);
     QVector2D window(-1e30f, 1e30f);
@@ -753,6 +768,7 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
     m_dotProg->bind();
     m_dotProg->setUniformValue(m_uDotMvp, mvp);
     m_dotProg->setUniformValue(m_uDotViewport, vp);
+    m_dotProg->setUniformValue(m_uDotEye, m_eye);
     gl->glEnableVertexAttribArray(0);
     gl->glEnableVertexAttribArray(1);
     auto setDotAttribs = [gl](qintptr off) {
@@ -794,6 +810,7 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
     gl->glBindBuffer(GL_ARRAY_BUFFER, 0);
     gl->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     gl->glDepthMask(GL_TRUE);
+    gl->glEnable(GL_DEPTH_TEST);        // 恢复，后续帧的瓦片还要用
     gl->glDisable(GL_BLEND);
 }
 

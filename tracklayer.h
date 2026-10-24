@@ -37,6 +37,9 @@ public:
     bool initialize(QOpenGLFunctions *gl);
     void cleanup();
     void draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr);
+    // 相机位置（场景单位）。航迹贴地绘制且关闭了深度测试，地球背面的遮挡
+    // 由着色器按 dot(p, eye-p) > 0 剔除，每帧绘制前必须设一次。
+    void setEye(const QVector3D &eye) { m_eye = eye; }
 
     // 数据与显示状态（任何时候都可调用，下次 draw 时生效）
     void setStore(const TrackStore *store);
@@ -138,6 +141,8 @@ private:
     QString m_log;
     int m_uLineMvp = -1, m_uLineViewport = -1, m_uLineHalfWidth = -1, m_uLineWindow = -1, m_uLineColor = -1;
     int m_uDotMvp = -1, m_uDotViewport = -1, m_uDotRadius = -1, m_uDotColor = -1;
+    int m_uLineEye = -1, m_uDotEye = -1;
+    QVector3D m_eye;                     // 相机位置（场景单位），供着色器剔除地球背面
 
     const TrackStore *m_store = nullptr;
     quint64 m_builtVersion = ~quint64(0);
