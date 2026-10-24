@@ -82,6 +82,9 @@ public:
     GlobeWidget *globe() const { return m_globe; }
     bool openTiles(const QString &path);
     void loadDefaultTiles();
+    void setMapSource(const QString &id);          // offline / tdt / amap
+    bool openOnlineMap(const QString &token, bool useAmap = false);
+    void syncSourceActions();
 
     // 导入数据文件（后台解析，完成后后台入库）；displayName 为空时雷达数据自动命名 Radar / Radar2 ...
     void importFile(TrackSource kind, const QString &path, const QString &displayName = QString());
@@ -167,6 +170,9 @@ private:
     QString m_isoKey;                       // 单独显示的航迹（按 key 记，删除航迹后下标会变）
     QSet<QString> m_dotKeys;                // 显示点迹的航迹
     QAction *m_labelAction = nullptr;
+    QAction *m_srcOffline = nullptr;
+    QAction *m_srcTdt = nullptr;
+    QAction *m_srcAmap = nullptr;
 
     DbSaveJob *m_saveJob = nullptr;
     QList<DbSaveJob *> m_saveQueue;

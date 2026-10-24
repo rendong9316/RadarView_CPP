@@ -1,4 +1,4 @@
-QT       += core gui widgets sql
+QT       += core gui widgets sql network
 
 TARGET = HelloVscode
 TEMPLATE = app
@@ -12,6 +12,7 @@ SOURCES += \
     mainwindow.cpp \
     globewidget.cpp \
     tilesource.cpp \
+    netmap.cpp \
     track.cpp \
     matfile.cpp \
     trackparsers.cpp \
@@ -35,6 +36,7 @@ HEADERS += \
     mainwindow.h \
     globewidget.h \
     tilesource.h \
+    netmap.h \
     track.h \
     matfile.h \
     trackparsers.h \

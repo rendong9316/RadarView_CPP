@@ -34,7 +34,7 @@ cd "$BUILD"
 cd release
 rm -f *.o moc_*.cpp moc_predefs.h
 rm -rf platforms sqldrivers imageformats tiles
-cp "$QTBIN/Qt5Core.dll" "$QTBIN/Qt5Gui.dll" "$QTBIN/Qt5Widgets.dll" "$QTBIN/Qt5Sql.dll" .
+cp "$QTBIN/Qt5Core.dll" "$QTBIN/Qt5Gui.dll" "$QTBIN/Qt5Widgets.dll" "$QTBIN/Qt5Sql.dll" "$QTBIN/Qt5Network.dll" .
 # OpenGL 回退：显卡驱动不支持 GL2 时走 ANGLE(D3D) 或软件渲染
 cp "$QTBIN/libEGL.dll" "$QTBIN/libGLESv2.dll" "$QTBIN/d3dcompiler_47.dll" "$QTBIN/opengl32sw.dll" .
 # MinGW 7.3 运行库

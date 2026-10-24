@@ -23,6 +23,7 @@
 
 class QOpenGLShaderProgram;
 class QPainter;
+class NetTileSource;
 class FlagStore;
 class RulerState;
 struct Track;
@@ -38,6 +39,12 @@ public:
     ~GlobeWidget() override;
 
     bool openTiles(const QString &path, QString *error = nullptr);
+    // 在线底图（天地图）：tiles 为空时也能用；本地 mbtiles 仍保留作为兜底
+    bool openOnlineMap(const QString &token, bool useAmap = false, QString *error = nullptr);
+    void closeOnlineMap();
+    bool onlineMap() const { return m_online != nullptr; }
+    bool onlineBusy() const;
+    QString mapSourceName() const;
     QString tileName() const;
 
     void resetView();
@@ -78,9 +85,9 @@ public:
     bool screenPos(double lonDeg, double latDeg, double altM, QPointF *pos);
     // 屏幕坐标处的航迹（TrackStore::tracks() 下标），没有返回 -1
     int trackAt(const QPointF &pos);
-    bool isLoading() const { return m_pending > 0; }
+    bool isLoading() const { return m_pending > 0 || onlineBusy(); }
     int drawnMaxZoom() const { return m_lastMaxZ; }
-    int tileMaxZoom() const { return m_tiles ? m_tiles->maxZoom() : -1; }
+    int tileMaxZoom() const;
     int drawnTileCount() const { return m_lastDrawn; }
     int glErrorCount() const { return m_glErrors; }
     quint64 frameCount() const { return m_frame; }
@@ -117,6 +124,11 @@ private:
     void collectTiles(int z, int x, int y, QVector<TileId> &out) const;
     GLuint textureFor(const TileId &t, QVector4D *xform);   // 0 = 无可用纹理
     void loadTexture(int z, int x, int y);
+    void uploadTexture(quint64 key, const QImage &img);
+    QImage imageFor(int z, int x, int y);                   // 在线优先，其次本地 mbtiles
+    int mapMinZoom() const;
+    int mapMaxZoom() const;
+    void uploadPendingTiles();
     void evictTextures();
     void updateCapColors();
     bool pick(const QPointF &pos, double *lon, double *lat);
@@ -146,6 +158,8 @@ private:
     QPixmap m_flagIcon;
 
     std::unique_ptr<TileSource> m_tiles;
+    NetTileSource *m_online = nullptr;      // 在线底图（天地图），为空表示离线模式
+    QHash<quint64, QImage> m_pendingTiles;  // 网络已到、等着在 GL 线程上传
     TrackLayer m_trackLayer;
     const TrackStore *m_trackStore = nullptr;
 

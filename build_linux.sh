@@ -44,7 +44,7 @@ cd "$OUT"
 
 # 2) Qt 运行库（含 ICU、xcb 平台抽象层）
 mkdir -p lib plugins/platforms plugins/xcbglintegrations plugins/sqldrivers plugins/imageformats fonts tiles
-for m in Core Gui Widgets Sql DBus XcbQpa; do
+for m in Core Gui Widgets Sql Network DBus XcbQpa; do
     cp -P "$QTDIR"/lib/libQt5$m.so.5* lib/
 done
 cp -P "$QTDIR"/lib/libicu*.so.* lib/ 2>/dev/null || true

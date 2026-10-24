@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QSignalBlocker>
 #include <QDir>
 #include <QFileInfo>
 #include <QKeySequence>
@@ -41,6 +42,9 @@
 #include "settingspanel.h"
 
 namespace {
+
+// 内置天地图 key（个人版）。需要换 key 时改这里，或用启动参数 --online-key 覆盖
+const char *const kTdtToken = "5e2d0f18562e921064ef494dd4cd76eb";
 
 const int kSidebarDefault = 280, kSidebarMin = 200, kSidebarMax = 900;
 
@@ -502,6 +506,67 @@ void MainWindow::loadDefaultTiles()
             }
     if (!best.isEmpty())
         openTiles(best);
+
+    // 上次退出时用的底图源就恢复；离线/无网络时本地瓦片照常可用
+    const QString src = app::settings().value(QStringLiteral("map.source"), QStringLiteral("offline")).toString();
+    if (src == QLatin1String("tdt") || src == QLatin1String("amap")) {
+        QString token = app::settings().value(QStringLiteral("map.tdt_token")).toString();
+        if (token.trimmed().isEmpty())
+            token = QString::fromLatin1(kTdtToken);
+        if (!openOnlineMap(token, src == QLatin1String("amap")))
+            app::settings().setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
+    }
+    syncSourceActions();
+}
+
+void MainWindow::syncSourceActions()
+{
+    const QString src = app::settings().value(QStringLiteral("map.source"), QStringLiteral("offline")).toString();
+    struct { QAction *action; const char *id; } items[] = {
+        { m_srcOffline, "offline" }, { m_srcTdt, "tdt" }, { m_srcAmap, "amap" }
+    };
+    for (auto &it : items) {
+        if (!it.action)
+            continue;
+        QSignalBlocker blocker(it.action);
+        it.action->setChecked(src == QLatin1String(it.id));
+    }
+}
+
+bool MainWindow::openOnlineMap(const QString &token, bool useAmap)
+{
+    QString err;
+    if (!m_globe->openOnlineMap(token, useAmap, &err)) {
+        QMessageBox::warning(this, tr("在线底图"), err);
+        return false;
+    }
+    app::settings().setValue(QStringLiteral("map.tdt_token"), token.trimmed());
+    return true;
+}
+
+// 底图源切换：offline=本地 mbtiles，tdt=天地图，amap=高德
+void MainWindow::setMapSource(const QString &id)
+{
+    if (id == QLatin1String("offline")) {
+        m_globe->closeOnlineMap();
+        if (m_globe->tileName().isEmpty())
+            loadDefaultTiles();               // 关掉在线底图后回到本地瓦片
+        app::settings().setValue(QStringLiteral("map.source"), id);
+        syncSourceActions();
+        return;
+    }
+
+    // key 已内置；启动参数 --online-key 可临时换
+    QString token = app::settings().value(QStringLiteral("map.tdt_token")).toString();
+    if (token.trimmed().isEmpty())
+        token = QString::fromLatin1(kTdtToken);
+
+    if (!openOnlineMap(token, id == QLatin1String("amap"))) {
+        syncSourceActions();                  // 失败则勾选状态回到原来的源
+        return;
+    }
+    app::settings().setValue(QStringLiteral("map.source"), id);
+    syncSourceActions();
 }
 
 void MainWindow::openTileFile()
@@ -509,8 +574,11 @@ void MainWindow::openTileFile()
     const QString path = QFileDialog::getOpenFileName(
         this, tr("打开瓦片"), QCoreApplication::applicationDirPath(),
         tr("MBTiles 瓦片 (*.mbtiles);;所有文件 (*)"));
-    if (!path.isEmpty())
+    if (!path.isEmpty()) {
         openTiles(path);
+        app::settings().setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
+        syncSourceActions();
+    }
 }
 
 void MainWindow::importFile(TrackSource kind, const QString &path, const QString &displayName)
@@ -966,6 +1034,17 @@ void MainWindow::buildMenuBar()
     });
     mFile->addSeparator();
     item(mFile, tr("打开瓦片 (.mbtiles)..."), QKeySequence(), [this]() { openTileFile(); });
+    QMenu *mSource = mFile->addMenu(tr("底图源"));
+    auto addSource = [this, mSource](const QString &id, const QString &text) {
+        QAction *a = mSource->addAction(text);
+        a->setCheckable(true);
+        connect(a, &QAction::triggered, this, [this, id]() { setMapSource(id); });
+        return a;
+    };
+    m_srcOffline = addSource(QStringLiteral("offline"), tr("离线瓦片 (.mbtiles)"));
+    m_srcTdt = addSource(QStringLiteral("tdt"), tr("天地图（在线，街道级 z18）"));
+    m_srcAmap = addSource(QStringLiteral("amap"), tr("高德（在线，更快，航迹偏 50–500m）"));
+    syncSourceActions();
     mFile->addSeparator();
     QAction *aExit = item(mFile, tr("退出"), QKeySequence(Qt::ALT + Qt::Key_F4), []() { qApp->quit(); });
     aExit->setShortcutContext(Qt::WidgetShortcut);   // Alt+F4 由系统处理，这里只显示

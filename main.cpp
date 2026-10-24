@@ -966,6 +966,26 @@ int main(int argc, char *argv[])
         w.showMaximized();
     w.loadDefaultTiles();
 
+    // 命令行直接指定在线底图 key（也方便自动化验证）：--online-key <天地图 key>
+    const int ok = args.indexOf(QStringLiteral("--online-key"));
+    if (ok >= 0 && ok + 1 < args.size())
+        w.openOnlineMap(args.at(ok + 1), args.contains(QStringLiteral("--amap")));
+
+    // 抓一帧地球画面后退出（回归验证用）：--shot <png> [--shot-delay 毫秒]
+    const int shotIdx = args.indexOf(QStringLiteral("--shot"));
+    if (shotIdx >= 0 && shotIdx + 1 < args.size()) {
+        const QString path = args.at(shotIdx + 1);
+        int delayMs = 12000;
+        const int dIdx = args.indexOf(QStringLiteral("--shot-delay"));
+        if (dIdx >= 0 && dIdx + 1 < args.size())
+            delayMs = args.at(dIdx + 1).toInt();
+        QTimer::singleShot(delayMs, &w, [&w, path]() {
+            if (!w.globe()->grabFramebuffer().save(path))
+                qWarning("抓帧保存失败：%s", qPrintable(path));
+            QCoreApplication::quit();
+        });
+    }
+
     if (app.arguments().contains(QStringLiteral("--selftest")))
         runSelfTest(&w);
     const int tt = args.indexOf(QStringLiteral("--tracktest"));

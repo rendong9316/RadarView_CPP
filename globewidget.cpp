@@ -1,4 +1,5 @@
 #include "globewidget.h"
+#include "netmap.h"
 #include "track.h"
 #include "maptools.h"
 #include "geo.h"
@@ -259,7 +260,88 @@ bool GlobeWidget::openTiles(const QString &path, QString *error)
 
 QString GlobeWidget::tileName() const
 {
+    if (m_online)
+        return m_online->name();
     return m_tiles ? m_tiles->name() : QString();
+}
+
+QString GlobeWidget::mapSourceName() const
+{
+    return tileName();
+}
+
+bool GlobeWidget::onlineBusy() const
+{
+    return m_online && m_online->isBusy();
+}
+
+// 打开在线底图：本地 mbtiles 不释放，网络瓦片缺失时还能拿它兜底
+bool GlobeWidget::openOnlineMap(const QString &token, bool useAmap, QString *error)
+{
+    if (token.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("没有填写天地图 key");
+        return false;
+    }
+    if (!m_online) {
+        m_online = new NetTileSource(this);
+        connect(m_online, &NetTileSource::tileReady, this,
+                [this](int z, int x, int y, const QImage &img) {
+                    // 网络回调在 GUI 线程，纹理上传留到 paintGL 里做
+                    m_pendingTiles.insert(tileKey(z, x, y), img);
+                    update();
+                });
+        connect(m_online, &NetTileSource::tileFailed, this, [this](int z, int x, int y) {
+            m_missing.insert(tileKey(z, x, y));
+            update();
+        });
+    }
+    m_online->setSource(useAmap ? NetTileSource::Source::Amap : NetTileSource::Source::Tianditu);
+    m_online->setKey(token);
+
+    if (m_glReady) {
+        makeCurrent();
+        clearTextures();
+        doneCurrent();
+    }
+    m_missing.clear();
+    m_pendingTiles.clear();
+    updateCapColors();
+    update();
+    emitStatus();
+    return true;
+}
+
+void GlobeWidget::closeOnlineMap()
+{
+    if (!m_online)
+        return;
+    delete m_online;
+    m_online = nullptr;
+    m_pendingTiles.clear();
+    m_missing.clear();
+    if (m_glReady) {
+        makeCurrent();
+        clearTextures();
+        doneCurrent();
+    }
+    updateCapColors();
+    update();
+    emitStatus();
+}
+
+int GlobeWidget::mapMinZoom() const
+{
+    if (m_online)
+        return m_online->minZoom();
+    return m_tiles ? m_tiles->minZoom() : 0;
+}
+
+int GlobeWidget::mapMaxZoom() const
+{
+    if (m_online)
+        return m_online->maxZoom();
+    return m_tiles ? m_tiles->maxZoom() : 3;
 }
 
 void GlobeWidget::resetView()
@@ -737,6 +819,26 @@ void GlobeWidget::initializeGL()
     m_glReady = true;
 }
 
+// 网络瓦片到货后在这里统一上传：paintGL 里 GL 上下文才是当前的
+void GlobeWidget::uploadPendingTiles()
+{
+    if (m_pendingTiles.isEmpty())
+        return;
+    int n = 0;
+    for (auto it = m_pendingTiles.begin(); it != m_pendingTiles.end() && n < 32;) {
+        uploadTexture(it.key(), it.value());
+        it = m_pendingTiles.erase(it);
+        ++n;
+    }
+}
+
+int GlobeWidget::tileMaxZoom() const
+{
+    if (m_online)
+        return m_online->maxZoom();
+    return m_tiles ? m_tiles->maxZoom() : -1;
+}
+
 void GlobeWidget::cleanupGL()
 {
     if (!m_glReady)
@@ -792,7 +894,7 @@ void GlobeWidget::updateMatrices()
 // 四叉树遍历：背面（地平线以下）和视锥外的瓦片剔除，近处瓦片细分到更高层级
 void GlobeWidget::collectTiles(int z, int x, int y, QVector<TileId> &out) const
 {
-    const int maxZ = m_tiles ? qMax(2, m_tiles->maxZoom()) : 3;
+    const int maxZ = qMax(2, mapMaxZoom());
     bool refine = z < 2;    // 至少细分到 2 级，保证椭球形状足够圆
     if (z >= 2) {
         QVector3D c;
@@ -822,9 +924,9 @@ void GlobeWidget::collectTiles(int z, int x, int y, QVector<TileId> &out) const
 // 自身纹理未加载时向上找最近的父级纹理，并算出对应的子区域纹理坐标
 GLuint GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
 {
-    if (!m_tiles)
-        return 0;
-    for (int az = qMin(t.z, m_tiles->maxZoom()); az >= m_tiles->minZoom(); --az) {
+    const int maxZ = mapMaxZoom();
+    const int minZ = mapMinZoom();
+    for (int az = qMin(t.z, maxZ); az >= minZ; --az) {
         const int dz = t.z - az;
         const int ax = t.x >> dz, ay = t.y >> dz;
         auto it = m_textures.find(tileKey(az, ax, ay));
@@ -838,14 +940,37 @@ GLuint GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
     return 0;
 }
 
+// 在线模式优先网络瓦片，没到货时用本地 mbtiles 顶一下，避免整片空白
+QImage GlobeWidget::imageFor(int z, int x, int y)
+{
+    if (m_online) {
+        const QImage img = m_online->cachedTile(z, x, y);
+        if (!img.isNull())
+            return img;
+        if (m_tiles)
+            return m_tiles->tile(z, x, y);
+        return QImage();
+    }
+    return m_tiles ? m_tiles->tile(z, x, y) : QImage();
+}
+
 void GlobeWidget::loadTexture(int z, int x, int y)
 {
     const quint64 key = tileKey(z, x, y);
-    const QImage img = m_tiles->tile(z, x, y);
+    const QImage img = imageFor(z, x, y);
     if (img.isNull()) {
-        m_missing.insert(key);
+        // 在线模式：瓦片可能还在路上，不能当成缺失
+        if (!m_online)
+            m_missing.insert(key);
         return;
     }
+    uploadTexture(key, img);
+}
+
+void GlobeWidget::uploadTexture(quint64 key, const QImage &img)
+{
+    if (img.isNull() || m_textures.contains(key))
+        return;
     // 只用 OpenGL ES 2.0 子集（GL_RGBA + glGenerateMipmap），ANGLE/D3D 下不报错
     // QOpenGLTexture 会设置 ES2 没有的 GL_TEXTURE_MAX_LEVEL 等参数，Win7 走 ANGLE 时会产生 GL_INVALID_ENUM
     const QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
@@ -939,10 +1064,11 @@ void GlobeWidget::paintGL()
     glDepthFunc(GL_LEQUAL);
     glDisable(GL_CULL_FACE);
     updateMatrices();
+    uploadPendingTiles();
 
     // 预载最低两级，保证任何位置都有父级纹理可用
-    if (m_tiles && m_tiles->minZoom() <= 1) {
-        for (int z = m_tiles->minZoom(); z <= qMin(1, m_tiles->maxZoom()); ++z) {
+    if (mapMinZoom() <= 1) {
+        for (int z = mapMinZoom(); z <= qMin(1, mapMaxZoom()); ++z) {
             for (int y = 0; y < (1 << z); ++y) {
                 for (int x = 0; x < (1 << z); ++x) {
                     const quint64 key = tileKey(z, x, y);
@@ -962,7 +1088,7 @@ void GlobeWidget::paintGL()
     if (m_tiles) {
         for (const TileId &t : qAsConst(tiles)) {
             const quint64 key = tileKey(t.z, t.x, t.y);
-            if (t.z >= m_tiles->minZoom() && t.z <= m_tiles->maxZoom()
+            if (t.z >= mapMinZoom() && t.z <= mapMaxZoom()
                     && !m_textures.contains(key) && !m_missing.contains(key))
                 wanted.append(t);
         }
