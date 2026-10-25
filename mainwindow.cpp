@@ -33,6 +33,7 @@
 #include "managepanel.h"
 #include "maptools.h"
 #include "replaycontroller.h"
+#include "spatiallasso.h"
 #include "theme.h"
 #include "trackdb.h"
 #include "trackimporter.h"
@@ -278,13 +279,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_globe->setTrackStore(&m_store);
     m_flags = new FlagStore(this);
     m_ruler = new RulerState(this);
+    m_lasso = new SpatialLasso(this);
     m_globe->setMapTools(m_flags, m_ruler);
+    m_globe->setSpatialLasso(m_lasso);
     m_manage = new ManageState(&m_store, this);
 
     // 侧栏面板（顺序同 PanelId）
     m_managePanel = new ManagePanel(m_manage);
     m_managePanel->rowColor = [this](const ManageRow &r) { return m_store.fileColor(r.source, r.fileName); };
     m_filterPanel = new FilterPanel(&m_filter);
+    m_filterPanel->setSpatialLasso(m_lasso);
     m_flagPanel = new FlagPanel(m_flags, m_ruler);
     SettingsPanel::Host host;
     host.store = &m_store;
@@ -360,6 +364,14 @@ MainWindow::MainWindow(QWidget *parent)
         showTrackPoints(m_store.indexOf(key));
     });
     connect(m_filterPanel, &FilterPanel::changed, this, &MainWindow::applyDisplay);
+    // 套索闭合 → 写入筛选状态并立即生效（只显示经过该区域的航迹）
+    connect(m_lasso, &SpatialLasso::closed, this, [this]() {
+        m_filter.spatialPolygon = m_lasso->vertices();
+        m_filter.spatialActive = m_lasso->vertices().size() >= 3;
+        m_filter.save();
+        m_filterPanel->refreshUi();
+        applyDisplay();
+    });
     m_undoToast = new ui::UndoToast(central);
     connect(m_undoToast, &ui::UndoToast::undoClicked, m_manage, &ManageState::undoDelete);
     connect(m_manage, &ManageState::undoChanged, this, &MainWindow::updateUndoToast);
@@ -437,6 +449,7 @@ void MainWindow::loadPersisted()
     // 筛选面板控件按已恢复的筛选状态重建
     FilterPanel *fresh = new FilterPanel(&m_filter);
     connect(fresh, &FilterPanel::changed, this, &MainWindow::applyDisplay);
+    fresh->setSpatialLasso(m_lasso);
     m_sidePanel->replacePanel(int(PanelId::TimeFilter), fresh);   // 旧面板由 replacePanel 延后销毁
     m_filterPanel = fresh;
     m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
@@ -751,7 +764,7 @@ void MainWindow::applyDisplay()
         layer->setTimeFilter(false, 0, 0);
     } else {
         layer->setIsolatedTrack(-1);
-        if (m_filter.timeActive || m_filter.hasPointCountFilter()) {
+        if (m_filter.timeActive || m_filter.hasPointCountFilter() || m_filter.hasSpatialFilter()) {
             mask.resize(m_store.size());
             for (int i = 0; i < m_store.size(); ++i)
                 mask[i] = m_filter.accepts(m_store.tracks()[i]);
@@ -985,13 +998,25 @@ void MainWindow::toggleLabels()
         m_labelAction->setChecked(m_globe->showLabels());
 }
 
-// Esc：标尺开着时关标尺，否则取消单独显示（App.vue keydown）
+// Esc：套索绘制中先取消绘制；已有套索筛选则清除；再关标尺；最后取消单独显示
 void MainWindow::onEscape()
 {
-    if (m_ruler->isActive())
+    if (m_lasso && m_lasso->isActive()) {
+        m_lasso->clearAll();
+        m_filterPanel->refreshUi();
+    } else if (m_filter.hasSpatialFilter()) {
+        m_filter.spatialActive = false;
+        m_filter.spatialPolygon.clear();
+        if (m_lasso)
+            m_lasso->clearAll();
+        m_filter.save();
+        m_filterPanel->refreshUi();
+        applyDisplay();
+    } else if (m_ruler->isActive()) {
         m_ruler->deactivate();
-    else if (isolatedTrack() >= 0)
+    } else if (isolatedTrack() >= 0) {
         isolateTrack(-1);
+    }
 }
 
 // 菜单（MenuBar.vue）
@@ -1063,6 +1088,7 @@ void MainWindow::buildMenuBar()
     item(mView, tr("航迹管理系统"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_M), [this]() { activatePanel(PanelId::Manage); });
     item(mView, tr("旗标面板"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_F), [this]() { activatePanel(PanelId::Flags); });
     item(mView, tr("时间过滤"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_E), [this]() { activatePanel(PanelId::TimeFilter); });
+    item(mView, tr("空间套索筛选"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_S), [this]() { m_filterPanel->clickSpatialToggle(); });
     mView->addSeparator();
     item(mView, tr("重置地图视角"), QKeySequence(Qt::CTRL + Qt::Key_R), [this]() { m_globe->resetView(); });
     m_labelAction = item(mView, tr("切换标签显示"), QKeySequence(Qt::CTRL + Qt::Key_T), [this]() { toggleLabels(); });

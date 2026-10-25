@@ -23,6 +23,7 @@
 #include "managepanel.h"
 #include "maptools.h"
 #include "sidepanels.h"
+#include "spatiallasso.h"
 #include "trackdb.h"
 #include "theme.h"
 #include "settingspanel.h"
@@ -148,6 +149,76 @@ void runSelfTest(MainWindow *w)
             ++st->failures;
     };
 
+    // ---- 空间套索几何自检（纯函数，不依赖 GL）----
+    {
+        QVector<LassoVertex> poly;
+        poly << LassoVertex(0, 30.0, 100.0) << LassoVertex(1, 30.0, 120.0)
+             << LassoVertex(2, 40.0, 120.0) << LassoVertex(3, 40.0, 100.0);
+        check(lassogeo::pointInPolygon(35.0, 110.0, poly), QStringLiteral("套索：多边形内部点判定"));
+        check(!lassogeo::pointInPolygon(50.0, 110.0, poly), QStringLiteral("套索：多边形外部点判定"));
+        check(lassogeo::pointInPolygon(35.0, 110.0, poly) == !lassogeo::pointInPolygon(35.0, 90.0, poly),
+              QStringLiteral("套索：内外点判定互补"));
+
+        Track inside;
+        TrackPoint p1;
+        p1.lat = 35.0;
+        p1.lon = 110.0;
+        inside.points.append(p1);
+        check(lassogeo::trackIntersectsPolygon(inside, poly), QStringLiteral("套索：航迹点落入多边形"));
+
+        Track outside;
+        TrackPoint p2;
+        p2.lat = 0.0;
+        p2.lon = 0.0;
+        outside.points.append(p2);
+        check(!lassogeo::trackIntersectsPolygon(outside, poly), QStringLiteral("套索：航迹完全在外"));
+
+        // 两端在框外、中间穿过：靠线段相交判定
+        Track crossing;
+        TrackPoint a, b;
+        a.lat = 35.0;
+        a.lon = 90.0;
+        b.lat = 35.0;
+        b.lon = 130.0;
+        crossing.points << a << b;
+        check(lassogeo::trackIntersectsPolygon(crossing, poly), QStringLiteral("套索：航迹线段穿越多边形"));
+
+        check(lassogeo::polygonAreaSqKm(poly) > 1.0, QStringLiteral("套索：面积计算 %1 km²")
+                                                         .arg(lassogeo::polygonAreaSqKm(poly), 0, 'f', 1));
+        check(lassogeo::polygonPerimeterKm(poly) > 1000.0,
+              QStringLiteral("套索：周长计算 %1 km").arg(lassogeo::polygonPerimeterKm(poly), 0, 'f', 1));
+
+        // 简化：给多边形加密，简化后顶点数应减少但不少于 3
+        QVector<LassoVertex> dense;
+        for (int i = 0; i < 100; ++i) {
+            const double t = i / 100.0;
+            dense.append(LassoVertex(i, 30.0 + 10.0 * t, 100.0));
+        }
+        dense << LassoVertex(100, 40.0, 120.0) << LassoVertex(101, 30.0, 120.0);
+        const QVector<LassoVertex> simplified = lassogeo::simplifyPolygon(dense, 5.0);
+        check(simplified.size() >= 3 && simplified.size() < dense.size(),
+              QStringLiteral("套索：多边形简化 %1 → %2 顶点").arg(dense.size()).arg(simplified.size()));
+
+        // 状态机：激活 → 加点 → 闭合
+        SpatialLasso lasso;
+        lasso.activate();
+        lasso.addVertex(30.0, 100.0);
+        lasso.addVertex(30.0, 120.0);
+        lasso.addVertex(40.0, 120.0);
+        lasso.closePolygon();
+        check(lasso.isClosed() && !lasso.isActive() && lasso.vertices().size() == 3,
+              QStringLiteral("套索：激活/加点/闭合状态机"));
+
+        // 自由手绘：起笔 → 轨迹点 → 松手自动闭合
+        SpatialLasso freehand;
+        freehand.beginFreehand(30.0, 100.0);
+        freehand.addFreehandPoint(30.0, 120.0);
+        freehand.addFreehandPoint(40.0, 120.0);
+        freehand.endFreehand();
+        check(freehand.isClosed() && !freehand.isActive() && freehand.vertices().size() == 3,
+              QStringLiteral("套索：自由手绘松手自动闭合"));
+    }
+
     // 等到不再有待加载瓦片（最多 15 秒）再执行下一步
     auto waitIdle = std::make_shared<std::function<void(std::function<void()>)>>();
     *waitIdle = [g, st, waitIdle](std::function<void()> next) {
@@ -171,6 +242,24 @@ void runSelfTest(MainWindow *w)
         st->out.flush();
         st->log.close();
         QCoreApplication::exit(st->failures == 0 ? 0 : 1);
+    };
+
+    // 等至少再画 n 帧：叠加层顶点计数在 paintGL 后才更新
+    auto waitFrames = std::make_shared<std::function<void(int, std::function<void()>)>>();
+    *waitFrames = [g](int n, std::function<void()> next) {
+        const quint64 target = g->frameCount() + quint64(n);
+        QElapsedTimer t;
+        t.start();
+        auto poll = std::make_shared<std::function<void()>>();
+        *poll = [g, target, next, poll, t]() {
+            if (g->frameCount() >= target || t.elapsed() > 5000) {
+                next();
+                return;
+            }
+            g->update();
+            QTimer::singleShot(30, *poll);
+        };
+        QTimer::singleShot(30, *poll);
     };
 
     (*waitIdle)([=]() {
@@ -213,7 +302,39 @@ void runSelfTest(MainWindow *w)
                 st->out << "zoomed out: " << g->debugInfo() << "\n";
                 check(g->drawnMaxZoom() <= 3, QStringLiteral("拉远后绘制层级 %1").arg(g->drawnMaxZoom()));
                 check(g->glErrorCount() == 0, QStringLiteral("OpenGL 错误数 %1").arg(g->glErrorCount()));
-                finish();
+
+                // 空间套索：激活 → 三次单击放点 → 双击闭合 → 叠加层画出顶点
+                SpatialLasso *lasso = w->spatialLasso();
+                lasso->activate();
+                auto sendClick = [g](const QPointF &p) {
+                    QMouseEvent pr(QEvent::MouseButtonPress, p, g->mapToGlobal(p.toPoint()),
+                                   Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(g, &pr);
+                    QMouseEvent rl(QEvent::MouseButtonRelease, p, g->mapToGlobal(p.toPoint()),
+                                   Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(g, &rl);
+                };
+                const QPointF lp1(g->width() * 0.44, g->height() * 0.44);
+                const QPointF lp2(g->width() * 0.56, g->height() * 0.44);
+                const QPointF lp3(g->width() * 0.56, g->height() * 0.56);
+                sendClick(lp1);
+                sendClick(lp2);
+                sendClick(lp3);
+                check(lasso->vertices().size() == 3,
+                      QStringLiteral("套索：三次单击放下 %1 个顶点").arg(lasso->vertices().size()));
+                QMouseEvent dbl(QEvent::MouseButtonDblClick, lp3, g->mapToGlobal(lp3.toPoint()),
+                                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(g, &dbl);
+                check(lasso->isClosed() && !lasso->isActive(),
+                      QStringLiteral("套索：双击闭合后退出绘制"));
+                (*waitFrames)(2, [=]() {
+                    check(g->lassoVerticesDrawn() >= 3,
+                          QStringLiteral("套索：叠加层画出 %1 个顶点").arg(g->lassoVerticesDrawn()));
+                    // 清理测试多边形，避免写进用户设置
+                    w->filterPanel()->clickSpatialClear();
+                    lasso->clearAll();
+                    finish();
+                });
             });
         });
     });

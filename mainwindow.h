@@ -26,6 +26,7 @@ class ManageState;
 class ManagePanel;
 class FlagStore;
 class RulerState;
+class SpatialLasso;
 class DbSaveJob;
 namespace ui { class UndoToast; }
 
@@ -110,6 +111,7 @@ public:
     FlagPanel *flagPanel() const { return m_flagPanel; }
     FlagStore *flagStore() const { return m_flags; }
     RulerState *ruler() const { return m_ruler; }
+    SpatialLasso *spatialLasso() const { return m_lasso; }
     ui::UndoToast *undoToast() const { return m_undoToast; }
     SettingsPanel *settingsPanel() const { return m_settingsPanel; }
     void toggleLabels();
@@ -164,6 +166,7 @@ private:
     FilterPanel *m_filterPanel = nullptr;
     FlagStore *m_flags = nullptr;
     RulerState *m_ruler = nullptr;
+    SpatialLasso *m_lasso = nullptr;
     FlagPanel *m_flagPanel = nullptr;
     SettingsPanel *m_settingsPanel = nullptr;
     ui::UndoToast *m_undoToast = nullptr;

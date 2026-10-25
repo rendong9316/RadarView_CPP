@@ -3,6 +3,7 @@
 #include "netmap.h"
 #include "track.h"
 #include "maptools.h"
+#include "spatiallasso.h"
 #include "geo.h"
 #include "theme.h"
 
@@ -41,6 +42,7 @@ const float kPickTolPx = 6.0f;                     // 鼠标离航迹多近算�
 const int kClickSlopPx = 4;                        // 按下到松开移动不超过它算单击
 const double kFlagScale = 1.2;                     // RadarView 旗标缩放默认值
 const QColor kRulerColor(0xf5, 0x9e, 0x0b);        // #f59e0b
+const QColor kLassoColor(0x10, 0xb9, 0x81);        // #10b981（RadarView 套索绿）
 
 // RadarView flagRenderer.ts「flag-pin」：32×32 红色图钉，白色描边，中间白点
 QPixmap makeFlagPin(qreal dpr)
@@ -504,6 +506,15 @@ void GlobeWidget::setMapTools(FlagStore *flags, RulerState *ruler)
     connect(ruler, &RulerState::mouseMoved, this, [this]() { update(); });
 }
 
+void GlobeWidget::setSpatialLasso(SpatialLasso *lasso)
+{
+    m_lasso = lasso;
+    if (m_lasso) {
+        connect(m_lasso, &SpatialLasso::changed, this, [this]() { m_overlay->update(); update(); });
+        connect(m_lasso, &SpatialLasso::mouseMoved, this, [this]() { m_overlay->update(); });
+    }
+}
+
 void GlobeWidget::setShowLabels(bool on)
 {
     m_showLabels = on;
@@ -657,6 +668,83 @@ void GlobeWidget::drawRuler(QPainter &p)
     p.setBrush(Qt::NoBrush);
 }
 
+// 空间套索：填充多边形 + 大圆边 + 顶点序号；绘制中额外画「最后顶点→鼠标→首顶点」虚线预览
+void GlobeWidget::drawLasso(QPainter &p)
+{
+    m_lassoVerticesDrawn = 0;
+    if (!m_lasso)
+        return;
+    const QVector<LassoVertex> &v = m_lasso->vertices();
+    if (v.isEmpty())
+        return;
+
+    const int n = v.size();
+    QVector<QPointF> sp(n);
+    QVector<bool> vis(n, false);
+    bool allVisible = true;
+    for (int i = 0; i < n; ++i) {
+        if (visiblePos(v[i].lon, v[i].lat, 0.0, &sp[i]))
+            vis[i] = true;
+        else
+            allVisible = false;
+    }
+
+    // 填充（仅闭合且所有顶点都在可见半球时；否则只画边，避免穿地球的怪异多边形）
+    if (m_lasso->isClosed() && allVisible && n >= 3) {
+        QPolygonF poly;
+        for (int i = 0; i < n; ++i)
+            poly << sp[i];
+        QColor fill = kLassoColor;
+        fill.setAlphaF(0.15f);
+        p.setPen(Qt::NoPen);
+        p.setBrush(fill);
+        p.drawPolygon(poly);
+    }
+
+    // 边：沿大圆插值，背面自动断开
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(kLassoColor, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    for (int i = 0; i + 1 < n; ++i)
+        for (const QPolygonF &line : geodesicLines(v[i].lat, v[i].lon, v[i + 1].lat, v[i + 1].lon))
+            p.drawPolyline(line);
+    if (m_lasso->isClosed() && n >= 3)
+        for (const QPolygonF &line : geodesicLines(v[n - 1].lat, v[n - 1].lon, v[0].lat, v[0].lon))
+            p.drawPolyline(line);
+
+    // 绘制中的预览虚线：最后顶点 → 鼠标，鼠标 → 首顶点
+    if (m_lasso->isActive() && !m_lasso->isClosed() && m_lasso->hasMouse()) {
+        QColor pc = kLassoColor;
+        pc.setAlphaF(0.45f);
+        QPen pre(pc, 1.5, Qt::CustomDashLine, Qt::FlatCap);
+        pre.setDashPattern(QVector<qreal>() << 6.0 << 6.0);
+        p.setPen(pre);
+        for (const QPolygonF &line : geodesicLines(v.last().lat, v.last().lon,
+                                                   m_lasso->mouseLat(), m_lasso->mouseLon()))
+            p.drawPolyline(line);
+        if (n >= 2)
+            for (const QPolygonF &line : geodesicLines(m_lasso->mouseLat(), m_lasso->mouseLon(),
+                                                       v[0].lat, v[0].lon))
+                p.drawPolyline(line);
+    }
+
+    // 顶点：绿色圆、黑色描边、白色序号
+    const QFont f = remFont(0.857, true);
+    p.setFont(f);
+    for (int i = 0; i < n; ++i) {
+        if (!vis[i])
+            continue;
+        p.setPen(QPen(Qt::black, 1.5));
+        p.setBrush(kLassoColor);
+        const double r = ui::sz(9);
+        p.drawEllipse(sp[i], r, r);
+        p.setPen(Qt::white);
+        p.drawText(QRectF(sp[i].x() - r, sp[i].y() - r, 2 * r, 2 * r),
+                   Qt::AlignCenter, QString::number(i + 1));
+        ++m_lassoVerticesDrawn;
+    }
+    p.setBrush(Qt::NoBrush);
+}
+
 void GlobeWidget::drawFlags(QPainter &p)
 {
     m_flagsDrawn = 0;
@@ -765,13 +853,14 @@ void GlobeWidget::drawPointTip(QPainter &p)
 
 void GlobeWidget::paintOverlay(QPainter &p)
 {
-    m_labelsDrawn = m_flagsDrawn = m_rulerMarkersDrawn = 0;
+    m_labelsDrawn = m_flagsDrawn = m_rulerMarkersDrawn = m_lassoVerticesDrawn = 0;
     if (!m_overlayWanted)
         return;
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     drawLabels(p);
     drawRuler(p);
+    drawLasso(p);
     drawFlags(p);
     drawPointTip(p);
 }
@@ -1249,6 +1338,7 @@ void GlobeWidget::paintGL()
     const bool overlay = (m_showLabels && m_trackLayer.visibleTrackCount() > 0)
                          || (m_flags && !m_flags->flags().isEmpty())
                          || (m_ruler && m_ruler->isActive() && !m_ruler->waypoints().isEmpty())
+                         || (m_lasso && !m_lasso->vertices().isEmpty())
                          || m_tipTrack >= 0;
     if (overlay || m_overlayWanted) {
         m_overlayWanted = overlay;
@@ -1300,6 +1390,21 @@ bool GlobeWidget::pick(const QPointF &pos, double *lon, double *lat)
 
 void GlobeWidget::mousePressEvent(QMouseEvent *e)
 {
+    // 套索绘制中：左键不旋转地球。按下先只记录，松开时若是单击就放一个顶点；
+    // 按住移动超过阈值则自动转为自由手绘（这样逐点框选和手绘都不需要切模式）。
+    if (m_lasso && m_lasso->isActive() && e->button() == Qt::LeftButton) {
+        double lon = 0.0, lat = 0.0;
+        m_dragging = false;
+        m_clickCandidate = false;
+        m_lassoPressValid = geoAt(e->pos(), &lon, &lat);
+        if (m_lassoPressValid) {
+            m_lassoPressLat = lat;
+            m_lassoPressLon = lon;
+            m_clickCandidate = true;
+            m_pressPos = e->pos();
+        }
+        return;
+    }
     if (e->button() == Qt::LeftButton) {
         m_dragging = true;
         m_clickCandidate = true;
@@ -1309,6 +1414,33 @@ void GlobeWidget::mousePressEvent(QMouseEvent *e)
 
 void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
 {
+    // 套索绘制中：只更新预览线和自由手绘轨迹，不拖拽地球
+    if (m_lasso && m_lasso->isActive()) {
+        double lon = 0.0, lat = 0.0;
+        const bool hit = geoAt(e->pos(), &lon, &lat);
+        m_lasso->setMouse(hit, lat, lon);
+        if (m_lasso->isDrawingFreehand()) {
+            if (hit)
+                m_lasso->addFreehandPoint(lat, lon);
+        } else if (m_clickCandidate && m_lassoPressValid &&
+                   (e->pos() - m_pressPos).manhattanLength() > kClickSlopPx) {
+            // 从空白开始拖动 → 自由手绘；已有顶点时拖动不改变已画内容
+            m_clickCandidate = false;
+            if (m_lasso->vertices().isEmpty()) {
+                m_lasso->beginFreehand(m_lassoPressLat, m_lassoPressLon);
+                if (hit)
+                    m_lasso->addFreehandPoint(lat, lon);
+            }
+        }
+        updateMatrices();
+        m_cursorValid = hit;
+        if (hit) {
+            m_cursorLon = qDegreesToRadians(lon);
+            m_cursorLat = qDegreesToRadians(lat);
+        }
+        emitStatus();
+        return;
+    }
     if (m_dragging) {
         if (m_clickCandidate && (e->pos() - m_pressPos).manhattanLength() > kClickSlopPx) {
             m_clickCandidate = false;
@@ -1339,6 +1471,19 @@ void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
 
 void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
 {
+    // 套索绘制中：自由手绘松手即闭合；顶点模式单击放一个顶点
+    if (m_lasso && m_lasso->isActive() && e->button() == Qt::LeftButton) {
+        if (m_lasso->isDrawingFreehand()) {
+            m_lasso->endFreehand();
+        } else if (m_clickCandidate) {
+            double lon = 0.0, lat = 0.0;
+            if (geoAt(e->pos(), &lon, &lat))
+                m_lasso->addVertex(lat, lon);
+        }
+        m_clickCandidate = false;
+        m_lassoPressValid = false;
+        return;
+    }
     if (e->button() != Qt::LeftButton)
         return;
     const bool click = m_clickCandidate;
@@ -1361,6 +1506,11 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
 // 双击：在旗标上删除，否则在该处放旗标（RadarView LEFT_DOUBLE_CLICK）
 void GlobeWidget::mouseDoubleClickEvent(QMouseEvent *e)
 {
+    // 套索绘制中：双击闭合多边形
+    if (m_lasso && m_lasso->isActive() && e->button() == Qt::LeftButton) {
+        m_lasso->closePolygon();
+        return;
+    }
     if (e->button() != Qt::LeftButton || !m_flags)
         return;
     const QString id = flagAt(e->pos());
@@ -1377,6 +1527,14 @@ void GlobeWidget::contextMenuEvent(QContextMenuEvent *e)
 {
     QToolTip::hideText();
     e->accept();
+    // 套索绘制中：右键闭合（顶点足够时），否则取消
+    if (m_lasso && m_lasso->isActive()) {
+        if (m_lasso->vertices().size() >= 3)
+            m_lasso->closePolygon();
+        else
+            m_lasso->clearAll();
+        return;
+    }
     if (m_ruler && m_ruler->isActive())
         return;   // 标尺模式下右键不弹菜单
     const QString flag = flagAt(e->pos());

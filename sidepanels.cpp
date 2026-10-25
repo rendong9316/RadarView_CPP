@@ -16,6 +16,7 @@
 #include <QToolButton>
 #include <QHBoxLayout>
 #include <QIntValidator>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -250,6 +251,9 @@ bool TrackFilterState::accepts(const Track &t) const
         if (p.max >= 0 && t.points.size() > p.max)
             return false;
     }
+    // 空间套索：任一点落入多边形，或任一航迹线段穿越多边形
+    if (hasSpatialFilter() && !lassogeo::trackIntersectsPolygon(t, spatialPolygon))
+        return false;
     if (timeActive) {
         // 裁剪到窗口后没有点的航迹不显示
         auto it = std::lower_bound(t.points.begin(), t.points.end(), timeMin,
@@ -273,6 +277,19 @@ void TrackFilterState::save() const
         s.setValue(QStringLiteral("filter.point_count.") + trackSourceKey(kSources[i]),
                    QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
     }
+    // 空间套索：保存多边形与是否启用（下次启动可直接恢复筛选）
+    QJsonArray poly;
+    for (const LassoVertex &v : spatialPolygon) {
+        QJsonObject o;
+        o.insert(QStringLiteral("lat"), v.lat);
+        o.insert(QStringLiteral("lon"), v.lon);
+        poly.append(o);
+    }
+    QJsonObject sp;
+    sp.insert(QStringLiteral("active"), spatialActive);
+    sp.insert(QStringLiteral("polygon"), poly);
+    s.setValue(QStringLiteral("filter.spatial"),
+               QString::fromUtf8(QJsonDocument(sp).toJson(QJsonDocument::Compact)));
 }
 
 void TrackFilterState::load()
@@ -291,6 +308,16 @@ void TrackFilterState::load()
         pc[i].min = o.value(QStringLiteral("min")).isDouble() ? o.value(QStringLiteral("min")).toInt() : -1;
         pc[i].max = o.value(QStringLiteral("max")).isDouble() ? o.value(QStringLiteral("max")).toInt() : -1;
     }
+    // 空间套索
+    const QJsonObject sp = QJsonDocument::fromJson(
+        s.value(QStringLiteral("filter.spatial")).toString().toUtf8()).object();
+    spatialPolygon.clear();
+    for (const QJsonValue &v : sp.value(QStringLiteral("polygon")).toArray()) {
+        const QJsonObject o = v.toObject();
+        spatialPolygon.append(LassoVertex(0, o.value(QStringLiteral("lat")).toDouble(),
+                                          o.value(QStringLiteral("lon")).toDouble()));
+    }
+    spatialActive = sp.value(QStringLiteral("active")).toBool() && spatialPolygon.size() >= 3;
 }
 
 // ---------------------------------------------------------------
@@ -504,6 +531,47 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
         onEdit(m_pcMin[i], true);
         onEdit(m_pcMax[i], false);
     }
+
+    // ---- 空间套索筛选 ----
+    QFrame *div2 = new QFrame(this);
+    div2->setObjectName(QStringLiteral("divider"));
+    div2->setFixedHeight(1);
+    v->addWidget(div2);
+
+    m_spatialIndicator = indicator(QStringLiteral("空间套索筛选已激活"), this);
+    v->addWidget(m_spatialIndicator);
+
+    QHBoxLayout *sh = new QHBoxLayout;
+    sh->setSpacing(4);
+    QLabel *spatialSec = new QLabel(QStringLiteral("空间套索筛选"), this);
+    spatialSec->setObjectName(QStringLiteral("sectionLabel"));
+    sh->addWidget(spatialSec);
+    sh->addStretch(1);
+    v->addLayout(sh);
+
+    m_spatialBtn = new QPushButton(QStringLiteral("开始套索"), this);
+    m_spatialBtn->setObjectName(QStringLiteral("spatialBtn"));
+    m_spatialBtn->setCursor(Qt::PointingHandCursor);
+    m_spatialBtn->setToolTip(QStringLiteral("单击逐点框选，双击/右键闭合；或按住左键自由手绘。Esc 取消"));
+    m_spatialClear = new QPushButton(QStringLiteral("清除套索"), this);
+    m_spatialClear->setObjectName(QStringLiteral("spatialClearBtn"));
+    m_spatialClear->setCursor(Qt::PointingHandCursor);
+    m_spatialClear->setToolTip(QStringLiteral("清除套索多边形与空间筛选"));
+    QHBoxLayout *sbr = new QHBoxLayout;
+    sbr->setSpacing(4);
+    sbr->addWidget(m_spatialBtn, 1);
+    sbr->addWidget(m_spatialClear);
+    v->addLayout(sbr);
+
+    m_spatialInfo = new QLabel(this);
+    m_spatialInfo->setObjectName(QStringLiteral("spatialHint"));
+    m_spatialInfo->setAlignment(Qt::AlignCenter);
+    m_spatialInfo->setWordWrap(true);
+    v->addWidget(m_spatialInfo);
+
+    connect(m_spatialBtn, &QPushButton::clicked, this, &FilterPanel::clickSpatialToggle);
+    connect(m_spatialClear, &QPushButton::clicked, this, &FilterPanel::clickSpatialClear);
+
     v->addStretch(1);
 
     // TimeFilterPanel.vue 样式
@@ -543,6 +611,14 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
         "#clearBtn { padding: 4px 8px; background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--border-primary);"
         " border-radius: 2px; %1 font-size: 11px; }"
         "#clearBtn:hover { background: var(--button-hover); }"
+        "#spatialBtn { padding: 4px 8px; background: var(--button-bg); color: var(--button-fg);"
+        " border: 1px solid var(--accent-primary); border-radius: 2px; %1 font-size: 11px; }"
+        "#spatialBtn:hover { background: var(--button-hover); }"
+        "#spatialBtn[active=\"true\"] { background: var(--accent-primary); color: #ffffff; border: none; }"
+        "#spatialClearBtn { padding: 4px 8px; background: var(--button-bg); color: var(--button-fg);"
+        " border: 1px solid var(--border-primary); border-radius: 2px; %1 font-size: 11px; }"
+        "#spatialClearBtn:hover { background: var(--button-hover); }"
+        "#spatialHint { color: var(--text-tertiary); font-size: 10px; }"
         "#errorMsg { color: var(--error); font-size: 11px; }"
         "#divider { background: var(--border-primary); border: none; }"
         "#sectionLabel { font-size: 11px; color: var(--text-tertiary); font-weight: 600; }"
@@ -830,6 +906,99 @@ void FilterPanel::syncUi()
         m_pcMin[i]->setEnabled(m_pcCheck[i]->isChecked());
         m_pcMax[i]->setEnabled(m_pcCheck[i]->isChecked());
     }
+    syncSpatialUi();
+}
+
+// ---------------------------------------------------------------
+//  空间套索（筛选面板入口）
+// ---------------------------------------------------------------
+void FilterPanel::setSpatialLasso(SpatialLasso *lasso)
+{
+    m_lasso = lasso;
+    if (m_lasso) {
+        // 多边形变化时刷新按钮/面积；闭合后由主窗口负责把多边形写进筛选状态
+        connect(m_lasso, &SpatialLasso::changed, this, &FilterPanel::syncSpatialUi);
+    }
+    syncSpatialUi();
+}
+
+void FilterPanel::refreshUi()
+{
+    syncUi();
+}
+
+void FilterPanel::syncSpatialUi()
+{
+    if (!m_spatialBtn)
+        return;
+    const bool drawing = m_lasso && m_lasso->isActive();
+    const bool closed = m_lasso && m_lasso->isClosed();
+    const bool applied = m_state->hasSpatialFilter();
+
+    m_spatialBtn->setText(drawing ? QStringLiteral("取消套索")
+                                  : closed ? QStringLiteral("重新套索")
+                                           : QStringLiteral("开始套索"));
+    if (m_spatialBtn->property("active").toBool() != drawing) {
+        m_spatialBtn->setProperty("active", drawing);
+        m_spatialBtn->style()->unpolish(m_spatialBtn);
+        m_spatialBtn->style()->polish(m_spatialBtn);
+    }
+    m_spatialClear->setEnabled(closed || applied || drawing);
+    m_spatialIndicator->setVisible(applied);
+
+    if (m_spatialInfo) {
+        if (drawing) {
+            const int n = m_lasso->vertices().size();
+            m_spatialInfo->setText(n < 3 ? QStringLiteral("已放 %1 个顶点，至少 3 个；双击/右键闭合").arg(n)
+                                         : QStringLiteral("已放 %1 个顶点，双击/右键闭合").arg(n));
+        } else if (closed) {
+            m_spatialInfo->setText(QStringLiteral("顶点 %1 · 面积 %2 km² · 周长 %3 km")
+                                       .arg(m_lasso->vertices().size())
+                                       .arg(m_lasso->areaSqKm(), 0, 'f', 1)
+                                       .arg(m_lasso->perimeterKm(), 0, 'f', 1));
+        } else if (applied) {
+            m_spatialInfo->setText(QStringLiteral("已启用空间筛选（%1 个顶点）").arg(m_state->spatialPolygon.size()));
+        } else {
+            m_spatialInfo->setText(QStringLiteral("在地图上框选区域，只显示经过该区域的航迹"));
+        }
+    }
+}
+
+QString FilterPanel::spatialInfoText() const
+{
+    return m_spatialInfo ? m_spatialInfo->text() : QString();
+}
+
+void FilterPanel::clickSpatialToggle()
+{
+    if (!m_lasso)
+        return;
+    if (m_lasso->isActive()) {
+        m_lasso->deactivate();
+    } else {
+        // 重新开始时清掉旧的套索筛选，避免残留多边形造成困惑
+        if (m_state->hasSpatialFilter()) {
+            m_state->spatialActive = false;
+            m_state->spatialPolygon.clear();
+            m_state->save();
+            emit changed();
+        }
+        m_lasso->activate();
+    }
+    syncSpatialUi();
+}
+
+void FilterPanel::clickSpatialClear()
+{
+    if (m_lasso)
+        m_lasso->clearAll();
+    if (m_state->spatialActive || !m_state->spatialPolygon.isEmpty()) {
+        m_state->spatialActive = false;
+        m_state->spatialPolygon.clear();
+        m_state->save();
+        emit changed();
+    }
+    syncUi();
 }
 
 // ---------------------------------------------------------------

@@ -4,6 +4,7 @@
 #include <QList>
 #include <QWidget>
 
+#include "spatiallasso.h"
 #include "track.h"
 
 class QCalendarWidget;
@@ -26,7 +27,13 @@ struct TrackFilterState {
     };
     PointCount pc[3];             // 按 TrackSource 下标
 
+    // 空间套索筛选：WGS84 多边形，航迹任一点落入或线段穿越即保留
+    bool spatialActive = false;
+    QVector<LassoVertex> spatialPolygon;
+
     bool hasPointCountFilter() const;
+    bool hasSpatialFilter() const { return spatialActive && spatialPolygon.size() >= 3; }
+    bool hasAnyFilter() const { return timeActive || hasPointCountFilter() || hasSpatialFilter(); }
     // 是否通过筛选（点数用原始总点数；时间按航迹时间段与窗口有交集，且窗口内至少有一个点）
     bool accepts(const Track &t) const;
     void save() const;
@@ -40,6 +47,8 @@ class FilterPanel : public QWidget
 public:
     FilterPanel(TrackFilterState *state, QWidget *parent = nullptr);
     void setDataRange(qint64 minMs, qint64 maxMs);   // 0, 0 表示无数据
+    void setSpatialLasso(SpatialLasso *lasso);       // 地图套索状态（按钮/面积显示联动）
+    void refreshUi();                                // 外部改了 TrackFilterState 后刷新界面
 
     // ---- 自检用 ----
     void setInputs(qint64 startMs, qint64 endMs);
@@ -47,6 +56,9 @@ public:
     void clickClear();
     QString errorText() const;
     QString rangeText() const;
+    QString spatialInfoText() const;                // 自检用：套索顶点/面积提示
+    void clickSpatialToggle();                      // 开始/取消套索
+    void clickSpatialClear();                       // 清除套索与空间筛选
     void setPointCount(TrackSource s, bool enabled, int min, int max);
     void setInputTexts(const QString &start, const QString &end);   // 模拟手动键入
     void openCalendar(int which);           // 0 起始 / 1 结束；再次点击同一个则收起
@@ -56,6 +68,7 @@ signals:
 
 private:
     void syncUi();
+    void syncSpatialUi();
     // 解析输入框（北京时间，宽松格式），成功返回 UTC 毫秒；空串或格式错误返回 false
     bool parseInput(int which, qint64 *ms) const;
     void pickDate(const QDate &d);
@@ -75,6 +88,13 @@ private:
     QCheckBox *m_pcCheck[3];
     QLineEdit *m_pcMin[3], *m_pcMax[3];
     qint64 m_dataMin = 0, m_dataMax = 0;
+
+    // 空间套索
+    SpatialLasso *m_lasso = nullptr;
+    QLabel *m_spatialIndicator = nullptr;
+    QLabel *m_spatialInfo = nullptr;
+    QPushButton *m_spatialBtn = nullptr;
+    QPushButton *m_spatialClear = nullptr;
 };
 
 // 「旗标面板」（FlagPanel.vue）：手动放置旗标、旗标列表、两旗标测距、航线标尺
