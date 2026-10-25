@@ -1042,8 +1042,10 @@ void MainWindow::buildMenuBar()
         return a;
     };
     m_srcOffline = addSource(QStringLiteral("offline"), tr("离线瓦片 (.mbtiles)"));
-    m_srcTdt = addSource(QStringLiteral("tdt"), tr("天地图（在线，街道级 z18）"));
-    m_srcAmap = addSource(QStringLiteral("amap"), tr("高德（在线，更快，航迹偏 50–500m）"));
+    m_srcTdt = addSource(QStringLiteral("tdt"), tr("天地图（在线 · WGS84 基准 · 街道级 z18）"));
+    m_srcAmap = addSource(QStringLiteral("amap"), tr("高德（在线 · GCJ-02 基准 · 更快）"));
+    m_srcAmap->setToolTip(tr("高德瓦片是 GCJ-02，程序会把航迹自动转到同一基准再绘制；\n"
+                             "导出的数据和数据库里始终是 WGS84"));
     syncSourceActions();
     mFile->addSeparator();
     QAction *aExit = item(mFile, tr("退出"), QKeySequence(Qt::ALT + Qt::Key_F4), []() { qApp->quit(); });

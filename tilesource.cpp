@@ -43,6 +43,13 @@ bool TileSource::open(const QString &path, QString *error)
                 if (q.exec(QStringLiteral("SELECT value FROM metadata WHERE name='name'")) && q.next())
                     m_name = q.value(0).toString();
 
+                // 坐标系声明：metadata 里 crs 以 "gcj" 开头就当加密坐标（EPSG:3857 之类一律当 WGS84）
+                m_gcj = false;
+                if (q.exec(QStringLiteral("SELECT value FROM metadata WHERE name='crs'")) && q.next()) {
+                    const QString v = q.value(0).toString().trimmed().toLower();
+                    m_gcj = v.startsWith(QStringLiteral("gcj"));
+                }
+
                 m_query = new QSqlQuery(db);
                 m_query->prepare(QStringLiteral(
                     "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?"));
@@ -66,6 +73,7 @@ void TileSource::close()
     m_query = nullptr;
     m_open = false;
     m_minZoom = m_maxZoom = 0;
+    m_gcj = false;
     m_name.clear();
     m_path.clear();
 

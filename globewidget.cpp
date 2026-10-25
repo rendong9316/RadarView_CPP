@@ -1,4 +1,5 @@
 #include "globewidget.h"
+#include "crs.h"
 #include "netmap.h"
 #include "track.h"
 #include "maptools.h"
@@ -243,6 +244,59 @@ GlobeWidget::~GlobeWidget()
     cleanupGL();
 }
 
+// 场景坐标系由底图决定：高德瓦片网格是 GCJ-02；天地图和离线 mbtiles 是 WGS84。
+// 离线包可以在 metadata 里写 crs=GCJ-02 声明（有些用高德瓦片抓的包就是加密坐标）。
+bool GlobeWidget::sceneIsGcj() const
+{
+    if (m_online)
+        return m_online->source() == NetTileSource::Source::Amap;
+    return m_tiles && m_tiles->isGcj();
+}
+
+void GlobeWidget::toScene(double lonWgs, double latWgs, double *lonScene, double *latScene) const
+{
+    if (!m_sceneCrs) {
+        *lonScene = lonWgs;
+        *latScene = latWgs;
+        return;
+    }
+    crs::wgs84ToGcj02(lonWgs, latWgs, lonScene, latScene);
+}
+
+void GlobeWidget::fromScene(double lonScene, double latScene, double *lonWgs, double *latWgs) const
+{
+    if (!m_sceneCrs) {
+        *lonWgs = lonScene;
+        *latWgs = latScene;
+        return;
+    }
+    crs::gcj02ToWgs84(lonScene, latScene, lonWgs, latWgs);
+}
+
+void GlobeWidget::applySceneCrs()
+{
+    const bool gcj = sceneIsGcj();
+    if (gcj == m_sceneCrs)
+        return;
+
+    // 相机记的也是场景坐标：先按旧基准还原成 WGS84，再按新基准换算，
+    // 这样切换底图时视野仍停在同一个真实地点（否则街道级下会跳 500m）
+    const double camLon = qRadiansToDegrees(m_camLon);
+    const double camLat = qRadiansToDegrees(m_camLat);
+    double wlon = camLon, wlat = camLat;
+    if (m_sceneCrs)
+        crs::gcj02ToWgs84(camLon, camLat, &wlon, &wlat);
+    m_sceneCrs = gcj;
+    double slon = wlon, slat = wlat;
+    if (gcj)
+        crs::wgs84ToGcj02(wlon, wlat, &slon, &slat);
+    m_camLon = qDegreesToRadians(slon);
+    m_camLat = qDegreesToRadians(slat);
+    m_trackLayer.setSceneGcj(gcj);      // 重建航迹几何：坐标系变了，旧顶点全部失效
+    update();
+    emitStatus();
+}
+
 bool GlobeWidget::openTiles(const QString &path, QString *error)
 {
     std::unique_ptr<TileSource> src(new TileSource);
@@ -256,6 +310,7 @@ bool GlobeWidget::openTiles(const QString &path, QString *error)
     }
     m_missing.clear();
     m_tiles = std::move(src);
+    applySceneCrs();
     updateCapColors();
     update();
     emitStatus();
@@ -310,6 +365,7 @@ bool GlobeWidget::openOnlineMap(const QString &token, bool useAmap, QString *err
     }
     m_missing.clear();
     m_pendingTiles.clear();
+    applySceneCrs();
     updateCapColors();
     update();
     emitStatus();
@@ -329,6 +385,7 @@ void GlobeWidget::closeOnlineMap()
         clearTextures();
         doneCurrent();
     }
+    applySceneCrs();
     updateCapColors();
     update();
     emitStatus();
@@ -388,15 +445,15 @@ void GlobeWidget::panPixels(const QPoint &from, const QPoint &to)
 bool GlobeWidget::geoAt(const QPointF &pos, double *lonDeg, double *latDeg)
 {
     updateMatrices();
-    double lon, lat;
+    double lon, lat;                     // 场景坐标（弧度）
     if (!pick(pos, &lon, &lat))
         return false;
-    *lonDeg = qRadiansToDegrees(lon);
-    *latDeg = qRadiansToDegrees(lat);
+    fromScene(qRadiansToDegrees(lon), qRadiansToDegrees(lat), lonDeg, latDeg);
     return true;
 }
 
-bool GlobeWidget::screenPos(double lonDeg, double latDeg, double altM, QPointF *pos)
+// 场景坐标（= 当前底图的坐标系）→ 屏幕，不做任何转换
+bool GlobeWidget::sceneScreenPos(double lonDeg, double latDeg, double altM, QPointF *pos)
 {
     updateMatrices();
     const QVector4D c = m_mvp * QVector4D(ecef(qDegreesToRadians(lonDeg), qDegreesToRadians(latDeg),
@@ -407,6 +464,13 @@ bool GlobeWidget::screenPos(double lonDeg, double latDeg, double altM, QPointF *
     return true;
 }
 
+bool GlobeWidget::screenPos(double lonDeg, double latDeg, double altM, QPointF *pos)
+{
+    double slon = lonDeg, slat = latDeg;
+    toScene(lonDeg, latDeg, &slon, &slat);      // 入参是 WGS84
+    return sceneScreenPos(slon, slat, altM, pos);
+}
+
 int GlobeWidget::trackAt(const QPointF &pos)
 {
     updateMatrices();
@@ -415,8 +479,10 @@ int GlobeWidget::trackAt(const QPointF &pos)
 
 void GlobeWidget::lookAt(double lonDeg, double latDeg, double altKm)
 {
-    m_camLon = qDegreesToRadians(lonDeg);
-    m_camLat = qBound(-qDegreesToRadians(89.9), qDegreesToRadians(latDeg), qDegreesToRadians(89.9));
+    double slon = lonDeg, slat = latDeg;
+    toScene(lonDeg, latDeg, &slon, &slat);       // 入参是 WGS84（航迹/命令行坐标）
+    m_camLon = qDegreesToRadians(slon);
+    m_camLat = qBound(-qDegreesToRadians(89.9), qDegreesToRadians(slat), qDegreesToRadians(89.9));
     m_alt = qBound(kMinAlt, altKm / kEarthRadiusKm, kMaxAlt);
     update();
 }
@@ -443,7 +509,7 @@ void GlobeWidget::setShowLabels(bool on)
     update();
 }
 
-bool GlobeWidget::visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos)
+bool GlobeWidget::sceneVisiblePos(double lonDeg, double latDeg, double altM, QPointF *pos)
 {
     updateMatrices();
     const QVector3D p = ecef(qDegreesToRadians(lonDeg), qDegreesToRadians(latDeg), altM / (kEarthRadiusKm * 1000.0));
@@ -454,6 +520,13 @@ bool GlobeWidget::visiblePos(double lonDeg, double latDeg, double altM, QPointF 
         return false;
     *pos = QPointF((c.x() / c.w() + 1.0) * 0.5 * width(), (1.0 - c.y() / c.w()) * 0.5 * height());
     return true;
+}
+
+bool GlobeWidget::visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos)
+{
+    double slon = lonDeg, slat = latDeg;
+    toScene(lonDeg, latDeg, &slon, &slat);      // 入参是 WGS84（航迹/旗标/标尺）
+    return sceneVisiblePos(slon, slat, altM, pos);
 }
 
 // 旗标图标：底边中点对准旗标位置，32px × 0.8 × 缩放
@@ -507,8 +580,13 @@ QString GlobeWidget::trackLabel(const Track &t)
 // ---------------------------------------------------------------
 QVector<QPolygonF> GlobeWidget::geodesicLines(double lat1, double lon1, double lat2, double lon2)
 {
-    const QVector3D a = geo::ecefDeg(lon1, lat1, 0.0).normalized();
-    const QVector3D b = geo::ecefDeg(lon2, lat2, 0.0).normalized();
+    // 端点先转成场景坐标，中间的插值点也都在场景坐标系里，最后用 sceneVisiblePos 投影，
+    // 不能混着用（否则会被转换两次）
+    double s1lon = lon1, s1lat = lat1, s2lon = lon2, s2lat = lat2;
+    toScene(lon1, lat1, &s1lon, &s1lat);
+    toScene(lon2, lat2, &s2lon, &s2lat);
+    const QVector3D a = geo::ecefDeg(s1lon, s1lat, 0.0).normalized();
+    const QVector3D b = geo::ecefDeg(s2lon, s2lat, 0.0).normalized();
     const double ang = std::acos(qBound(-1.0, double(QVector3D::dotProduct(a, b)), 1.0));
     const int n = 64;
     QVector<QPolygonF> out;
@@ -525,7 +603,7 @@ QVector<QPolygonF> GlobeWidget::geodesicLines(double lat1, double lon1, double l
         const double lat = qRadiansToDegrees(std::asin(qBound(-1.0, double(v.z()), 1.0)));
         const double lon = qRadiansToDegrees(std::atan2(double(v.y()), double(v.x())));
         QPointF sp;
-        if (visiblePos(lon, lat, 0.0, &sp)) {
+        if (sceneVisiblePos(lon, lat, 0.0, &sp)) {
             cur << sp;
         } else if (!cur.isEmpty()) {
             out << cur;
@@ -718,11 +796,12 @@ QString GlobeWidget::debugInfo() const
                .arg(m_tiles ? m_tiles->maxZoom() : -1)
                .arg(m_lastDrawn).arg(m_lastMaxZ)
                .arg(m_textures.size()).arg(m_missing.size()).arg(m_pending)
-         + QStringLiteral(" glErrors=%1 alt=%2km lon=%3 lat=%4")
+         + QStringLiteral(" glErrors=%1 alt=%2km lon=%3 lat=%4 crs=%5")
                .arg(m_glErrors)
                .arg(m_alt * kEarthRadiusKm, 0, 'f', 1)
                .arg(qRadiansToDegrees(m_camLon), 0, 'f', 3)
-               .arg(qRadiansToDegrees(m_camLat), 0, 'f', 3);
+               .arg(qRadiansToDegrees(m_camLat), 0, 'f', 3)
+               .arg(coordSystemName());
 }
 
 // ---------------------------------------------------------------
@@ -1244,7 +1323,14 @@ void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
         updateHover(e->pos(), e->globalPos());
     }
     updateMatrices();
-    m_cursorValid = pick(e->pos(), &m_cursorLon, &m_cursorLat);
+    double clon = 0.0, clat = 0.0;
+    m_cursorValid = pick(e->pos(), &clon, &clat);
+    if (m_cursorValid) {              // 场景坐标 → WGS84，供状态栏/标尺使用
+        double wlon = 0.0, wlat = 0.0;
+        fromScene(qRadiansToDegrees(clon), qRadiansToDegrees(clat), &wlon, &wlat);
+        m_cursorLon = qDegreesToRadians(wlon);
+        m_cursorLat = qDegreesToRadians(wlat);
+    }
     if (m_ruler && m_ruler->isActive())
         m_ruler->setMouse(m_cursorValid, qRadiansToDegrees(m_cursorLat), qRadiansToDegrees(m_cursorLon));
     emitStatus();

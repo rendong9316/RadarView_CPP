@@ -2,6 +2,7 @@
 #include "replaycontroller.h"
 #include "track.h"
 #include "apppaths.h"
+#include "crs.h"
 #include "theme.h"
 
 #include <QAbstractButton>
@@ -702,15 +703,20 @@ void AppStatusBar::setViewStatus(double heightKm, double lonDeg, double latDeg, 
     const QString lon = formatCoordinate(lonDeg), lat = formatCoordinate(latDeg);
     const QString f = fps > 0 ? QString::number(fps) : QStringLiteral("--");
     const QString ht = QStringLiteral("高: %1 km").arg(h);
-    const QString lt = QStringLiteral("经纬: %1, %2").arg(lon, lat);
+    // 界面上显示的一律是 WGS84（GPS 原始坐标，与航迹数据同源）。
+    // 高德底图下场景是 GCJ-02，这里再给出对应值，方便和别的系统对坐标。
+    const QString lt = QStringLiteral("经纬: %1, %2 (WGS84)").arg(lon, lat);
     const QString ft = QStringLiteral("FPS: %1").arg(f);
     if (m_height->text() != ht) {
         m_height->setText(ht);
         m_height->setToolTip(QStringLiteral("相机高度 %1 km").arg(h));
     }
     if (m_lonLat->text() != lt) {
+        double glon = lonDeg, glat = latDeg;
+        crs::wgs84ToGcj02(lonDeg, latDeg, &glon, &glat);
         m_lonLat->setText(lt);
-        m_lonLat->setToolTip(QStringLiteral("鼠标经纬度 %1, %2").arg(lon, lat));
+        m_lonLat->setToolTip(QStringLiteral("鼠标位置\nWGS84（GPS）: %1, %2\nGCJ-02（高德）: %3, %4")
+                                 .arg(lon, lat).arg(formatCoordinate(glon), formatCoordinate(glat)));
     }
     if (m_fps->text() != ft) {
         m_fps->setText(ft);

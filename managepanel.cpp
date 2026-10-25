@@ -1398,6 +1398,7 @@ bool ManagePanel::exportVisible(const QString &path, QString *error)
     for (const Track &t : trackdb::loadTracks(keys)) {
         QJsonObject o;
         o.insert(QStringLiteral("icao_address"), t.id);
+        o.insert(QStringLiteral("crs"), QStringLiteral("WGS84"));   // 导出坐标一律 WGS84，不做 GCJ 偏移
         o.insert(QStringLiteral("source"), trackSourceName(t.source));
         o.insert(QStringLiteral("file_name"), t.fileName);
         o.insert(QStringLiteral("flight_no"), t.flightNo);

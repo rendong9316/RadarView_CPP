@@ -41,6 +41,11 @@ public:
     // 由着色器按 dot(p, eye-p) > 0 剔除，每帧绘制前必须设一次。
     void setEye(const QVector3D &eye) { m_eye = eye; }
 
+    // 场景坐标系是否是 GCJ-02（高德底图）。数据本身永远是 WGS84，
+    // 这里只决定「生成顶点时要不要先加偏移」，切换底图时调用，会触发重建。
+    void setSceneGcj(bool on);
+    bool sceneGcj() const { return m_sceneGcj; }
+
     // 数据与显示状态（任何时候都可调用，下次 draw 时生效）
     void setStore(const TrackStore *store);
     void setGroupVisible(const QString &groupKey, bool visible);
@@ -128,6 +133,10 @@ private:
         QVector3D bmin, bmax;
     };
 
+    // WGS84 经纬度 + 高度 → 场景坐标（按需做 GCJ 偏移）。
+    // 所有顶点/拾取缓存/端点都必须走这里，否则坐标系一换就会出现半套偏移。
+    QVector3D scenePos(double lonDeg, double latDeg, double altM) const;
+
     void rebuildStatic();
     void rebuildDynamic();
     void releaseBatches();
@@ -144,6 +153,7 @@ private:
     int m_uLineEye = -1, m_uDotEye = -1;
     QVector3D m_eye;                     // 相机位置（场景单位），供着色器剔除地球背面
 
+    bool m_sceneGcj = false;
     const TrackStore *m_store = nullptr;
     quint64 m_builtVersion = ~quint64(0);
     quint64 m_styleVersion = 0;   // 线宽/圆球等样式变化计数

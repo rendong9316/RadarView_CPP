@@ -13,6 +13,7 @@ SOURCES += \
     globewidget.cpp \
     tilesource.cpp \
     netmap.cpp \
+    crs.cpp \
     track.cpp \
     matfile.cpp \
     trackparsers.cpp \
@@ -37,6 +38,7 @@ HEADERS += \
     globewidget.h \
     tilesource.h \
     netmap.h \
+    crs.h \
     track.h \
     matfile.h \
     trackparsers.h \

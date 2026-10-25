@@ -47,6 +47,14 @@ public:
     QString mapSourceName() const;
     QString tileName() const;
 
+    // ---- 坐标系 ----
+    // 场景（球面经纬度）用的坐标系由当前底图决定：高德瓦片是 GCJ-02，其余是 WGS84。
+    // 数据（航迹/旗标/标尺/数据库/导出）永远是 WGS84，只有往球面上摆的时候才转换。
+    bool sceneIsGcj() const;
+    QString coordSystemName() const { return m_sceneCrs ? QStringLiteral("GCJ-02") : QStringLiteral("WGS84"); }
+    void toScene(double lonWgs, double latWgs, double *lonScene, double *latScene) const;
+    void fromScene(double lonScene, double latScene, double *lonWgs, double *latWgs) const;
+
     void resetView();
     void zoomBy(double steps);                          // 正数拉近，负数拉远
     void panPixels(const QPoint &from, const QPoint &to); // 把 from 处的地面拖到 to
@@ -67,7 +75,7 @@ public:
     void setFlagScale(double s) { m_flagScale = s; m_flagIcon = QPixmap(); update(); }
     double flagScale() const { return m_flagScale; }
 
-    // 经纬度在当前视角下的屏幕位置；在地球背面或相机后方返回 false
+    // 经纬度（WGS84）在当前视角下的屏幕位置；在地球背面或相机后方返回 false
     bool visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos);
     QString flagAt(const QPointF &pos);          // 屏幕位置处的旗标 id
     // ---- 自检用 ----
@@ -79,9 +87,9 @@ public:
     void resetInteraction();
     static QString trackLabel(const Track &t);   // "航班号 | 机型"，都没有时为 id
 
-    // 屏幕坐标 -> 经纬度（度），未落在地球上时返回 false
+    // 屏幕坐标 -> WGS84 经纬度（度），未落在地球上时返回 false
     bool geoAt(const QPointF &pos, double *lonDeg, double *latDeg);
-    // 经纬度（度）+ 高度（米）-> 屏幕坐标；在相机后方返回 false
+    // WGS84 经纬度（度）+ 高度（米）-> 屏幕坐标；在相机后方返回 false
     bool screenPos(double lonDeg, double latDeg, double altM, QPointF *pos);
     // 屏幕坐标处的航迹（TrackStore::tracks() 下标），没有返回 -1
     int trackAt(const QPointF &pos);
@@ -130,7 +138,12 @@ private:
     void uploadPendingTiles();
     void evictTextures();
     void updateCapColors();
-    bool pick(const QPointF &pos, double *lon, double *lat);
+    bool pick(const QPointF &pos, double *lon, double *lat);   // 场景坐标（弧度）
+    // 场景经纬度（度）→ 屏幕，不做任何坐标转换
+    bool sceneVisiblePos(double lonDeg, double latDeg, double altM, QPointF *pos);
+    bool sceneScreenPos(double lonDeg, double latDeg, double altM, QPointF *pos);
+    // 底图换了以后同步场景坐标系（会重建航迹几何）
+    void applySceneCrs();
     void drawPatch(const QVector4D &range);
     void emitStatus();
     void trackFps();
@@ -157,6 +170,7 @@ private:
     QPixmap m_flagIcon;
 
     std::unique_ptr<TileSource> m_tiles;
+    bool m_sceneCrs = false;        // 当前场景是否 GCJ-02（已生效的那个，不是配置值）
     NetTileSource *m_online = nullptr;      // 在线底图（天地图），为空表示离线模式
     QHash<quint64, QImage> m_pendingTiles;  // 网络已到、等着在 GL 线程上传
     TrackLayer m_trackLayer;

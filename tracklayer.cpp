@@ -1,4 +1,5 @@
 #include "tracklayer.h"
+#include "crs.h"
 #include "track.h"
 #include "geo.h"
 
@@ -140,19 +141,29 @@ double wrapLon(double d)
     return d;
 }
 
-// 两点间的线段（经纬度线性插值，与回放插值一致），过长时细分；回调每一小段
+// 两点间的线段（经纬度线性插值，与回放插值一致），过长时细分；回调每一小段。
+// gcj=true 时先把插值点转到 GCJ-02 再算 ECEF（高德底图的场景坐标系）。
+// 细分在 WGS84 上做：转换函数是光滑的，0.5° 内的偏差远小于一个像素。
 template <typename F>
-void forEachPiece(double lon0, double lat0, double lon1, double lat1, F onPiece)
+void forEachPiece(double lon0, double lat0, double lon1, double lat1, F onPiece, bool gcj = false)
 {
+    auto mk = [gcj](double lo, double la) {
+        if (gcj) {
+            double glo = lo, gla = la;
+            crs::wgs84ToGcj02(lo, la, &glo, &gla);
+            return geo::ecefDeg(glo, gla, TrackLayer::kAltitudeM);
+        }
+        return geo::ecefDeg(lo, la, TrackLayer::kAltitudeM);
+    };
     const double dlon = wrapLon(lon1 - lon0);
     const double dlat = lat1 - lat0;
     const double ang = std::max(std::fabs(dlat),
                                 std::fabs(dlon) * std::cos((lat0 + lat1) * 0.5 * M_PI / 180.0));
     const int n = qBound(1, int(std::ceil(ang / kMaxPieceDeg)), 256);
-    QVector3D prev = geo::ecefDeg(lon0, lat0, TrackLayer::kAltitudeM);
+    QVector3D prev = mk(lon0, lat0);
     for (int i = 1; i <= n; ++i) {
         const double f = double(i) / n;
-        const QVector3D cur = geo::ecefDeg(lon0 + dlon * f, lat0 + dlat * f, TrackLayer::kAltitudeM);
+        const QVector3D cur = mk(lon0 + dlon * f, lat0 + dlat * f);
         onPiece(prev, cur);   // 注意：不能叫 emit，Qt 把 emit 定义成了空宏
         prev = cur;
     }
@@ -269,6 +280,32 @@ void TrackLayer::releaseBatches()
     m_batches.clear();
     m_trackPieces.clear();
     m_segments = 0;
+}
+
+// WGS84 → 场景坐标。GCJ-02 只是加一个和经纬度有关的偏移，境外恒等。
+QVector3D TrackLayer::scenePos(double lonDeg, double latDeg, double altM) const
+{
+    if (!m_sceneGcj)
+        return geo::ecefDeg(lonDeg, latDeg, altM);
+    double glo = lonDeg, gla = latDeg;
+    crs::wgs84ToGcj02(lonDeg, latDeg, &glo, &gla);
+    return geo::ecefDeg(glo, gla, altM);
+}
+
+void TrackLayer::setSceneGcj(bool on)
+{
+    if (m_sceneGcj == on)
+        return;
+    m_sceneGcj = on;
+    // 几何全部要按新坐标系重算：静态批次走 m_styleVersion，
+    // 拾取缓存/点迹/头部段各有一份缓存，必须一起失效。
+    ++m_styleVersion;
+    m_pick.clear();
+    m_pickVersion = ~quint64(0);
+    m_ptDotsBuiltVersion = ~quint64(0);
+    m_ptDotsDirty = true;
+    m_dynamicDirty = true;
+    m_rangesDirty = true;
 }
 
 void TrackLayer::setStore(const TrackStore *store)
@@ -466,7 +503,7 @@ void TrackLayer::rebuildStatic()
                     pushQuad(verts, p0, p1, t, t0);
                     if (++quads == kQuadsPerBatch)
                         flush();
-                });
+                }, m_sceneGcj);
             }
             closePiece();
         }
@@ -554,9 +591,9 @@ void TrackLayer::rebuildPointDots()
         d.first = v.size() / (4 * kDotStride);
         const QVector<TrackPoint> &pts = tracks[ti].points;
         for (int k = m_lo[ti]; k <= m_hi[ti]; ++k) {
-            pushDot(v, geo::ecefDeg(pts[k].lon, pts[k].lat, kAltitudeM));
+            pushDot(v, scenePos(pts[k].lon, pts[k].lat, kAltitudeM));
             d.t.append(pts[k].t);
-            d.pos.append(geo::ecefDeg(pts[k].lon, pts[k].lat, kAltitudeM));
+            d.pos.append(scenePos(pts[k].lon, pts[k].lat, kAltitudeM));
         }
         d.count = d.t.size();
         d.color = contrastColor(m_groups[m_trackGroup[ti]].color);
@@ -611,13 +648,13 @@ void TrackLayer::rebuildDynamic()
                 if (lon != a.lon || lat != a.lat)
                     forEachPiece(a.lon, a.lat, lon, lat, [&](const QVector3D &p0, const QVector3D &p1) {
                         pushQuad(heads, p0, p1, nowRel, t0);
-                    });
+                    }, m_sceneGcj);
                 if (i == m_hoverTrack)
                     m_hoverHead = GroupRange{headFirst, heads.size() / (4 * kLineStride) - headFirst};
             }
             if (i == m_hoverTrack)
                 m_hoverDot = dots.size() / (4 * kDotStride);
-            pushDot(dots, geo::ecefDeg(lon, lat, kAltitudeM));
+            pushDot(dots, scenePos(lon, lat, kAltitudeM));
             m_endpoints.append(EndPoint(i, lon, lat));
             ++m_visibleTracks;
         }
@@ -830,7 +867,7 @@ void TrackLayer::ensurePickCache() const
         PickTrack &pk = m_pick[i];
         pk.pos.reserve(pts.size());
         pk.t.reserve(pts.size());
-        pk.pos.append(geo::ecefDeg(pts[0].lon, pts[0].lat, kAltitudeM));
+        pk.pos.append(scenePos(pts[0].lon, pts[0].lat, kAltitudeM));
         pk.t.append(pts[0].t);
         pk.t0.append(pts[0].t);
         for (int j = 1; j < pts.size(); ++j) {
@@ -841,7 +878,7 @@ void TrackLayer::ensurePickCache() const
                 pk.pos.append(p1);
                 pk.t.append(b.t);
                 pk.t0.append(a.t);
-            });
+            }, m_sceneGcj);
         }
         QVector3D lo = pk.pos[0], hi = pk.pos[0];
         for (const QVector3D &p : qAsConst(pk.pos)) {
@@ -940,7 +977,7 @@ int TrackLayer::pick(const QMatrix4x4 &mvp, const QVector3D &eye, const QSizeF &
         if (m_replay && !replayPosition(pts, m_lo[i], m_hi[i], m_replayTime, &lon, &lat, &last))
             continue;
         QVector2D dot;
-        if (!project(geo::ecefDeg(lon, lat, kAltitudeM), &dot))
+        if (!project(scenePos(lon, lat, kAltitudeM), &dot))
             continue;
         const float radius = m_groups[m_trackGroup[i]].radiusPx;
         const float dd = qMax(0.0f, (dot - mouse).length() - qMax(0.0f, radius - tolPx));
@@ -949,7 +986,7 @@ int TrackLayer::pick(const QMatrix4x4 &mvp, const QVector3D &eye, const QSizeF &
             best = i;
         }
         QVector2D a;
-        if (m_replay && project(geo::ecefDeg(pts[last].lon, pts[last].lat, kAltitudeM), &a)) {
+        if (m_replay && project(scenePos(pts[last].lon, pts[last].lat, kAltitudeM), &a)) {
             const float d = segDist(a, dot);
             if (d < bestScore) {
                 bestScore = d;
