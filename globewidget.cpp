@@ -941,27 +941,19 @@ GLuint GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
 }
 
 // 在线模式优先网络瓦片，没到货时用本地 mbtiles 顶一下，避免整片空白
-QImage GlobeWidget::imageFor(int z, int x, int y)
-{
-    if (m_online) {
-        const QImage img = m_online->cachedTile(z, x, y);
-        if (!img.isNull())
-            return img;
-        if (m_tiles)
-            return m_tiles->tile(z, x, y);
-        return QImage();
-    }
-    return m_tiles ? m_tiles->tile(z, x, y) : QImage();
-}
-
 void GlobeWidget::loadTexture(int z, int x, int y)
 {
     const quint64 key = tileKey(z, x, y);
-    const QImage img = imageFor(z, x, y);
+    if (m_online) {
+        // 在线模式：瓦片异步到手（线程池解码 / 网络下载），到了走 tileReady。
+        // 这里不用本地 mbtiles 兜底——wanted 里的层级都在在线源范围内，
+        // 拿低清离线瓦片顶上去，这个 key 就永久停在模糊图上，在线瓦片再也加载不进来。
+        m_online->startLoad(z, x, y);
+        return;
+    }
+    const QImage img = m_tiles ? m_tiles->tile(z, x, y) : QImage();
     if (img.isNull()) {
-        // 在线模式：瓦片可能还在路上，不能当成缺失
-        if (!m_online)
-            m_missing.insert(key);
+        m_missing.insert(key);
         return;
     }
     uploadTexture(key, img);

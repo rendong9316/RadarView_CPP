@@ -5,9 +5,11 @@
 #include <QImage>
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QPointer>
 #include <QQueue>
 #include <QSet>
 #include <QString>
+#include <QThreadPool>
 #include <QTimer>
 
 class QNetworkReply;
@@ -27,6 +29,7 @@ public:
     enum class Source { Tianditu, Amap };
 
     explicit NetTileSource(QObject *parent = nullptr);
+    ~NetTileSource();
 
     void setSource(Source s);
     Source source() const { return m_source; }
@@ -38,13 +41,19 @@ public:
     int maxZoom() const { return m_source == Source::Amap ? 17 : 18; }
     QString name() const;
 
-    QImage cachedTile(int z, int x, int y);
+    // 取一张瓦片（非阻塞）。磁盘已有就交线程池解码，否则走网络下载；
+    // 两种途径最终都发 tileReady，由 GlobeWidget 收下后在 GL 线程上传。
+    void startLoad(int z, int x, int y);
     void request(int z, int x, int y);
-    bool isBusy() const { return m_inflightCount > 0 || !m_queue.isEmpty(); }
+    bool isBusy() const { return m_inflightCount > 0 || !m_queue.isEmpty() || !m_decoding.isEmpty(); }
 
 signals:
     void tileReady(int z, int x, int y, const QImage &image);
     void tileFailed(int z, int x, int y);
+
+private slots:
+    // 线程池解码完成，被 QMetaObject::invokeMethod 投递回 GUI 线程
+    void onDecoded(int z, int x, int y, const QImage &img);
 
 private:
     struct Job {
@@ -75,7 +84,8 @@ private:
     int m_inflightCount = 0;               // 按「请求」计数（一块瓦片可能两个）
     QSet<quint64> m_failed;
     QQueue<quint64> m_queue;
-    QHash<quint64, QImage> m_ready;
+    QSet<quint64> m_decoding;              // 正在线程池里解码的瓦片，避免重复提交
+    QThreadPool m_pool;                    // PNG 解码专用，避免占着 GUI 线程
     QTimer m_pumpTimer;
     Source m_source = Source::Tianditu;
     QString m_key;

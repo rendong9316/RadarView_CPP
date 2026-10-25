@@ -971,12 +971,15 @@ int main(int argc, char *argv[])
     if (ok >= 0 && ok + 1 < args.size())
         w.openOnlineMap(args.at(ok + 1), args.contains(QStringLiteral("--amap")));
 
-    // 指定视角后再抓帧（回归验证用）：--look 经度,纬度,视高km
+    // 指定视角后再抓帧（回归验证用）：--look 经度,纬度,视高km。
+    // 延到事件循环开始后再设，否则会被 loadPersisted() 里「自动飞到航迹中心」覆盖掉。
     const int lookIdx = args.indexOf(QStringLiteral("--look"));
     if (lookIdx >= 0 && lookIdx + 1 < args.size()) {
         const QStringList p = args.at(lookIdx + 1).split(QLatin1Char(','));
-        if (p.size() >= 3)
-            w.globe()->lookAt(p[0].toDouble(), p[1].toDouble(), p[2].toDouble());
+        if (p.size() >= 3) {
+            const double lon = p[0].toDouble(), lat = p[1].toDouble(), alt = p[2].toDouble();
+            QTimer::singleShot(0, &w, [&w, lon, lat, alt]() { w.globe()->lookAt(lon, lat, alt); });
+        }
     }
 
     // 抓一帧地球画面后退出（回归验证用）：--shot <png> [--shot-delay 毫秒]

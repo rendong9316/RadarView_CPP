@@ -125,7 +125,6 @@ private:
     GLuint textureFor(const TileId &t, QVector4D *xform);   // 0 = 无可用纹理
     void loadTexture(int z, int x, int y);
     void uploadTexture(quint64 key, const QImage &img);
-    QImage imageFor(int z, int x, int y);                   // 在线优先，其次本地 mbtiles
     int mapMinZoom() const;
     int mapMaxZoom() const;
     void uploadPendingTiles();

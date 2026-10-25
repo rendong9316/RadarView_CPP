@@ -6,17 +6,46 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPainter>
+#include <QElapsedTimer>
 #include <QStandardPaths>
 #include <QUrl>
 
 namespace {
 
 const int kMaxQueued = 400;
-const int kMaxMemoryTiles = 1024;
+
 
 // 天地图 WAF 只拦浏览器 UA，这里发自己的标识；高德反过来要有 Referer
 const char *const kUserAgent = "RadarView/1.0 (Qt)";
 const char *const kAmapReferer = "https://www.amap.com/";
+
+// 磁盘 PNG 的解码放到线程池里做：实测单张 256×256 要 5ms 左右，
+// 一屏 ~300 张就是在 GUI 线程上堆 1.7 秒的卡顿。
+class DecodeTask : public QRunnable
+{
+public:
+    DecodeTask(const QString &path, int z, int x, int y, QPointer<NetTileSource> dst)
+        : m_path(path), m_z(z), m_x(x), m_y(y), m_dst(dst)
+    {
+        setAutoDelete(true);
+    }
+
+    void run() override
+    {
+        const QImage img(m_path);
+        if (img.isNull())
+            return;
+        // 队列投递回 GUI 线程；QPointer 保证对象已析构时不会踩野指针
+        QMetaObject::invokeMethod(m_dst, "onDecoded", Qt::QueuedConnection,
+                                  Q_ARG(int, m_z), Q_ARG(int, m_x), Q_ARG(int, m_y),
+                                  Q_ARG(QImage, img));
+    }
+
+private:
+    const QString m_path;
+    const int m_z, m_x, m_y;
+    const QPointer<NetTileSource> m_dst;
+};
 
 } // namespace
 
@@ -25,6 +54,14 @@ NetTileSource::NetTileSource(QObject *parent)
 {
     connect(&m_pumpTimer, &QTimer::timeout, this, &NetTileSource::pump);
     m_pumpTimer.setInterval(pumpMs());
+    // 解码是 CPU 密集的，给个独立小池子，不要和全局池抢线程
+    m_pool.setMaxThreadCount(4);
+    m_pool.setExpiryTimeout(30000);
+}
+
+NetTileSource::~NetTileSource()
+{
+    m_pool.waitForDone();
 }
 
 void NetTileSource::setSource(Source s)
@@ -36,7 +73,7 @@ void NetTileSource::setSource(Source s)
     m_jobs.clear();
     m_failed.clear();
     m_queue.clear();
-    m_ready.clear();
+    m_decoding.clear();
     m_inflightCount = 0;
     m_pumpTimer.stop();
     m_pumpTimer.setInterval(pumpMs());
@@ -73,28 +110,35 @@ QString NetTileSource::cachePath(int z, int x, int y) const
     return QStringLiteral("%1/%2/%3/%4.png").arg(base).arg(z).arg(x).arg(y);
 }
 
-QImage NetTileSource::cachedTile(int z, int x, int y)
+// 取一张瓦片。不再同步返回 QImage —— 磁盘 PNG 的解码要 5ms 上下，
+// 放在 paintGL 里会让一屏 300 张瓦片堆出 1.7 秒卡顿。
+// 这里只负责「把瓦片搞到手」：磁盘已有就丢给线程池解码，否则走网络下载，
+// 两条路最终都走 tileReady 信号，由 GlobeWidget 收进 m_pendingTiles 再上传。
+void NetTileSource::startLoad(int z, int x, int y)
 {
     const quint64 k = key3(z, x, y);
-    auto it = m_ready.constFind(k);
-    if (it != m_ready.constEnd())
-        return it.value();
-    if (m_failed.contains(k))
-        return QImage();
+    if (m_failed.contains(k) || m_decoding.contains(k))
+        return;
 
     const QString path = cachePath(z, x, y);
     if (QFileInfo::exists(path)) {
-        QImage img(path);
-        if (!img.isNull()) {
-            if (m_ready.size() > kMaxMemoryTiles)
-                m_ready.clear();
-            m_ready.insert(k, img);
-            return img;
-        }
+        m_decoding.insert(k);
+        m_pool.start(new DecodeTask(path, z, x, y, this));
+        return;
     }
-
     request(z, x, y);
-    return QImage();
+}
+
+// 线程池解码完成，回到 GUI 线程
+void NetTileSource::onDecoded(int z, int x, int y, const QImage &img)
+{
+    m_decoding.remove(key3(z, x, y));
+    if (img.isNull()) {
+        m_failed.insert(key3(z, x, y));
+        emit tileFailed(z, x, y);
+        return;
+    }
+    emit tileReady(z, x, y, img);
 }
 
 void NetTileSource::request(int z, int x, int y)
@@ -102,7 +146,7 @@ void NetTileSource::request(int z, int x, int y)
     if (!hasKey())
         return;
     const quint64 k = key3(z, x, y);
-    if (m_ready.contains(k) || m_failed.contains(k) || m_jobs.contains(k))
+    if (m_failed.contains(k) || m_jobs.contains(k) || m_decoding.contains(k))
         return;
     if (m_queue.size() >= kMaxQueued || m_queue.contains(k))
         return;
@@ -227,13 +271,9 @@ void NetTileSource::tryCompose(int z, int x, int y, quint64 k)
     }
     m_jobs.erase(it);
 
-    if (m_ready.size() > kMaxMemoryTiles)
-        m_ready.clear();
-
     const QString path = cachePath(z, x, y);
     QDir().mkpath(QFileInfo(path).absolutePath());
     composed.save(path, "PNG");
 
-    m_ready.insert(k, composed);
     emit tileReady(z, x, y, composed);
 }
