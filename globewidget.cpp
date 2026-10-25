@@ -612,8 +612,12 @@ QVector<QPolygonF> GlobeWidget::geodesicLines(double lat1, double lon1, double l
             const double s = std::sin(ang);
             v = a * float(std::sin((1 - f) * ang) / s) + b * float(std::sin(f * ang) / s);
         }
-        const double lat = qRadiansToDegrees(std::asin(qBound(-1.0, double(v.z()), 1.0)));
-        const double lon = qRadiansToDegrees(std::atan2(double(v.y()), double(v.x())));
+        // v 是单位方向向量：直接 asin(z) 得到的是「地心纬度」，与大地纬度最多差 0.19°（约 21 km），
+        // 喂给按大地纬度定义的 ecef 会让整条线偏离真实位置，必须先换算
+        const QVector3D dir = v.normalized();
+        const double lat = qRadiansToDegrees(
+            geo::geodeticLatFromDir(double(dir.z()), std::sqrt(double(dir.x()) * dir.x() + double(dir.y()) * dir.y())));
+        const double lon = qRadiansToDegrees(std::atan2(double(dir.y()), double(dir.x())));
         QPointF sp;
         if (sceneVisiblePos(lon, lat, 0.0, &sp)) {
             cur << sp;
@@ -668,77 +672,144 @@ void GlobeWidget::drawRuler(QPainter &p)
     p.setBrush(Qt::NoBrush);
 }
 
-// 空间套索：填充多边形 + 大圆边 + 顶点序号；绘制中额外画「最后顶点→鼠标→首顶点」虚线预览
+// 套索边界采样：两点间按经纬度平面线性插值再投影。
+// 必须和 lassogeo::pointInPolygon 的多边形口径一致，否则「看到的边界」和「查询用的边界」
+// 会差出十几公里，出现「明明在框里却没被选中」的假象。
+void GlobeWidget::sampleLonLatLine(double lat1, double lon1, double lat2, double lon2,
+                                   QVector<QPointF> *pts, QVector<bool> *vis)
+{
+    double dLon = lon2 - lon1;              // 跨日界线时走最短方向，不绕地球一圈
+    while (dLon > 180.0)
+        dLon -= 360.0;
+    while (dLon < -180.0)
+        dLon += 360.0;
+    const double dLat = lat2 - lat1;
+    // 每 ~0.25° 一个采样点：投影曲率贴合，自由手绘也不会爆点数。不含终点（下一条边接着补）
+    int steps = int(qMax(std::fabs(dLat), std::fabs(dLon)) / 0.25) + 1;
+    steps = qBound(1, steps, 64);
+    pts->reserve(pts->size() + steps);
+    vis->reserve(vis->size() + steps);
+    for (int i = 0; i < steps; ++i) {
+        const double f = double(i) / steps;
+        QPointF sp;
+        const bool ok = visiblePos(lon1 + dLon * f, lat1 + dLat * f, 0.0, &sp);
+        pts->append(sp);
+        vis->append(ok);
+    }
+}
+
+// 空间套索：填充多边形 + 边界 + 顶点序号；绘制中额外画「最后顶点→鼠标→首顶点」虚线预览。
+// 填充与边界共用同一批采样点，保证两者严丝合缝。
 void GlobeWidget::drawLasso(QPainter &p)
 {
     m_lassoVerticesDrawn = 0;
     if (!m_lasso)
         return;
     const QVector<LassoVertex> &v = m_lasso->vertices();
-    if (v.isEmpty())
-        return;
-
     const int n = v.size();
-    QVector<QPointF> sp(n);
-    QVector<bool> vis(n, false);
-    bool allVisible = true;
+    if (n == 0)
+        return;
+    const bool closed = m_lasso->isClosed() && n >= 3;
+
+    // 顶点投影（画序号用）
+    QVector<QPointF> vp(n);
+    QVector<bool> vvis(n, false);
+    for (int i = 0; i < n; ++i)
+        vvis[i] = visiblePos(v[i].lon, v[i].lat, 0.0, &vp[i]);
+
+    // 边界采样：闭合时含收尾边，背面点自动断开
+    QVector<QPointF> ring;
+    QVector<bool> ringVis;
     for (int i = 0; i < n; ++i) {
-        if (visiblePos(v[i].lon, v[i].lat, 0.0, &sp[i]))
-            vis[i] = true;
-        else
-            allVisible = false;
+        if (i + 1 >= n && !closed)
+            break;
+        const int j = (i + 1) % n;
+        sampleLonLatLine(v[i].lat, v[i].lon, v[j].lat, v[j].lon, &ring, &ringVis);
+    }
+    if (closed) {              // 采样不含终点：补上首顶点，边界才是真正闭合的一圈
+        ring << vp[0];
+        ringVis << vvis[0];
     }
 
-    // 填充（仅闭合且所有顶点都在可见半球时；否则只画边，避免穿地球的怪异多边形）
-    if (m_lasso->isClosed() && allVisible && n >= 3) {
-        QPolygonF poly;
-        for (int i = 0; i < n; ++i)
-            poly << sp[i];
+    // 填充：闭合且整圈都在可见半球时才填，否则会出现穿过地球的怪异多边形
+    bool fillOk = closed && ring.size() >= 3;
+    for (int i = 0; i < ringVis.size() && fillOk; ++i)
+        if (!ringVis[i])
+            fillOk = false;
+    if (fillOk) {
+        QPainterPath path;
+        path.moveTo(ring[0]);
+        for (int i = 1; i < ring.size(); ++i)
+            path.lineTo(ring[i]);
+        path.closeSubpath();
         QColor fill = kLassoColor;
         fill.setAlphaF(0.15f);
         p.setPen(Qt::NoPen);
         p.setBrush(fill);
-        p.drawPolygon(poly);
+        p.drawPath(path);
     }
 
-    // 边：沿大圆插值，背面自动断开
+    // 边界
     p.setBrush(Qt::NoBrush);
     p.setPen(QPen(kLassoColor, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    for (int i = 0; i + 1 < n; ++i)
-        for (const QPolygonF &line : geodesicLines(v[i].lat, v[i].lon, v[i + 1].lat, v[i + 1].lon))
-            p.drawPolyline(line);
-    if (m_lasso->isClosed() && n >= 3)
-        for (const QPolygonF &line : geodesicLines(v[n - 1].lat, v[n - 1].lon, v[0].lat, v[0].lon))
-            p.drawPolyline(line);
+    QPolygonF cur;
+    for (int i = 0; i < ring.size(); ++i) {
+        if (ringVis[i]) {
+            cur << ring[i];
+        } else if (!cur.isEmpty()) {
+            if (cur.size() > 1)
+                p.drawPolyline(cur);
+            cur.clear();
+        }
+    }
+    if (cur.size() > 1)
+        p.drawPolyline(cur);
 
-    // 绘制中的预览虚线：最后顶点 → 鼠标，鼠标 → 首顶点
+    // 绘制中的预览虚线：最后顶点 → 鼠标，鼠标 → 首顶点（与最终边界同一套采样）
     if (m_lasso->isActive() && !m_lasso->isClosed() && m_lasso->hasMouse()) {
         QColor pc = kLassoColor;
         pc.setAlphaF(0.45f);
         QPen pre(pc, 1.5, Qt::CustomDashLine, Qt::FlatCap);
         pre.setDashPattern(QVector<qreal>() << 6.0 << 6.0);
         p.setPen(pre);
-        for (const QPolygonF &line : geodesicLines(v.last().lat, v.last().lon,
-                                                   m_lasso->mouseLat(), m_lasso->mouseLon()))
-            p.drawPolyline(line);
-        if (n >= 2)
-            for (const QPolygonF &line : geodesicLines(m_lasso->mouseLat(), m_lasso->mouseLon(),
-                                                       v[0].lat, v[0].lon))
+        auto dashLine = [&](double lat1, double lon1, double lat2, double lon2) {
+            QVector<QPointF> pts;
+            QVector<bool> vis;
+            sampleLonLatLine(lat1, lon1, lat2, lon2, &pts, &vis);
+            QPointF endPt;
+            const bool endOk = visiblePos(lon2, lat2, 0.0, &endPt);
+            pts.append(endPt);
+            vis.append(endOk);
+            QPolygonF line;
+            for (int i = 0; i < pts.size(); ++i) {
+                if (vis[i]) {
+                    line << pts[i];
+                } else if (!line.isEmpty()) {
+                    if (line.size() > 1)
+                        p.drawPolyline(line);
+                    line.clear();
+                }
+            }
+            if (line.size() > 1)
                 p.drawPolyline(line);
+        };
+        dashLine(v.last().lat, v.last().lon, m_lasso->mouseLat(), m_lasso->mouseLon());
+        if (n >= 2)
+            dashLine(m_lasso->mouseLat(), m_lasso->mouseLon(), v[0].lat, v[0].lon);
     }
 
     // 顶点：绿色圆、黑色描边、白色序号
     const QFont f = remFont(0.857, true);
     p.setFont(f);
     for (int i = 0; i < n; ++i) {
-        if (!vis[i])
+        if (!vvis[i])
             continue;
         p.setPen(QPen(Qt::black, 1.5));
         p.setBrush(kLassoColor);
         const double r = ui::sz(9);
-        p.drawEllipse(sp[i], r, r);
+        p.drawEllipse(vp[i], r, r);
         p.setPen(Qt::white);
-        p.drawText(QRectF(sp[i].x() - r, sp[i].y() - r, 2 * r, 2 * r),
+        p.drawText(QRectF(vp[i].x() - r, vp[i].y() - r, 2 * r, 2 * r),
                    Qt::AlignCenter, QString::number(i + 1));
         ++m_lassoVerticesDrawn;
     }

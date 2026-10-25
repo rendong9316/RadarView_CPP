@@ -26,6 +26,14 @@ inline QVector3D ecefDeg(double lonDeg, double latDeg, double hMeters)
     return ecef(lonDeg * d2r, latDeg * d2r, hMeters / (kEarthRadiusKm * 1000.0));
 }
 
+// 单位方向向量 → 大地纬度（弧度）。z 为方向向量的 z 分量，p 为水平分量长度 sqrt(x²+y²)。
+// 注意：直接 asin(z) 得到的是「地心纬度」，与大地纬度最多差 0.19°（约 21 km），
+// 画线/拾取时混用会让线整体偏离真实位置，必须用这个换算。
+inline double geodeticLatFromDir(double z, double p)
+{
+    return std::atan2(z, (1.0 - kE2) * p);
+}
+
 } // namespace geo
 
 #endif // GEO_H

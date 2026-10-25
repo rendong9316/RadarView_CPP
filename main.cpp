@@ -8,6 +8,8 @@
 #include <QTextStream>
 #include <QFile>
 #include <QElapsedTimer>
+#include <QVector3D>
+#include <QtMath>
 #include <functional>
 #include <cmath>
 
@@ -20,6 +22,7 @@
 #include "apppaths.h"
 #include "uiwidgets.h"
 #include "geocalc.h"
+#include "geo.h"
 #include "managepanel.h"
 #include "maptools.h"
 #include "sidepanels.h"
@@ -217,6 +220,20 @@ void runSelfTest(MainWindow *w)
         freehand.endFreehand();
         check(freehand.isClosed() && !freehand.isActive() && freehand.vertices().size() == 3,
               QStringLiteral("套索：自由手绘松手自动闭合"));
+
+        // 地心纬度 / 大地纬度：geodesicLines 直接 asin(z) 会把整条线南偏约 0.2°（≈21 km），
+        // 表现为「连线与顶点错位、看着在框内的航迹却没被选中」
+        {
+            const double latIn = 39.9, lonIn = 116.4;
+            const QVector3D d = geo::ecefDeg(lonIn, latIn, 0.0).normalized();
+            const double p = std::sqrt(double(d.x()) * d.x() + double(d.y()) * d.y());
+            const double latOk = qRadiansToDegrees(geo::geodeticLatFromDir(double(d.z()), p));
+            const double latNaive = qRadiansToDegrees(std::asin(qBound(-1.0, double(d.z()), 1.0)));
+            check(std::fabs(latOk - latIn) < 1e-6 && std::fabs(latNaive - latIn) > 0.1,
+                  QStringLiteral("地心→大地纬度 %1°（旧算法 %2°，偏差 %3 km）")
+                      .arg(latOk, 0, 'f', 6).arg(latNaive, 0, 'f', 4)
+                      .arg(std::fabs(latNaive - latIn) * 111.0, 0, 'f', 1));
+        }
     }
 
     // 等到不再有待加载瓦片（最多 15 秒）再执行下一步
@@ -327,6 +344,42 @@ void runSelfTest(MainWindow *w)
                 QCoreApplication::sendEvent(g, &dbl);
                 check(lasso->isClosed() && !lasso->isActive(),
                       QStringLiteral("套索：双击闭合后退出绘制"));
+                // 顶点回投影必须落在点击处（否则叠加层会与鼠标位置错位）
+                {
+                    const QVector<LassoVertex> &vv = lasso->vertices();
+                    const QPointF clicks[3] = { lp1, lp2, lp3 };
+                    QStringList diffs;
+                    bool same = vv.size() >= 3;
+                    for (int i = 0; i < 3 && i < vv.size(); ++i) {
+                        QPointF back;
+                        if (!g->screenPos(vv[i].lon, vv[i].lat, 0.0, &back)) {
+                            same = false;
+                            diffs << QStringLiteral("不可投影");
+                            continue;
+                        }
+                        const QPointF d = back - clicks[i];
+                        if (d.manhattanLength() > 3)
+                            same = false;
+                        diffs << QStringLiteral("(%1,%2)Δ(%3,%4)").arg(back.x(), 0, 'f', 1).arg(back.y(), 0, 'f', 1)
+                                                                     .arg(d.x(), 0, 'f', 1).arg(d.y(), 0, 'f', 1);
+                    }
+                    check(same, QStringLiteral("套索：顶点回投影与点击位置一致 %1").arg(diffs.join(QStringLiteral(" "))));
+                }
+                // 边界采样必须从顶点出发：填充、边线、查询多边形共用同一批点，不能各画各的
+                {
+                    const QVector<LassoVertex> &vv = lasso->vertices();
+                    bool onVertex = vv.size() >= 3;
+                    for (int i = 0; i < vv.size() && onVertex; ++i) {
+                        const int j = (i + 1) % vv.size();
+                        QVector<QPointF> pts;
+                        QVector<bool> vis;
+                        g->sampleLonLatLine(vv[i].lat, vv[i].lon, vv[j].lat, vv[j].lon, &pts, &vis);
+                        QPointF a;
+                        onVertex = g->screenPos(vv[i].lon, vv[i].lat, 0.0, &a) && !pts.isEmpty()
+                                   && (pts.first() - a).manhattanLength() <= 1.0;
+                    }
+                    check(onVertex, QStringLiteral("套索：边界采样从顶点出发（看到的边界=查询边界）"));
+                }
                 (*waitFrames)(2, [=]() {
                     check(g->lassoVerticesDrawn() >= 3,
                           QStringLiteral("套索：叠加层画出 %1 个顶点").arg(g->lassoVerticesDrawn()));
@@ -846,6 +899,32 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                       QStringLiteral("空间查询 + 搜索无匹配：%1").arg(mp->emptyText()));
                 mp->setSearchText(QString());
                 check(mp->totalCount() == expect, QStringLiteral("清空搜索后回到空间查询结果 %1 条").arg(mp->totalCount()));
+                // 大范围套索（把全部数据都圈进来）必须一条不漏
+                {
+                    double mnLat = 90, mxLat = -90, mnLon = 180, mxLon = -180;
+                    for (const Track &tr : store->tracks())
+                        for (const TrackPoint &p : tr.points) {
+                            mnLat = qMin(mnLat, p.lat);
+                            mxLat = qMax(mxLat, p.lat);
+                            mnLon = qMin(mnLon, p.lon);
+                            mxLon = qMax(mxLon, p.lon);
+                        }
+                    const double pad = 1.0;
+                    QVector<LassoVertex> big;
+                    big << LassoVertex(0, mnLat - pad, mnLon - pad) << LassoVertex(1, mnLat - pad, mxLon + pad)
+                        << LassoVertex(2, mxLat + pad, mxLon + pad) << LassoVertex(3, mxLat + pad, mnLon - pad);
+                    int bigExpect = 0;
+                    for (const Track &tr : store->tracks())
+                        if (lassogeo::trackIntersectsPolygon(tr, big))
+                            ++bigExpect;
+                    ls->activate();
+                    for (const LassoVertex &v : big)
+                        ls->addVertex(v.lat, v.lon);
+                    ls->closePolygon();
+                    check(bigExpect == store->size() && mp->totalCount() == store->size(),
+                          QStringLiteral("大范围套索：内存命中 %1 / 面板 %2 / 总数 %3")
+                              .arg(bigExpect).arg(mp->totalCount()).arg(store->size()));
+                }
                 // 清除空间查询 → 恢复全部
                 fp0->clickSpatialClear();
                 check(mp->totalCount() == store->size() && !mp->spatialChipVisible(),

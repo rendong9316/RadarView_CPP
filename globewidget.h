@@ -97,6 +97,10 @@ public:
     bool screenPos(double lonDeg, double latDeg, double altM, QPointF *pos);
     // 屏幕坐标处的航迹（TrackStore::tracks() 下标），没有返回 -1
     int trackAt(const QPointF &pos);
+    // 套索边界采样：两点间按经纬度平面线性插值再投影（与 pointInPolygon 的多边形定义一致，
+    // 保证「看到的边界」就是「查询用的边界」）。pts/vis 一一对应，vis=false 表示该点在地球背面。
+    void sampleLonLatLine(double lat1, double lon1, double lat2, double lon2,
+                          QVector<QPointF> *pts, QVector<bool> *vis);
     bool isLoading() const { return m_pending > 0 || onlineBusy(); }
     int drawnMaxZoom() const { return m_lastMaxZ; }
     int tileMaxZoom() const;
