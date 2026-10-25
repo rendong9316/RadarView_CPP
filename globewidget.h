@@ -105,7 +105,8 @@ public:
 
 signals:
     // 状态栏：相机离地高度（km）、鼠标经纬度（度，不在地球上时为 0）、帧率（0 表示暂无）
-    void viewStatusChanged(double heightKm, double lonDeg, double latDeg, int fps);
+    // hasCoord=false 表示鼠标没落在地球上（此时经纬度无意义）
+    void viewStatusChanged(double heightKm, double lonDeg, double latDeg, int fps, bool hasCoord);
     void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
     void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
     void flagContextMenuRequested(const QString &flagId, const QPoint &globalPos);

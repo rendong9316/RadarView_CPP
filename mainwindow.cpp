@@ -317,7 +317,10 @@ MainWindow::MainWindow(QWidget *parent)
     v->addWidget(m_statusBar);
     Theme::instance()->setId(m_statusBar->theme().id);
     connect(m_statusBar, &AppStatusBar::themeChanged, Theme::instance(), &Theme::setId);
-    connect(m_globe, &GlobeWidget::viewStatusChanged, m_statusBar, &AppStatusBar::setViewStatus);
+    connect(m_globe, &GlobeWidget::viewStatusChanged, m_statusBar,
+            [this](double h, double lon, double lat, int fps, bool hasCoord) {
+                m_statusBar->setViewStatus(h, lon, lat, fps, hasCoord);
+            });
     connect(m_statusBar, &AppStatusBar::sourceToggled, this, &MainWindow::toggleSource);
     connect(m_replay, &ReplayController::timeChanged, this, &MainWindow::syncReplayToLayer);
     connect(m_replay, &ReplayController::stateChanged, this, &MainWindow::syncReplayToLayer);

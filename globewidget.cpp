@@ -230,7 +230,8 @@ GlobeWidget::GlobeWidget(QWidget *parent)
     connect(&m_statusTimer, &QTimer::timeout, this, [this]() {
         emit viewStatusChanged(m_alt * kEarthRadiusKm,
                                m_cursorValid ? qRadiansToDegrees(m_cursorLon) : 0.0,
-                               m_cursorValid ? qRadiansToDegrees(m_cursorLat) : 0.0, fps());
+                               m_cursorValid ? qRadiansToDegrees(m_cursorLat) : 0.0, fps(),
+                               m_cursorValid);
     });
     m_camLon = qDegreesToRadians(105.0);
     m_camLat = qDegreesToRadians(35.0);

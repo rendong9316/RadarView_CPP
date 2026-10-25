@@ -982,7 +982,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    // 抓一帧地球画面后退出（回归验证用）：--shot <png> [--shot-delay 毫秒]
+    // 抓一帧后退出（回归验证用）：--shot <png> [--shot-delay 毫秒] [--shot-window]
+    //   默认只抓 GL 帧（地球+航迹）；--shot-window 抓整窗，连旗标/标签/状态栏一起，
+    //   因为叠加层是 GlobeOverlay 子控件，grabFramebuffer 拍不到它
     const int shotIdx = args.indexOf(QStringLiteral("--shot"));
     if (shotIdx >= 0 && shotIdx + 1 < args.size()) {
         const QString path = args.at(shotIdx + 1);
@@ -990,8 +992,11 @@ int main(int argc, char *argv[])
         const int dIdx = args.indexOf(QStringLiteral("--shot-delay"));
         if (dIdx >= 0 && dIdx + 1 < args.size())
             delayMs = args.at(dIdx + 1).toInt();
-        QTimer::singleShot(delayMs, &w, [&w, path]() {
-            if (!w.globe()->grabFramebuffer().save(path))
+        const bool wholeWindow = args.contains(QStringLiteral("--shot-window"));
+        QTimer::singleShot(delayMs, &w, [&w, path, wholeWindow]() {
+            if (wholeWindow)
+                w.grab().save(path);
+            else if (!w.globe()->grabFramebuffer().save(path))
                 qWarning("抓帧保存失败：%s", qPrintable(path));
             QCoreApplication::quit();
         });

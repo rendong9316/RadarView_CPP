@@ -8,17 +8,22 @@
 #include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
+#include <QCursor>
 #include <QDoubleValidator>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QSettings>
 #include <QTimer>
+#include <QToolTip>
 #include <cmath>
 #include <functional>
 
@@ -564,6 +569,11 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     right->addWidget(m_error);
     m_height = new QLabel(m_right);
     m_lonLat = new QLabel(m_right);
+    // 坐标可复制：左键 WGS84、右键可选 GCJ-02（tooltip 用固定文案，
+    // 不能用随鼠标变化的文本——文本一变 Qt 就会把已弹出的提示收掉，等于永远看不到）
+    m_lonLat->setCursor(Qt::PointingHandCursor);
+    m_lonLat->setToolTip(tr("点击复制 WGS84（GPS），右键可复制 GCJ-02（高德）"));
+    m_lonLat->installEventFilter(this);
     m_fps = new QLabel(m_right);
     for (QLabel *l : { m_height, m_lonLat, m_fps }) {
         l->setFont(monoFont(kFontPx()));
@@ -697,27 +707,25 @@ void AppStatusBar::applyCustomSpeed(const QString &text)
 // ---------------------------------------------------------------
 //  右侧信息
 // ---------------------------------------------------------------
-void AppStatusBar::setViewStatus(double heightKm, double lonDeg, double latDeg, int fps)
+void AppStatusBar::setViewStatus(double heightKm, double lonDeg, double latDeg, int fps, bool hasCoord)
 {
     const QString h = formatHeightKm(qMax(0.0, heightKm));
     const QString lon = formatCoordinate(lonDeg), lat = formatCoordinate(latDeg);
     const QString f = fps > 0 ? QString::number(fps) : QStringLiteral("--");
     const QString ht = QStringLiteral("高: %1 km").arg(h);
-    // 界面上显示的一律是 WGS84（GPS 原始坐标，与航迹数据同源）。
-    // 高德底图下场景是 GCJ-02，这里再给出对应值，方便和别的系统对坐标。
-    const QString lt = QStringLiteral("经纬: %1, %2 (WGS84)").arg(lon, lat);
+    // 显示的一律是 WGS84（GPS 原始坐标，与航迹数据同源）；GCJ-02 按需复制。
+    const QString lt = hasCoord ? QStringLiteral("经纬: %1, %2 (WGS84)").arg(lon, lat)
+                                : QStringLiteral("经纬: --");
     const QString ft = QStringLiteral("FPS: %1").arg(f);
+    m_hasCoord = hasCoord;
+    m_lastLon = lonDeg;
+    m_lastLat = latDeg;
     if (m_height->text() != ht) {
         m_height->setText(ht);
         m_height->setToolTip(QStringLiteral("相机高度 %1 km").arg(h));
     }
-    if (m_lonLat->text() != lt) {
-        double glon = lonDeg, glat = latDeg;
-        crs::wgs84ToGcj02(lonDeg, latDeg, &glon, &glat);
+    if (m_lonLat->text() != lt)
         m_lonLat->setText(lt);
-        m_lonLat->setToolTip(QStringLiteral("鼠标位置\nWGS84（GPS）: %1, %2\nGCJ-02（高德）: %3, %4")
-                                 .arg(lon, lat).arg(formatCoordinate(glon), formatCoordinate(glat)));
-    }
     if (m_fps->text() != ft) {
         m_fps->setText(ft);
         m_fps->setToolTip(QStringLiteral("渲染帧率 %1 FPS").arg(f));
@@ -848,10 +856,46 @@ void AppStatusBar::resizeEvent(QResizeEvent *e)
     updateSeekWidth();
 }
 
+// 复制当前鼠标位置的坐标：gcj=false 复制 WGS84，true 复制转换后的 GCJ-02
+void AppStatusBar::copyCoord(bool gcj)
+{
+    if (!m_hasCoord)
+        return;
+    double lon = m_lastLon, lat = m_lastLat;
+    if (gcj)
+        crs::wgs84ToGcj02(m_lastLon, m_lastLat, &lon, &lat);
+    const QString text = QStringLiteral("%1,%2").arg(lon, 0, 'f', 6).arg(lat, 0, 'f', 6);
+    if (QClipboard *cb = QGuiApplication::clipboard())
+        cb->setText(text);
+    QToolTip::showText(QCursor::pos(),
+                       tr("已复制 %1: %2").arg(gcj ? QStringLiteral("GCJ-02") : QStringLiteral("WGS84"), text),
+                       m_lonLat, QRect(), 1500);
+}
+
 bool AppStatusBar::eventFilter(QObject *obj, QEvent *e)
 {
     if ((obj == m_left || obj == m_right) && e->type() == QEvent::LayoutRequest)
         QTimer::singleShot(0, this, &AppStatusBar::updateSeekWidth);
+    if (obj == m_lonLat && e->type() == QEvent::MouseButtonPress) {
+        auto *me = static_cast<QMouseEvent *>(e);
+        if (!m_hasCoord)
+            return true;
+        if (me->button() == Qt::LeftButton) {
+            copyCoord(false);
+            return true;
+        }
+        if (me->button() == Qt::RightButton) {
+            QMenu menu(this);
+            QAction *a1 = menu.addAction(tr("复制 WGS84（GPS 原始）"));
+            QAction *a2 = menu.addAction(tr("复制 GCJ-02（高德）"));
+            QAction *chosen = menu.exec(me->globalPos());
+            if (chosen == a1)
+                copyCoord(false);
+            else if (chosen == a2)
+                copyCoord(true);
+            return true;
+        }
+    }
     return QWidget::eventFilter(obj, e);
 }
 

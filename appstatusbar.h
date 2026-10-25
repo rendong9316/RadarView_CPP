@@ -50,7 +50,7 @@ public:
 
     explicit AppStatusBar(ReplayController *replay, QWidget *parent = nullptr);
 
-    void setViewStatus(double heightKm, double lonDeg, double latDeg, int fps);
+    void setViewStatus(double heightKm, double lonDeg, double latDeg, int fps, bool hasCoord = false);
     void setSources(const QVector<SourceItem> &items);
     void setTrackCount(int count);
     void setLoading(bool loading, int percent);
@@ -92,6 +92,10 @@ protected:
     bool eventFilter(QObject *obj, QEvent *e) override;
 
 private:
+    // 状态栏坐标：数据是 WGS84，点击复制时给出可选基准
+    void copyCoord(bool gcj);
+    bool m_hasCoord = false;
+    double m_lastLon = 0.0, m_lastLat = 0.0;
     void syncState();
     void syncTime();
     void syncLoading();
