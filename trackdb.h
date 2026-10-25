@@ -34,6 +34,12 @@ struct ManageFilter {
     QString sortBy = QStringLiteral("batch_imported_at");
     bool sortDesc = true;
 
+    // 空间套索查询范围（Track::key()）：spatialActive 时 query() 只返回 spatialKeys 内的航迹。
+    // 这是查询条件，不是地图可见集合；由管理系统按套索多边形算好传进来，
+    // 不写进 filterJson（多边形本身另行持久化，启动时重新求交即可）。
+    bool spatialActive = false;
+    QStringList spatialKeys;
+
     QJsonObject filterJson() const;
     QJsonObject sortJson() const;
     void loadJson(const QJsonObject &filter, const QJsonObject &sort);

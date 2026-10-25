@@ -137,6 +137,44 @@ bool splitKey(const QString &key, QString *icao, QString *source, QString *file)
     return true;
 }
 
+// 空间套索命中集合的临时表缓存：命中集合没变时翻页/排序/搜索都复用，不必反复写入
+QStringList g_spatialKeys;
+bool g_spatialValid = false;
+
+void resetSpatialCache()
+{
+    g_spatialKeys.clear();
+    g_spatialValid = false;
+}
+
+// 把命中集合写进 temp.spatial_keys（主线程连接）；返回 false 表示数据库不可用
+bool ensureSpatialKeys(const QStringList &keys)
+{
+    QSqlDatabase db = mainDb();
+    if (!db.isOpen())
+        return false;
+    if (g_spatialValid && g_spatialKeys == keys)
+        return true;
+    QSqlQuery q(db);
+    if (!q.exec(QStringLiteral("CREATE TEMP TABLE IF NOT EXISTS spatial_keys (k TEXT PRIMARY KEY)")))
+        return false;
+    if (!q.exec(QStringLiteral("DELETE FROM temp.spatial_keys")))
+        return false;
+    g_spatialKeys = keys;
+    g_spatialValid = true;
+    if (keys.isEmpty())
+        return true;
+    db.transaction();
+    q.prepare(QStringLiteral("INSERT OR IGNORE INTO temp.spatial_keys(k) VALUES(?)"));
+    for (const QString &k : keys) {
+        q.bindValue(0, k);
+        if (!q.exec())
+            break;
+    }
+    db.commit();
+    return true;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------
@@ -209,6 +247,7 @@ bool open(QString *error)
             *error = db.lastError().text();
         return false;
     }
+    resetSpatialCache();   // 新连接的临时表是空的
     return createSchema(db, error);
 }
 
@@ -220,6 +259,7 @@ void close()
             db.close();
     }
     QSqlDatabase::removeDatabase(QLatin1String(kMainConn));
+    resetSpatialCache();
 }
 
 bool isOpen()
@@ -414,6 +454,13 @@ QVector<ManageRow> query(const ManageFilter &f, int limit, int offset, int *tota
             binds << like;
         }
         where << QLatin1Char('(') + ors.join(QStringLiteral(" OR ")) + QLatin1Char(')');
+    }
+    if (f.spatialActive) {
+        // 空间套索：命中集合放临时表，按 key（icao::source::文件名）与行对应。
+        // 集合为空时 EXISTS 恒假，查询结果自然为 0 条（区域内没有航迹）。
+        ensureSpatialKeys(f.spatialKeys);
+        where << QStringLiteral("EXISTS (SELECT 1 FROM temp.spatial_keys sk WHERE sk.k ="
+                                " st.icao_address || '::' || st.source || '::' || b.file_name)");
     }
     const QString whereSql = where.join(QStringLiteral(" AND "));
 

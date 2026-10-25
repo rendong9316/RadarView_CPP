@@ -363,6 +363,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_managePanel, &ManagePanel::viewPointsRequested, this, [this](const QString &key) {
         showTrackPoints(m_store.indexOf(key));
     });
+    // 管理面板里点「空间查询 ✕」→ 清掉套索与空间查询条件（与筛选面板的「清除套索」同一条路径）
+    connect(m_managePanel, &ManagePanel::spatialQueryClearRequested, this, [this]() {
+        m_filterPanel->clickSpatialClear();
+    });
     connect(m_filterPanel, &FilterPanel::changed, this, &MainWindow::applyDisplay);
     // 套索闭合 → 写入筛选状态并立即生效（只显示经过该区域的航迹）
     connect(m_lasso, &SpatialLasso::closed, this, [this]() {
@@ -752,6 +756,23 @@ void MainWindow::applyDisplay()
     const int iso = isolatedTrack();
     if (iso < 0)
         m_isoKey.clear();
+
+    // 空间套索 → 航迹管理系统的查询范围（查询条件，不是可见集合）：
+    // 命中集合按套索多边形独立算一遍，与地图可见集合/单独显示互不影响，
+    // 管理系统据此只查询并列出区域内的航迹。
+    {
+        const bool spatial = m_filter.hasSpatialFilter();
+        QStringList spatialKeys;
+        if (spatial) {
+            spatialKeys.reserve(m_store.size());
+            for (int i = 0; i < m_store.size(); ++i) {
+                const Track &t = m_store.tracks()[i];
+                if (lassogeo::trackIntersectsPolygon(t, m_filter.spatialPolygon))
+                    spatialKeys << t.key();
+            }
+        }
+        m_manage->setSpatialQuery(spatialKeys, spatial);   // 无变化时内部直接返回
+    }
     QVector<bool> mask;
     if (!vis.isEmpty()) {
         mask.resize(m_store.size());

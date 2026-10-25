@@ -46,6 +46,12 @@ public:
     // 批次级硬删除（RadarView handleDeleteBatch）：从数据库彻底移除，不可撤销
     bool hardDeleteBatch(qint64 batchId, QString *error = nullptr);
 
+    // 空间套索查询范围：套索闭合后由主窗口算出命中航迹，管理系统据此只列出区域内的航迹。
+    // 这是查询条件（列表/统计/分页），与地图可见集合 m_visible 是两回事，不要混用。
+    void setSpatialQuery(const QStringList &keys, bool active);
+    bool spatialQueryActive() const { return m_spatialActive; }
+    const QStringList &spatialKeys() const { return m_spatialKeys; }
+
     const QSet<QString> &highlighted() const { return m_highlight; }
     void addHighlight(const QString &icao);
     void clearHighlights();
@@ -72,6 +78,8 @@ private:
     TrackStore *m_store;
     QSet<QString> m_visible;
     QSet<QString> m_highlight;
+    bool m_spatialActive = false;
+    QStringList m_spatialKeys;
     QVector<UndoEntry> m_undo;
 };
 
@@ -128,6 +136,8 @@ public:
     QString toolbarText() const;
     QString pageText() const;
     QString emptyText() const;
+    QString spatialChipText() const;               // 自检用：空间查询状态标签
+    bool spatialChipVisible() const;
     void setSearchText(const QString &text);       // 立即应用（跳过 300 ms 防抖）
     void clickSort(int column);
     void clickEye(int row);
@@ -143,6 +153,7 @@ public:
 
 signals:
     void viewPointsRequested(const QString &trackKey);
+    void spatialQueryClearRequested();   // 点空间查询标签上的 ✕：清除套索与空间查询
 
 protected:
     bool eventFilter(QObject *obj, QEvent *e) override;
@@ -166,6 +177,7 @@ private:
     ManageDelegate *m_delegate = nullptr;
     QTableView *m_table = nullptr;
     QLabel *m_stats = nullptr, *m_visibleInfo = nullptr, *m_toolbarInfo = nullptr, *m_pageInfo = nullptr;
+    QPushButton *m_spatialChip = nullptr;   // 「空间查询：区域内 N 条 ✕」，点击清除
     QLabel *m_empty = nullptr;
     QPushButton *m_clearVisibleMini = nullptr, *m_clearHighlight = nullptr;
     QPushButton *m_prev = nullptr, *m_next = nullptr;

@@ -804,6 +804,54 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             ms->clearVisible();
             mp->clickResetFilters();
 
+            // 空间套索 → 航迹管理系统执行查询（是查询条件，不是切换地图可见性状态）
+            {
+                FilterPanel *fp0 = w->filterPanel();
+                SpatialLasso *ls = w->spatialLasso();
+                int ti = -1;
+                for (int i = 0; i < store->size() && ti < 0; ++i)
+                    if (store->tracks()[i].source == TrackSource::Adsb && store->tracks()[i].points.size() >= 100)
+                        ti = i;
+                const Track &tt = store->tracks()[ti];
+                const TrackPoint mid = tt.points[tt.points.size() / 2];
+                const double d = 0.05;      // 小方框：只圈住航迹中点附近，保证命中数远小于总数
+                QVector<LassoVertex> poly;
+                poly << LassoVertex(0, mid.lat - d, mid.lon - d) << LassoVertex(1, mid.lat - d, mid.lon + d)
+                     << LassoVertex(2, mid.lat + d, mid.lon + d) << LassoVertex(3, mid.lat + d, mid.lon - d);
+                int expect = 0;
+                for (const Track &tr : store->tracks())
+                    if (lassogeo::trackIntersectsPolygon(tr, poly))
+                        ++expect;
+                ls->activate();
+                for (const LassoVertex &v : poly)
+                    ls->addVertex(v.lat, v.lon);
+                ls->closePolygon();        // closed() → 写筛选状态 → applyDisplay → 管理系统查询
+                check(expect >= 1 && expect < store->size(),
+                      QStringLiteral("套索区域命中 %1 条（库内共 %2 条）").arg(expect).arg(store->size()));
+                check(mp->totalCount() == expect,
+                      QStringLiteral("管理系统空间查询 共 %1 条（期望 %2）").arg(mp->totalCount()).arg(expect));
+                bool allIn = mp->rowCount() > 0;
+                for (const ManageRow &r : mp->rows()) {
+                    const int idx = store->indexOf(r.trackKey());
+                    allIn = allIn && idx >= 0 && lassogeo::trackIntersectsPolygon(store->tracks()[idx], poly);
+                }
+                check(allIn, QStringLiteral("管理系统本页 %1 行全部落在套索区域内").arg(mp->rowCount()));
+                check(ms->visibleKeys().isEmpty() && mp->spatialChipVisible()
+                          && mp->spatialChipText().contains(QString::number(expect)),
+                      QStringLiteral("查询状态而非可见性：可见集合 %1 条，标签 [%2]")
+                          .arg(ms->visibleKeys().size()).arg(mp->spatialChipText()));
+                // 搜索叠加在空间查询之上，两者是 AND 关系
+                mp->setSearchText(QStringLiteral("zzzz没有这条"));
+                check(mp->totalCount() == 0 && mp->emptyText().contains(QStringLiteral("套索区域内没有匹配的航迹")),
+                      QStringLiteral("空间查询 + 搜索无匹配：%1").arg(mp->emptyText()));
+                mp->setSearchText(QString());
+                check(mp->totalCount() == expect, QStringLiteral("清空搜索后回到空间查询结果 %1 条").arg(mp->totalCount()));
+                // 清除空间查询 → 恢复全部
+                fp0->clickSpatialClear();
+                check(mp->totalCount() == store->size() && !mp->spatialChipVisible(),
+                      QStringLiteral("清除空间查询后恢复 %1 条").arg(mp->totalCount()));
+            }
+
             // 标签
             w->toggleLabels();
             afterFrames([=]() {

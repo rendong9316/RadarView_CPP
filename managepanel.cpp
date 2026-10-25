@@ -188,6 +188,19 @@ void ManageState::clearVisible()
     emit displayChanged();
 }
 
+// 空间套索 → 管理系统的查询范围。
+// 注意这是「查询条件」，不是「地图可见集合」：不动 m_visible，眼睛图标/地图可见条数都不受影响，
+// 只是让列表查询多一个「落在套索区域内」的 WHERE 条件，列表 / 分页 / 匹配条数都跟着查询结果走
+// （顶部统计栏仍是数据库总量，不受查询范围影响）。
+void ManageState::setSpatialQuery(const QStringList &keys, bool active)
+{
+    if (m_spatialActive == active && m_spatialKeys == keys)
+        return;
+    m_spatialActive = active;
+    m_spatialKeys = keys;
+    emit dataChanged();       // 面板重新查询
+}
+
 void ManageState::softDelete(const QStringList &keys, const QString &label)
 {
     if (keys.isEmpty())
@@ -618,6 +631,15 @@ void ManagePanel::buildUi()
     m_toolbarInfo = new QLabel(tb);
     m_toolbarInfo->setObjectName(QStringLiteral("tbInfo"));
     tl->addWidget(m_toolbarInfo);
+    // 空间套索查询标签：说明「列表只列出套索区域内的航迹」是查询条件，点 ✕ 即清除
+    m_spatialChip = new QPushButton(tb);
+    m_spatialChip->setObjectName(QStringLiteral("spatialChip"));
+    m_spatialChip->setCursor(Qt::PointingHandCursor);
+    m_spatialChip->setProperty("_icon", int(LucideIcon::X));
+    m_spatialChip->setToolTip(QStringLiteral("空间查询中：列表只列出套索区域内的航迹。点击清除查询条件（恢复列出全部航迹）"));
+    m_spatialChip->hide();
+    tl->addWidget(m_spatialChip);
+    connect(m_spatialChip, &QPushButton::clicked, this, [this]() { emit spatialQueryClearRequested(); });
     auto tbBtn = [tb, tl](LucideIcon icon, bool withIcon, const QString &text, const QString &tip, const QString &name) {
         QPushButton *b = new QPushButton(text, tb);
         b->setObjectName(name);
@@ -712,7 +734,9 @@ void ManagePanel::buildUi()
             const char *var = b->objectName() == QLatin1String("tbDanger") ? "error"
                             : b->objectName() == QLatin1String("tbHighlight") ? nullptr
                             : b->objectName() == QLatin1String("pbtnReset") ? nullptr : "text-secondary";
-            const QColor c = entry ? QColor(Qt::white) : var ? themeColor(var)
+            const QColor c = entry ? QColor(Qt::white)
+                           : b == m_spatialChip ? QColor(0x4f, 0xa8, 0xff)
+                           : var ? themeColor(var)
                            : b->objectName() == QLatin1String("tbHighlight") ? QColor(0xe8, 0xa0, 0x20) : QColor(0xe8, 0xa0, 0x40);
             const int px = ui::sz(entry ? 15 : 11);
             b->setIcon(lucideQIcon(LucideIcon(ic.toInt()), px, c));
@@ -753,6 +777,9 @@ void ManagePanel::buildUi()
         "#pbtn:hover, #pbtnReset:hover { background: var(--button-hover); color: var(--text-primary); }"
         "#pbtnReset { color: #e8a040; }"
         "#tbInfo { font-size: 9px; color: var(--text-secondary); }"
+        "#spatialChip { font-size: 9px; padding: 1px 6px; border-radius: 8px; border: 1px solid #6600a0ff;"
+        " background: #1a00a0ff; color: #4fa8ff; }"
+        "#spatialChip:hover { background: #3300a0ff; color: #7cc0ff; }"
         "#tbBtn, #tbDanger, #tbHighlight { font-size: 9px; padding: 1px 5px; border: 1px solid var(--border-secondary);"
         " border-radius: 3px; background: var(--button-bg); color: var(--text-secondary); }"
         "#tbBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
@@ -960,7 +987,12 @@ void ManagePanel::reloadOptions()
 void ManagePanel::reloadPage()
 {
     int total = 0;
-    QVector<ManageRow> rows = trackdb::query(m_state->filter, m_state->pageSize,
+    // 空间套索作为查询条件参与数据库查询（不是可见性过滤）：
+    // 只列出「航迹点落入套索区域」的航迹，匹配总数与分页都跟着查询结果走
+    ManageFilter qf = m_state->filter;
+    qf.spatialActive = m_state->spatialQueryActive();
+    qf.spatialKeys = m_state->spatialKeys();
+    QVector<ManageRow> rows = trackdb::query(qf, m_state->pageSize,
                                              (m_state->page - 1) * m_state->pageSize, &total);
     m_total = total;
     m_model->setRows(rows);
@@ -973,7 +1005,11 @@ void ManagePanel::reloadPage()
     const bool empty = rows.isEmpty();
     m_table->setVisible(!empty);
     m_empty->setVisible(empty);
-    m_empty->setText(total == 0 ? QStringLiteral("暂无航迹数据，请先导入文件") : QStringLiteral("未找到匹配的航迹，请调整筛选条件"));
+    m_empty->setText(total == 0
+                         ? (m_state->spatialQueryActive()
+                                ? QStringLiteral("套索区域内没有匹配的航迹，请调整框选范围、搜索或筛选条件")
+                                : QStringLiteral("暂无航迹数据，请先导入文件"))
+                         : QStringLiteral("未找到匹配的航迹，请调整筛选条件"));
     updateToolbar();
 }
 
@@ -1083,6 +1119,12 @@ void ManagePanel::updateToolbar()
             ++onPage;
     m_toolbarInfo->setText(QStringLiteral("匹配 %1 条 · 本页 %2 条 · 地图可见 %3 条").arg(m_total).arg(m_model->rowCount()).arg(onPage));
     m_clearHighlight->setVisible(!m_state->highlighted().isEmpty());
+    if (m_spatialChip) {
+        const bool on = m_state->spatialQueryActive();
+        m_spatialChip->setVisible(on);
+        if (on)
+            m_spatialChip->setText(QStringLiteral("空间查询：区域内 %1 条").arg(m_state->spatialKeys().size()));
+    }
     if (m_visibleInfo) {
         m_visibleInfo->setText(QString::number(m_state->visibleKeys().size()));
         m_clearVisibleMini->setVisible(!m_state->visibleKeys().isEmpty());
@@ -1143,6 +1185,8 @@ QString ManagePanel::statsText() const { return m_stats->text(); }
 QString ManagePanel::toolbarText() const { return m_toolbarInfo->text(); }
 QString ManagePanel::pageText() const { return m_pageInfo->text(); }
 QString ManagePanel::emptyText() const { return m_empty->isVisible() ? m_empty->text() : QString(); }
+QString ManagePanel::spatialChipText() const { return spatialChipVisible() ? m_spatialChip->text() : QString(); }
+bool ManagePanel::spatialChipVisible() const { return m_spatialChip && !m_spatialChip->isHidden(); }
 
 void ManagePanel::setSearchText(const QString &text)
 {
