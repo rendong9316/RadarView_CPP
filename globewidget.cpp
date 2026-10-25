@@ -34,8 +34,8 @@ const float kFovDeg = 45.0f;
 const double kMinAlt = 0.00005;                    // ≈ 320 m
 const double kMaxAlt = 8.0;
 const float kRefinePx = 300.0f;                    // 瓦片投影尺寸超过此像素数就细分
-const int kLoadPerFrame = 8;                       // 每帧最多解码的瓦片数，避免卡顿
-const int kMaxTextures = 256;
+const int kLoadPerFrame = 32;                      // 每帧最多解码的瓦片数，避免卡顿
+const int kMaxTextures = 512;                      // 纹理 LRU 上限；一屏约 300 张，留一倍余量让回看不重解码
 const float kPickTolPx = 6.0f;                     // 鼠标离航迹多近算命中
 const int kClickSlopPx = 4;                        // 按下到松开移动不超过它算单击
 const double kFlagScale = 1.2;                     // RadarView 旗标缩放默认值
@@ -969,14 +969,28 @@ void GlobeWidget::uploadTexture(quint64 key, const QImage &img)
         return;
     // 只用 OpenGL ES 2.0 子集（GL_RGBA + glGenerateMipmap），ANGLE/D3D 下不报错
     // QOpenGLTexture 会设置 ES2 没有的 GL_TEXTURE_MAX_LEVEL 等参数，Win7 走 ANGLE 时会产生 GL_INVALID_ENUM
-    const QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+    // 在线瓦片合成后是 Format_RGB32（0xffRRGGBB，小端内存序即 B,G,R,A），正好能直接喂 GL_BGRA，
+    // 省掉一次整图 convertToFormat 的 256KB 内存拷贝。其余格式仍走 RGBA8888。
+    QImage rgba;
+    bool bgra = false;
+    if (img.format() == QImage::Format_RGB32) {
+        rgba = img;
+        bgra = true;
+    } else {
+        rgba = img.convertToFormat(QImage::Format_RGBA8888);
+    }
     const bool pot = (rgba.width() & (rgba.width() - 1)) == 0 && (rgba.height() & (rgba.height() - 1)) == 0;
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba.width(), rgba.height(), 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, rgba.constBits());
+    if (bgra) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rgba.width(), rgba.height(), 0,
+                     GL_BGRA, GL_UNSIGNED_BYTE, rgba.constBits());
+    } else {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba.width(), rgba.height(), 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, rgba.constBits());
+    }
     // ES2 只允许 2 的幂尺寸纹理生成 mipmap
     if (pot)
         glGenerateMipmap(GL_TEXTURE_2D);
