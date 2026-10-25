@@ -92,10 +92,6 @@ protected:
     bool eventFilter(QObject *obj, QEvent *e) override;
 
 private:
-    // 状态栏坐标：数据是 WGS84，点击复制时给出可选基准
-    void copyCoord(bool gcj);
-    bool m_hasCoord = false;
-    double m_lastLon = 0.0, m_lastLat = 0.0;
     void syncState();
     void syncTime();
     void syncLoading();
