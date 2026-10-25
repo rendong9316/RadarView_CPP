@@ -27,7 +27,11 @@ const double kE2 = 6.69437999014e-3;               // WGS84 第一偏心率平�
 const double kMercMaxLat = 1.4844222297453324;     // 85.0511°，Web 墨卡托纬度上限
 const int kGridN = 16;                             // 每块瓦片的网格细分数
 const float kFovDeg = 45.0f;
-const double kMinAlt = 0.0008;                     // ≈ 5 km
+// 相机离地最低高度（地球半径单位）。原来是 0.0008（≈5km），那个高度下瓦片最多细分到
+// z15、在屏幕上只有 153px（原生 256px 的 0.6 倍），地名标签被缩到看不清。
+// 降到 ≈320m 后：天地图（原生 z18）能以 1:1 显示，高德（原生 z17）约 2.5 倍放大，
+// 文字才真正可读。代价是视野只有两百多米，需要放大缩小来回看。
+const double kMinAlt = 0.00005;                    // ≈ 320 m
 const double kMaxAlt = 8.0;
 const float kRefinePx = 300.0f;                    // 瓦片投影尺寸超过此像素数就细分
 const int kLoadPerFrame = 8;                       // 每帧最多解码的瓦片数，避免卡顿
