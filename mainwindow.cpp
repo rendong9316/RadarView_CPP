@@ -521,11 +521,11 @@ void MainWindow::loadDefaultTiles()
     // 优先级：离线高德近岸 z16 > natural_earth4 > 最高 maxZoom
     bool foundAmapOffline = false;
     for (const QFileInfo &fi : qAsConst(files))
-        if (fi.fileName() == QLatin1String("amap_z16_coast.mbtiles"))
+        if (fi.fileName() == QLatin1String("amap_coast_z1_z16.mbtiles"))
             foundAmapOffline = true;
     if (foundAmapOffline)
         for (const QFileInfo &fi : qAsConst(files))
-            if (fi.fileName() == QLatin1String("amap_z16_coast.mbtiles")) {
+            if (fi.fileName() == QLatin1String("amap_coast_z1_z16.mbtiles")) {
                 best = fi.absoluteFilePath();
                 break;
             }
@@ -551,7 +551,7 @@ void MainWindow::loadDefaultTiles()
         const QString appDir = QCoreApplication::applicationDirPath();
         QString found;
         for (const QString &dir : { appDir + QStringLiteral("/tiles"), appDir }) {
-            const QString p = dir + QStringLiteral("/amap_z16_coast.mbtiles");
+            const QString p = dir + QStringLiteral("/amap_coast_z1_z16.mbtiles");
             if (QFile::exists(p)) { found = p; break; }
         }
         if (!found.isEmpty())
@@ -596,12 +596,12 @@ void MainWindow::setMapSource(const QString &id)
         const QString appDir = QCoreApplication::applicationDirPath();
         QString found;
         for (const QString &dir : { appDir + QStringLiteral("/tiles"), appDir }) {
-            const QString p = dir + QStringLiteral("/amap_z16_coast.mbtiles");
+            const QString p = dir + QStringLiteral("/amap_coast_z1_z16.mbtiles");
             if (QFile::exists(p)) { found = p; break; }
         }
         if (found.isEmpty()) {
             QMessageBox::warning(this, tr("离线高德瓦片"),
-                tr("未找到 amap_z16_coast.mbtiles。\n"
+                tr("未找到 amap_coast_z1_z16.mbtiles。\n"
                    "请先运行 python tools/download_tiles.py 生成瓦片包。"));
             syncSourceActions();
             return;
@@ -1140,9 +1140,9 @@ void MainWindow::buildMenuBar()
     m_srcAmap = addSource(QStringLiteral("amap"), tr("高德（在线 · 更快）"));
     m_srcAmap->setToolTip(tr("高德瓦片的坐标基准和 GPS 不同，程序内部自动对齐；\n"
                              "界面显示、数据库和导出的坐标始终是 WGS84"));
-    m_srcAmapOffline = addSource(QStringLiteral("amap_offline"), tr("高德（离线 · 近岸 z16）"));
+    m_srcAmapOffline = addSource(QStringLiteral("amap_offline"), tr("高德（离线 · 近岸 z1-z16）"));
     m_srcAmapOffline->setToolTip(tr("中国东部+东南沿海近岸走廊 z16 离线瓦片；\n"
-                                   "需先运行 tools/download_tiles.py 生成 amap_z16_coast.mbtiles"));
+                                   "需先运行 tools/download_tiles.py 生成 amap_coast_z1_z16.mbtiles"));
     syncSourceActions();
     mFile->addSeparator();
     QAction *aExit = item(mFile, tr("退出"), QKeySequence(Qt::ALT + Qt::Key_F4), []() { qApp->quit(); });
