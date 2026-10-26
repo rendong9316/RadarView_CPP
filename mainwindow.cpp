@@ -16,6 +16,7 @@
 #include <QSignalBlocker>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
 #include <QKeySequence>
 #include <QEvent>
 #include <QDialog>
@@ -517,8 +518,18 @@ void MainWindow::loadDefaultTiles()
             best = fi.absoluteFilePath();
         }
     }
-    // 默认瓦片源：natural_earth4（参考项目 tile_server.rs 优先 natural_earth 系列）
-    if (foundNatural4)
+    // 优先级：离线高德近岸 z16 > natural_earth4 > 最高 maxZoom
+    bool foundAmapOffline = false;
+    for (const QFileInfo &fi : qAsConst(files))
+        if (fi.fileName() == QLatin1String("amap_z16_coast.mbtiles"))
+            foundAmapOffline = true;
+    if (foundAmapOffline)
+        for (const QFileInfo &fi : qAsConst(files))
+            if (fi.fileName() == QLatin1String("amap_z16_coast.mbtiles")) {
+                best = fi.absoluteFilePath();
+                break;
+            }
+    else if (foundNatural4)
         for (const QFileInfo &fi : qAsConst(files))
             if (fi.fileName() == QLatin1String("natural_earth4.mbtiles")) {
                 best = fi.absoluteFilePath();
@@ -535,6 +546,18 @@ void MainWindow::loadDefaultTiles()
             token = QString::fromLatin1(kTdtToken);
         if (!openOnlineMap(token, src == QLatin1String("amap")))
             app::settings().setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
+    } else if (src == QLatin1String("amap_offline")) {
+        m_globe->closeOnlineMap();
+        const QString appDir = QCoreApplication::applicationDirPath();
+        QString found;
+        for (const QString &dir : { appDir + QStringLiteral("/tiles"), appDir }) {
+            const QString p = dir + QStringLiteral("/amap_z16_coast.mbtiles");
+            if (QFile::exists(p)) { found = p; break; }
+        }
+        if (!found.isEmpty())
+            openTiles(found);
+        else
+            app::settings().setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
     }
     syncSourceActions();
 }
@@ -543,7 +566,8 @@ void MainWindow::syncSourceActions()
 {
     const QString src = app::settings().value(QStringLiteral("map.source"), QStringLiteral("offline")).toString();
     struct { QAction *action; const char *id; } items[] = {
-        { m_srcOffline, "offline" }, { m_srcTdt, "tdt" }, { m_srcAmap, "amap" }
+        { m_srcOffline, "offline" }, { m_srcTdt, "tdt" },
+        { m_srcAmap, "amap" }, { m_srcAmapOffline, "amap_offline" }
     };
     for (auto &it : items) {
         if (!it.action)
@@ -567,6 +591,27 @@ bool MainWindow::openOnlineMap(const QString &token, bool useAmap)
 // 底图源切换：offline=本地 mbtiles，tdt=天地图，amap=高德
 void MainWindow::setMapSource(const QString &id)
 {
+    if (id == QLatin1String("amap_offline")) {
+        m_globe->closeOnlineMap();
+        const QString appDir = QCoreApplication::applicationDirPath();
+        QString found;
+        for (const QString &dir : { appDir + QStringLiteral("/tiles"), appDir }) {
+            const QString p = dir + QStringLiteral("/amap_z16_coast.mbtiles");
+            if (QFile::exists(p)) { found = p; break; }
+        }
+        if (found.isEmpty()) {
+            QMessageBox::warning(this, tr("离线高德瓦片"),
+                tr("未找到 amap_z16_coast.mbtiles。\n"
+                   "请先运行 python tools/download_tiles.py 生成瓦片包。"));
+            syncSourceActions();
+            return;
+        }
+        openTiles(found);
+        app::settings().setValue(QStringLiteral("map.source"), id);
+        syncSourceActions();
+        return;
+    }
+
     if (id == QLatin1String("offline")) {
         m_globe->closeOnlineMap();
         if (m_globe->tileName().isEmpty())
@@ -1095,6 +1140,9 @@ void MainWindow::buildMenuBar()
     m_srcAmap = addSource(QStringLiteral("amap"), tr("高德（在线 · 更快）"));
     m_srcAmap->setToolTip(tr("高德瓦片的坐标基准和 GPS 不同，程序内部自动对齐；\n"
                              "界面显示、数据库和导出的坐标始终是 WGS84"));
+    m_srcAmapOffline = addSource(QStringLiteral("amap_offline"), tr("高德（离线 · 近岸 z16）"));
+    m_srcAmapOffline->setToolTip(tr("中国东部+东南沿海近岸走廊 z16 离线瓦片；\n"
+                                   "需先运行 tools/download_tiles.py 生成 amap_z16_coast.mbtiles"));
     syncSourceActions();
     mFile->addSeparator();
     QAction *aExit = item(mFile, tr("退出"), QKeySequence(Qt::ALT + Qt::Key_F4), []() { qApp->quit(); });

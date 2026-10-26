@@ -48,6 +48,8 @@ cp "$QTPATH/plugins/imageformats/qjpeg.dll" "$QTPATH/plugins/imageformats/qgif.d
 # 4) 瓦片（默认加载层级最高的那个）
 [ -f "$TILE_SRC/target/release/GRAY_HR_SR6.mbtiles" ] && cp "$TILE_SRC/target/release/GRAY_HR_SR6.mbtiles" tiles/
 [ -f "$TILE_SRC/natural_earth4.mbtiles" ] && cp "$TILE_SRC/natural_earth4.mbtiles" tiles/
+# offline amap z16 coastal (tools/download_tiles.py output)
+[ -f "$SRC/tools/amap_z16_coast.mbtiles" ] && cp "$SRC/tools/amap_z16_coast.mbtiles" tiles/
 
 # 5) 自检（写 selftest.log）
 rm -f selftest.log

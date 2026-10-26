@@ -176,6 +176,7 @@ private:
     QAction *m_srcOffline = nullptr;
     QAction *m_srcTdt = nullptr;
     QAction *m_srcAmap = nullptr;
+    QAction *m_srcAmapOffline = nullptr;
 
     DbSaveJob *m_saveJob = nullptr;
     QList<DbSaveJob *> m_saveQueue;
