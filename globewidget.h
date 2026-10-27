@@ -18,6 +18,7 @@
 #include <QPixmap>
 #include <QPolygonF>
 
+#include "drawingmanager.h"
 #include "tilesource.h"
 #include "tracklayer.h"
 
@@ -27,7 +28,6 @@ class NetTileSource;
 class FlagStore;
 class RulerState;
 class SpatialLasso;
-class DrawingManager;
 struct Track;
 
 // 3D 地球：WGS84 椭球 + 本地 mbtiles（Web 墨卡托 XYZ）瓦片
@@ -75,6 +75,18 @@ public:
     // 贴地绘图（旗标距离圆、自由曲线等）：数据由主窗口的 DrawingManager 持有，
     // 这里只负责把顶点投影到屏幕画到叠加层上（与标尺/套索同一套投影口径）
     void setDrawingManager(DrawingManager *drawing) { m_draw = drawing; update(); }
+
+    // ---- 绘图状态机 ----
+    // 工具在工具栏切换；左键归画笔，右键拖拽旋转，滚轮始终缩放
+    void setDrawTool(DrawTool t);
+    DrawTool drawTool() const { return m_tool; }
+    void setDrawColor(const QColor &c) { m_drawColor = c; }
+    QColor drawColor() const { return m_drawColor; }
+    bool cancelDrawing();                    // 丢弃未完成的笔画/选框；返回是否有东西被丢弃
+    int hoverFeature() const { return m_hoverFeature; }
+    int strokePointCount() const { return m_stroke.size(); }
+    bool boxSelecting() const { return m_bandActive; }
+    int drawPreviewSegments() const { return m_drawPreviewSegments; }
     // 航迹标签（RadarView Ctrl+T）
     void setShowLabels(bool on);
     bool showLabels() const { return m_showLabels; }
@@ -123,6 +135,10 @@ signals:
     void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
     void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
     void flagContextMenuRequested(const QString &flagId, const QPoint &globalPos);
+    // 绘图：文本框/油漆桶需要弹窗，交给主窗口处理（GlobeWidget 不持有对话框）
+    void drawTextRequested(double lat, double lon, const QPoint &globalPos);
+    void drawFillRequested(int featureId);      // 0 = 该位置没有封闭图形
+    void drawFeatureAdded(int featureId);
 
 protected:
     void initializeGL() override;
@@ -170,6 +186,16 @@ private:
     void drawLabels(QPainter &p);
     void drawLasso(QPainter &p);
     void drawFeatures(QPainter &p);
+    void drawInProgress(QPainter &p);
+    void drawBand(QPainter &p);
+    // 绘图交互辅助
+    void finishDrawStroke(double lat, double lon);
+    void closeDrawPolygon();
+    void applyBoxSelect();
+    QPolygonF projectedRing(const DrawingFeature &f, bool *complete);
+    int featureAtScreen(const QPointF &pos, double tolPx);
+    int closedFeatureAt(const QPointF &pos);
+    bool featureHitsRect(const DrawingFeature &f, const QRectF &rect);
     void drawPointTip(QPainter &p);
     // 两点间沿大圆插值的屏幕折线（背面部分断开）
     QVector<QPolygonF> geodesicLines(double lat1, double lon1, double lat2, double lon2);
@@ -184,6 +210,15 @@ private:
     bool m_showLabels = false;
     int m_labelsDrawn = 0, m_flagsDrawn = 0, m_rulerMarkersDrawn = 0, m_lassoVerticesDrawn = 0;
     int m_featuresDrawn = 0;
+    DrawTool m_tool = DrawTool::None;
+    QColor m_drawColor = QColor(0xf5, 0x9e, 0x0b);
+    QVector<QPointF> m_stroke;              // 正在画的顶点（WGS84 度）
+    bool m_strokeActive = false;
+    double m_pressLat = 0.0, m_pressLon = 0.0;
+    bool m_bandActive = false;
+    QRect m_bandRect;
+    int m_hoverFeature = 0;
+    int m_drawPreviewSegments = 0;
     int m_tipTrack = -1, m_tipPoint = -1;
     QHash<QString, QPixmap> m_labelCache;          // 标签文字 + 颜色 -> 带描边的位图
     QPixmap m_flagIcon;

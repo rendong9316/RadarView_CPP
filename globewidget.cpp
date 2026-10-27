@@ -19,6 +19,7 @@
 #include <QContextMenuEvent>
 #include <QToolTip>
 #include <QImage>
+#include <QLineF>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -44,6 +45,38 @@ const int kClickSlopPx = 4;                        // 按下到松开移动不�
 const double kFlagScale = 1.2;                     // RadarView 旗标缩放默认值
 const QColor kRulerColor(0xf5, 0x9e, 0x0b);        // #f59e0b
 const QColor kLassoColor(0x10, 0xb9, 0x81);        // #10b981（RadarView 套索绿）
+
+// 点到线段的屏幕距离（橡皮擦命中测试）
+double distToSegment(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double len2 = ab.x() * ab.x() + ab.y() * ab.y();
+    if (len2 < 1e-12)
+        return QLineF(p, a).length();
+    double t = ((p.x() - a.x()) * ab.x() + (p.y() - a.y()) * ab.y()) / len2;
+    t = qBound(0.0, t, 1.0);
+    return QLineF(p, QPointF(a.x() + ab.x() * t, a.y() + ab.y() * t)).length();
+}
+
+// 屏幕线段与矩形是否相交（框选删除用；任一顶点在框内也算）
+bool segmentHitsRect(const QPointF &a, const QPointF &b, const QRectF &r)
+{
+    if (r.contains(a) || r.contains(b))
+        return true;
+    const QPointF corner[4] = { r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft() };
+    auto cross = [](const QPointF &o, const QPointF &p, const QPointF &q) {
+        return (p.x() - o.x()) * (q.y() - o.y()) - (p.y() - o.y()) * (q.x() - o.x());
+    };
+    for (int i = 0; i < 4; ++i) {
+        const QPointF &c = corner[i], &d = corner[(i + 1) % 4];
+        const double d1 = cross(c, d, a), d2 = cross(c, d, b);
+        const double d3 = cross(a, b, c), d4 = cross(a, b, d);
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+            && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))
+            return true;
+    }
+    return false;
+}
 
 // RadarView flagRenderer.ts「flag-pin」：32×32 红色图钉，白色描边，中间白点
 QPixmap makeFlagPin(qreal dpr)
@@ -834,10 +867,43 @@ void GlobeWidget::drawFeatures(QPainter &p)
     m_featuresDrawn = 0;
     if (!m_draw || m_draw->features().isEmpty())
         return;
-    p.setBrush(Qt::NoBrush);
     for (const DrawingFeature &f : m_draw->features()) {
+        // 文本框：锚点投影后画描边文字（和航迹标签同一套描边参数）
+        if (f.isText()) {
+            if (f.pts.isEmpty())
+                continue;
+            QPointF sp;
+            if (!visiblePos(f.pts.first().x(), f.pts.first().y(), 0.0, &sp))
+                continue;
+            QFont font = pxFont(ui::sz(int(f.textSizePx)), true);
+            QColor outline(0, 0, 0, 210);
+            drawOutlinedText(p, sp, f.text, font, f.color, outline, 2.5);
+            ++m_featuresDrawn;
+            continue;
+        }
         if (f.pts.size() < 2)
             continue;
+
+        // 填充：只有整圈都在可见半球时才填，否则会出现穿过地球的怪异多边形
+        if (f.fill.isValid() && f.isClosed()) {
+            bool complete = false;
+            const QPolygonF ring = projectedRing(f, &complete);
+            if (complete && ring.size() >= 3) {
+                QPainterPath path;
+                path.addPolygon(ring);
+                path.closeSubpath();
+                p.setPen(Qt::NoPen);
+                p.setBrush(f.fill);
+                p.drawPath(path);
+            }
+        }
+
+        p.setBrush(Qt::NoBrush);
+        // 纯填充要素不描边；没设填充色的填充要素按线画，避免完全看不见
+        if (f.kind == DrawKind::Fill && f.fill.isValid()) {
+            ++m_featuresDrawn;
+            continue;
+        }
         p.setPen(QPen(f.color, qMax(1.0, f.widthPx), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         QPolygonF cur;
         bool any = false;
@@ -857,6 +923,281 @@ void GlobeWidget::drawFeatures(QPainter &p)
         if (any)
             ++m_featuresDrawn;
     }
+}
+
+// 正在画的图形（预览）：直线/矩形从按下点连到鼠标，多边形画已有边 + 虚线预览，
+// 自由曲线把已采到的点直接连起来。预览统一用半透明虚线，和已完成的图形区分开。
+void GlobeWidget::drawInProgress(QPainter &p)
+{
+    m_drawPreviewSegments = 0;
+    if (m_tool == DrawTool::None)
+        return;
+    const QColor c = m_drawColor;
+    QColor pc = c;
+    pc.setAlphaF(0.55f);
+    QPen solid(c, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    QPen preview(pc, 2.0, Qt::CustomDashLine, Qt::FlatCap);
+    preview.setDashPattern(QVector<qreal>() << 5.0 << 5.0);
+    p.setBrush(Qt::NoBrush);
+
+    if (m_strokeActive && m_tool == DrawTool::Polyline) {
+        p.setPen(solid);
+        QPolygonF poly;
+        for (const QPointF &pt : m_stroke) {
+            QPointF sp;
+            if (visiblePos(pt.x(), pt.y(), 0.0, &sp))
+                poly << sp;
+        }
+        if (poly.size() > 1) {
+            p.drawPolyline(poly);
+            ++m_drawPreviewSegments;
+        }
+        return;
+    }
+
+    const double curLon = qRadiansToDegrees(m_cursorLon);
+    const double curLat = qRadiansToDegrees(m_cursorLat);
+    if (m_strokeActive && (m_tool == DrawTool::Line || m_tool == DrawTool::Rect) && m_cursorValid) {
+        p.setPen(preview);
+        if (m_tool == DrawTool::Line) {
+            for (const QPolygonF &line : geodesicLines(m_pressLat, m_pressLon, curLat, curLon)) {
+                p.drawPolyline(line);
+                ++m_drawPreviewSegments;
+            }
+        } else {
+            const double s = qMin(m_pressLat, curLat), n = qMax(m_pressLat, curLat);
+            const double w = qMin(m_pressLon, curLon), e = qMax(m_pressLon, curLon);
+            const double lats[5] = { s, s, n, n, s };
+            const double lons[5] = { w, e, e, w, w };
+            for (int i = 0; i < 4; ++i) {
+                for (const QPolygonF &line : geodesicLines(lats[i], lons[i], lats[i + 1], lons[i + 1])) {
+                    p.drawPolyline(line);
+                    ++m_drawPreviewSegments;
+                }
+            }
+        }
+    }
+
+    if (m_tool == DrawTool::Polygon && !m_stroke.isEmpty()) {
+        p.setPen(solid);
+        for (int i = 0; i + 1 < m_stroke.size(); ++i) {
+            for (const QPolygonF &line : geodesicLines(m_stroke[i].y(), m_stroke[i].x(),
+                                                       m_stroke[i + 1].y(), m_stroke[i + 1].x())) {
+                p.drawPolyline(line);
+                ++m_drawPreviewSegments;
+            }
+        }
+        if (m_cursorValid) {
+            p.setPen(preview);
+            const QPointF &last = m_stroke.last();
+            for (const QPolygonF &line : geodesicLines(last.y(), last.x(), curLat, curLon))
+                p.drawPolyline(line);
+            if (m_stroke.size() >= 2) {
+                const QPointF &first = m_stroke.first();
+                for (const QPolygonF &line : geodesicLines(curLat, curLon, first.y(), first.x()))
+                    p.drawPolyline(line);
+            }
+        }
+        p.setPen(QPen(Qt::black, 1.0));
+        p.setBrush(c);
+        for (const QPointF &pt : m_stroke) {
+            QPointF sp;
+            if (visiblePos(pt.x(), pt.y(), 0.0, &sp))
+                p.drawEllipse(sp, 3.0, 3.0);
+        }
+        p.setBrush(Qt::NoBrush);
+    }
+}
+
+// 框选删除的橡皮筋：半透明填充 + 虚线边框
+void GlobeWidget::drawBand(QPainter &p)
+{
+    if (!m_bandActive || m_bandRect.isNull())
+        return;
+    QColor fill = kLassoColor;
+    fill.setAlphaF(0.15f);
+    p.setBrush(fill);
+    p.setPen(QPen(kLassoColor, 1.0, Qt::DashLine));
+    p.drawRect(m_bandRect.normalized());
+    p.setBrush(Qt::NoBrush);
+}
+
+// ---------------------------------------------------------------
+//  绘图交互
+// ---------------------------------------------------------------
+void GlobeWidget::setDrawTool(DrawTool t)
+{
+    if (m_tool == t)
+        return;
+    cancelDrawing();
+    m_tool = t;
+    m_hoverFeature = 0;
+    if (t == DrawTool::None)
+        unsetCursor();
+    else
+        setCursor(Qt::CrossCursor);
+    update();
+}
+
+bool GlobeWidget::cancelDrawing()
+{
+    const bool had = m_strokeActive || !m_stroke.isEmpty() || m_bandActive || m_hoverFeature != 0;
+    m_stroke.clear();
+    m_strokeActive = false;
+    m_bandActive = false;
+    m_bandRect = QRect();
+    m_hoverFeature = 0;
+    m_dragging = false;
+    m_clickCandidate = false;
+    if (had)
+        update();
+    return had;
+}
+
+void GlobeWidget::finishDrawStroke(double lat, double lon)
+{
+    if (!m_draw)
+        return;
+    int id = 0;
+    if (m_tool == DrawTool::Line)
+        id = m_draw->addLine(m_pressLat, m_pressLon, lat, lon, m_drawColor);
+    else if (m_tool == DrawTool::Rect)
+        id = m_draw->addRect(m_pressLat, m_pressLon, lat, lon, m_drawColor);
+    if (id > 0)
+        emit drawFeatureAdded(id);
+}
+
+void GlobeWidget::closeDrawPolygon()
+{
+    if (m_draw && m_stroke.size() >= 3) {
+        const int id = m_draw->addPolygon(m_stroke, m_drawColor);
+        if (id > 0)
+            emit drawFeatureAdded(id);
+    }
+    m_stroke.clear();
+    m_strokeActive = false;
+    update();
+}
+
+void GlobeWidget::applyBoxSelect()
+{
+    if (!m_draw)
+        return;
+    const QRectF r = QRectF(m_bandRect).normalized();
+    if (r.width() < 3.0 && r.height() < 3.0)
+        return;                       // 误点：没拉出框就不删
+    QVector<int> ids;
+    for (const DrawingFeature &f : m_draw->features())
+        if (featureHitsRect(f, r))
+            ids.append(f.id);
+    m_draw->removeFeatures(ids);
+}
+
+// 闭合图形整圈都可见时返回投影后的多边形；有任何一点在背面就返回空并置 complete=false
+QPolygonF GlobeWidget::projectedRing(const DrawingFeature &f, bool *complete)
+{
+    QPolygonF ring;
+    ring.reserve(f.pts.size());
+    for (const QPointF &pt : f.pts) {
+        QPointF sp;
+        if (!visiblePos(pt.x(), pt.y(), 0.0, &sp)) {
+            if (complete)
+                *complete = false;
+            return QPolygonF();
+        }
+        ring << sp;
+    }
+    if (complete)
+        *complete = true;
+    return ring;
+}
+
+// 橡皮擦：屏幕空间点到折线的距离，取最近的一个（后画的优先）
+int GlobeWidget::featureAtScreen(const QPointF &pos, double tolPx)
+{
+    if (!m_draw)
+        return 0;
+    const QVector<DrawingFeature> &fs = m_draw->features();
+    int best = 0;
+    double bestD = tolPx;
+    for (int i = fs.size() - 1; i >= 0; --i) {
+        const DrawingFeature &f = fs.at(i);
+        if (f.isText()) {
+            QPointF sp;
+            if (!f.pts.isEmpty() && visiblePos(f.pts.first().x(), f.pts.first().y(), 0.0, &sp)) {
+                const double d = QLineF(sp, pos).length();
+                if (d <= 14.0 && d <= bestD + 8.0) {   // 文字锚点允许宽松一点
+                    best = f.id;
+                    bestD = qMin(bestD, d);
+                }
+            }
+            continue;
+        }
+        QPointF prev;
+        bool have = false;
+        for (const QPointF &pt : f.pts) {
+            QPointF sp;
+            if (!visiblePos(pt.x(), pt.y(), 0.0, &sp)) {
+                have = false;
+                continue;
+            }
+            if (have) {
+                const double d = distToSegment(pos, prev, sp);
+                if (d < bestD) {
+                    bestD = d;
+                    best = f.id;
+                }
+            }
+            prev = sp;
+            have = true;
+        }
+    }
+    return best;
+}
+
+// 油漆桶：点是否落在某个闭合图形里（屏幕空间射线法，整圈可见才判）
+int GlobeWidget::closedFeatureAt(const QPointF &pos)
+{
+    if (!m_draw)
+        return 0;
+    const QVector<DrawingFeature> &fs = m_draw->features();
+    for (int i = fs.size() - 1; i >= 0; --i) {
+        const DrawingFeature &f = fs.at(i);
+        if (!f.isClosed())
+            continue;
+        bool complete = false;
+        const QPolygonF ring = projectedRing(f, &complete);
+        if (complete && ring.size() >= 3 && ring.containsPoint(pos, Qt::OddEvenFill))
+            return f.id;
+    }
+    return 0;
+}
+
+// 框选（交叉选择）：任一顶点在框内，或任一线段与框边相交
+bool GlobeWidget::featureHitsRect(const DrawingFeature &f, const QRectF &rect)
+{
+    if (f.pts.isEmpty())
+        return false;
+    if (f.isText()) {
+        QPointF sp;
+        return visiblePos(f.pts.first().x(), f.pts.first().y(), 0.0, &sp) && rect.contains(sp);
+    }
+    QPointF prev;
+    bool have = false;
+    for (const QPointF &pt : f.pts) {
+        QPointF sp;
+        if (!visiblePos(pt.x(), pt.y(), 0.0, &sp)) {
+            have = false;
+            continue;
+        }
+        if (rect.contains(sp))
+            return true;
+        if (have && segmentHitsRect(prev, sp, rect))
+            return true;
+        prev = sp;
+        have = true;
+    }
+    return false;
 }
 
 void GlobeWidget::drawFlags(QPainter &p)
@@ -975,6 +1316,8 @@ void GlobeWidget::paintOverlay(QPainter &p)
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     drawLabels(p);
     drawFeatures(p);
+    drawInProgress(p);
+    drawBand(p);
     drawRuler(p);
     drawLasso(p);
     drawFlags(p);
@@ -1458,6 +1801,7 @@ void GlobeWidget::paintGL()
                          || (m_ruler && m_ruler->isActive() && !m_ruler->waypoints().isEmpty())
                          || (m_lasso && !m_lasso->vertices().isEmpty())
                          || (m_draw && !m_draw->features().isEmpty())
+                         || (m_tool != DrawTool::None && (!m_stroke.isEmpty() || m_bandActive))
                          || m_tipTrack >= 0;
     if (overlay || m_overlayWanted) {
         m_overlayWanted = overlay;
@@ -1509,6 +1853,61 @@ bool GlobeWidget::pick(const QPointF &pos, double *lon, double *lat)
 
 void GlobeWidget::mousePressEvent(QMouseEvent *e)
 {
+    // 绘图模式：左键归画笔，右键拖拽旋转（不弹右键菜单）；滚轮缩放照常
+    if (m_tool != DrawTool::None) {
+        if (e->button() == Qt::RightButton) {
+            m_dragging = true;
+            m_clickCandidate = true;
+            m_lastPos = m_pressPos = e->pos();
+            return;
+        }
+        if (e->button() != Qt::LeftButton)
+            return;
+        double lon = 0.0, lat = 0.0;
+        const bool hit = geoAt(e->pos(), &lon, &lat);
+        switch (m_tool) {
+        case DrawTool::Text:
+            if (hit)
+                emit drawTextRequested(lat, lon, e->globalPos());
+            return;
+        case DrawTool::Fill:
+            emit drawFillRequested(hit ? closedFeatureAt(e->pos()) : 0);
+            return;
+        case DrawTool::Eraser: {
+            const int id = hit ? featureAtScreen(e->pos(), kPickTolPx) : 0;
+            if (id > 0 && m_draw)
+                m_draw->removeFeature(id);
+            return;
+        }
+        case DrawTool::BoxSelect:
+            m_bandActive = true;
+            m_bandRect = QRect(e->pos(), QSize(0, 0));
+            m_pressPos = e->pos();
+            return;
+        case DrawTool::Polygon:
+            if (!hit)
+                return;
+            if (m_stroke.isEmpty())
+                m_strokeActive = true;
+            m_stroke.append(QPointF(lon, lat));      // 多边形：单击放顶点
+            update();
+            return;
+        case DrawTool::Line:
+        case DrawTool::Rect:
+        case DrawTool::Polyline:
+        default:
+            if (!hit)
+                return;
+            m_strokeActive = true;
+            m_stroke.clear();
+            m_stroke.append(QPointF(lon, lat));
+            m_pressLat = lat;
+            m_pressLon = lon;
+            m_pressPos = e->pos();
+            update();
+            return;
+        }
+    }
     // 套索绘制中：左键不旋转地球。按下先只记录，松开时若是单击就放一个顶点；
     // 按住移动超过阈值则自动转为自由手绘（这样逐点框选和手绘都不需要切模式）。
     if (m_lasso && m_lasso->isActive() && e->button() == Qt::LeftButton) {
@@ -1533,6 +1932,51 @@ void GlobeWidget::mousePressEvent(QMouseEvent *e)
 
 void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
 {
+    // 绘图模式：更新预览、自由曲线采点、框选橡皮筋、橡皮擦悬停
+    if (m_tool != DrawTool::None) {
+        double lon = 0.0, lat = 0.0;
+        const bool hit = geoAt(e->pos(), &lon, &lat);
+        m_cursorValid = hit;
+        if (hit) {
+            m_cursorLon = qDegreesToRadians(lon);
+            m_cursorLat = qDegreesToRadians(lat);
+        }
+        if (m_dragging) {                       // 右键拖拽旋转
+            if (m_clickCandidate && (e->pos() - m_pressPos).manhattanLength() > kClickSlopPx)
+                m_clickCandidate = false;
+            if (!m_clickCandidate) {
+                panPixels(m_lastPos, e->pos());
+                m_lastPos = e->pos();
+            }
+            updateMatrices();
+            emitStatus();
+            return;
+        }
+        if (m_bandActive) {
+            m_bandRect = QRect(m_pressPos, e->pos()).normalized();
+            update();
+            emitStatus();
+            return;
+        }
+        if (m_strokeActive && m_tool == DrawTool::Polyline && hit) {
+            // 与上一点隔 ~200 m 才采点：手一停不会堆出上千个重复点
+            const QPointF last = m_stroke.last();
+            if (std::hypot(lon - last.x(), lat - last.y()) > 0.002)
+                m_stroke.append(QPointF(lon, lat));
+            update();
+        } else if (m_strokeActive || (m_tool == DrawTool::Polygon && !m_stroke.isEmpty())) {
+            update();                           // 直线/矩形/多边形：重画预览
+        }
+        if (m_tool == DrawTool::Eraser) {
+            const int id = hit ? featureAtScreen(e->pos(), kPickTolPx) : 0;
+            if (id != m_hoverFeature) {
+                m_hoverFeature = id;
+                update();
+            }
+        }
+        emitStatus();
+        return;
+    }
     // 套索绘制中：只更新预览线和自由手绘轨迹，不拖拽地球
     if (m_lasso && m_lasso->isActive()) {
         double lon = 0.0, lat = 0.0;
@@ -1590,6 +2034,49 @@ void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
 
 void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
 {
+    // 绘图模式：右键单击 = 闭合多边形 / 取消当前笔画；左键松开 = 落笔
+    if (m_tool != DrawTool::None) {
+        if (e->button() == Qt::RightButton) {
+            const bool click = m_clickCandidate;
+            m_dragging = false;
+            m_clickCandidate = false;
+            if (click) {
+                if (m_tool == DrawTool::Polygon && m_stroke.size() >= 3)
+                    closeDrawPolygon();
+                else
+                    cancelDrawing();
+            }
+            return;
+        }
+        if (e->button() != Qt::LeftButton)
+            return;
+        if (m_bandActive) {
+            applyBoxSelect();
+            m_bandActive = false;
+            m_bandRect = QRect();
+            update();
+            return;
+        }
+        if (!m_strokeActive)
+            return;
+        if (m_tool == DrawTool::Polygon)
+            return;                              // 多边形等双击/右键闭合
+        double lon = 0.0, lat = 0.0;
+        const bool hit = geoAt(e->pos(), &lon, &lat);
+        if (m_tool == DrawTool::Polyline) {
+            if (m_stroke.size() >= 2 && m_draw) {
+                const int id = m_draw->addPolyline(m_stroke, m_drawColor);
+                if (id > 0)
+                    emit drawFeatureAdded(id);
+            }
+        } else if (hit && (e->pos() - m_pressPos).manhattanLength() >= 3) {
+            finishDrawStroke(lat, lon);           // 直线/矩形：太短的拖动当成误点
+        }
+        m_stroke.clear();
+        m_strokeActive = false;
+        update();
+        return;
+    }
     // 套索绘制中：自由手绘松手即闭合；顶点模式单击放一个顶点
     if (m_lasso && m_lasso->isActive() && e->button() == Qt::LeftButton) {
         if (m_lasso->isDrawingFreehand()) {
@@ -1625,6 +2112,12 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
 // 双击：在旗标上删除，否则在该处放旗标（RadarView LEFT_DOUBLE_CLICK）
 void GlobeWidget::mouseDoubleClickEvent(QMouseEvent *e)
 {
+    // 绘图模式：多边形双击闭合；其他工具下双击也不能误放旗标
+    if (m_tool != DrawTool::None) {
+        if (m_tool == DrawTool::Polygon && e->button() == Qt::LeftButton)
+            closeDrawPolygon();
+        return;
+    }
     // 套索绘制中：双击闭合多边形
     if (m_lasso && m_lasso->isActive() && e->button() == Qt::LeftButton) {
         m_lasso->closePolygon();
@@ -1646,6 +2139,9 @@ void GlobeWidget::contextMenuEvent(QContextMenuEvent *e)
 {
     QToolTip::hideText();
     e->accept();
+    // 绘图模式：右键用于拖拽旋转/闭合图形，不弹菜单
+    if (m_tool != DrawTool::None)
+        return;
     // 套索绘制中：右键闭合（顶点足够时），否则取消
     if (m_lasso && m_lasso->isActive()) {
         if (m_lasso->vertices().size() >= 3)

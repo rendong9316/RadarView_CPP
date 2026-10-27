@@ -15,6 +15,7 @@
 class QLabel;
 class QLineEdit;
 class QDoubleSpinBox;
+class QSpinBox;
 
 // 通用小部件，样式逐项对应 RadarView 的 ConfirmDialog / HelpTip / UndoToast / 地图右键菜单
 namespace ui {
@@ -69,6 +70,36 @@ public:
 private:
     QColor m_color;
     QDoubleSpinBox *m_radius = nullptr;
+};
+
+// 油漆桶：填充色 + 不透明度（alpha 直接写进 QColor）
+class FillDialog : public QDialog
+{
+    Q_OBJECT
+public:
+    explicit FillDialog(const QColor &initial, QWidget *parent = nullptr);
+    QColor fillColor() const;          // 已带 alpha，可直接交给 DrawingManager::setFill
+    int opacityPercent() const { return m_opacity; }
+
+private:
+    QColor m_color;
+    int m_opacity = 35;
+};
+
+// 文本框：内容 + 字号 + 颜色，确认后放到点击位置
+class TextDialog : public QDialog
+{
+    Q_OBJECT
+public:
+    explicit TextDialog(const QColor &initial, QWidget *parent = nullptr);
+    QString text() const;
+    QColor color() const { return m_color; }
+    int fontPx() const;
+
+private:
+    QColor m_color;
+    QLineEdit *m_text = nullptr;
+    QSpinBox *m_size = nullptr;
 };
 
 // 自检时自动确认，不弹对话框

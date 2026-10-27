@@ -27,6 +27,12 @@ bool destination(double lat1, double lng1, double bearingDeg, double distKm,
 // 不是经纬度平面上的椭圆。首尾不重复；segments 建议 180（每 2° 一个点）。
 QVector<QPointF> geodesicCircle(double lat, double lon, double radiusKm, int segments = 180);
 
+// 大圆加密：把两点之间的大圆按不超过 maxStepDeg 的步长采样，返回**含起点和终点**的点列
+// （x = 经度, y = 纬度）。贴地折线用它把「两点直连」变成一串球面顶点，
+// 投影到屏幕上才是曲线；纬度用大地纬度换算，和 GlobeWidget::geodesicLines 同一口径。
+QVector<QPointF> geodesicPath(double lat1, double lon1, double lat2, double lon2,
+                              double maxStepDeg = 0.25);
+
 } // namespace geocalc
 
 #endif // GEOCALC_H

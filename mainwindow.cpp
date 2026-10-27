@@ -19,8 +19,11 @@
 #include <QFile>
 #include <QKeySequence>
 #include <QEvent>
+#include <QActionGroup>
+#include <QColorDialog>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QToolBar>
 #include <QSpinBox>
 #include <QWidgetAction>
 #include <QLocale>
@@ -292,7 +295,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_globe->setSpatialLasso(m_lasso);
     m_draw = new DrawingManager(this);
     m_globe->setDrawingManager(m_draw);
+    m_globe->setDrawColor(m_drawColor);
     connect(m_draw, &DrawingManager::changed, m_globe, [this]() { m_globe->update(); });
+    connect(m_globe, &GlobeWidget::drawTextRequested, this, &MainWindow::onDrawText);
+    connect(m_globe, &GlobeWidget::drawFillRequested, this, &MainWindow::onDrawFill);
     m_manage = new ManageState(&m_store, this);
 
     // 侧栏面板（顺序同 PanelId）
@@ -341,6 +347,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_replay, &ReplayController::stateChanged, this, &MainWindow::syncReplayToLayer);
 
     buildMenuBar();
+    buildDrawToolBar();
     setThemedStyle(menuBar(), menuQss());
 
     // 地图交互：单击航迹单独显示，单击空白处返回全部；右键菜单；双击放旗标（GlobeWidget 内处理）
@@ -1138,6 +1145,189 @@ void MainWindow::onFlagContextMenu(const QString &flagId, const QPoint &globalPo
     menu.exec(globalPos);
 }
 
+// ---------------------------------------------------------------
+//  绘图工具栏
+// ---------------------------------------------------------------
+namespace {
+
+// 工具栏上的画笔颜色小方块
+QIcon colorSwatchIcon(const QColor &c, int px)
+{
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setBrush(c);
+    p.setPen(QPen(QColor(0x88, 0x88, 0x88), 1));
+    p.drawRoundedRect(QRectF(0.5, 0.5, px - 1, px - 1), 3, 3);
+    p.end();
+    return QIcon(pm);
+}
+
+} // namespace
+
+void MainWindow::buildDrawToolBar()
+{
+    m_drawBar = new QToolBar(tr("绘图"), this);
+    m_drawBar->setObjectName(QStringLiteral("drawToolBar"));
+    m_drawBar->setMovable(false);
+    m_drawBar->setFloatable(false);
+    m_drawBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_drawBar->setIconSize(QSize(ui::sz(14), ui::sz(14)));
+    addToolBar(Qt::TopToolBarArea, m_drawBar);
+    setThemedStyle(m_drawBar, QStringLiteral(
+        "QToolBar { background: var(--bg-secondary); border: none;"
+        " border-bottom: 1px solid var(--border-primary); padding: 2px 6px; spacing: 2px; }"
+        "QToolBar::separator { background: var(--border-primary); width: 1px; margin: 4px 8px; }"
+        "QToolButton { color: var(--text-secondary); padding: 4px 10px; border-radius: 3px;"
+        " font-family: %1; font-size: 12px; }"
+        "QToolButton:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "QToolButton:checked { background: var(--accent-primary); color: #ffffff; }").arg(ui::uiFamilies()));
+
+    m_drawGroup = new QActionGroup(this);
+    m_drawGroup->setExclusive(true);
+    auto addTool = [this](DrawTool t, const QString &text, const QString &tip) {
+        QAction *a = m_drawBar->addAction(text);
+        a->setCheckable(true);
+        a->setToolTip(tip);
+        a->setData(int(t));
+        m_drawGroup->addAction(a);
+        connect(a, &QAction::triggered, this, [this, t]() { setDrawTool(t); });
+        return a;
+    };
+    // 工具按钮用文字（lucide 里没有直线/矩形/油漆桶这些图标，硬凑反而看不懂）
+    addTool(DrawTool::None, tr("漫游"), tr("左键拖拽旋转地球（默认）"))->setChecked(true);
+    addTool(DrawTool::Line, tr("直线"), tr("按住左键拖出一条贴地直线"));
+    addTool(DrawTool::Polyline, tr("曲线"), tr("按住左键自由手绘"));
+    addTool(DrawTool::Polygon, tr("多边形"), tr("单击放顶点，双击或右键闭合"));
+    addTool(DrawTool::Rect, tr("矩形"), tr("按住左键拖出矩形"));
+    addTool(DrawTool::Text, tr("文本"), tr("单击放置文本框"));
+    addTool(DrawTool::Fill, tr("填充"), tr("单击封闭图形内部，设置颜色与透明度"));
+    addTool(DrawTool::Eraser, tr("橡皮"), tr("单击线条或图形删除"));
+    addTool(DrawTool::BoxSelect, tr("框选删除"), tr("拉框删除与框相交的图形"));
+
+    m_drawBar->addSeparator();
+    m_drawColorAction = m_drawBar->addAction(tr("颜色"));
+    m_drawColorAction->setToolTip(tr("新建图形使用的颜色"));
+    connect(m_drawColorAction, &QAction::triggered, this, [this]() {
+        const QColor c = QColorDialog::getColor(m_drawColor, this, tr("绘图颜色"));
+        if (!c.isValid())
+            return;
+        m_drawColor = c;
+        m_globe->setDrawColor(c);
+        updateDrawColorIcon();
+    });
+    updateDrawColorIcon();
+
+    m_drawBar->addSeparator();
+    QAction *save = m_drawBar->addAction(tr("保存"));
+    save->setToolTip(tr("把当前所有绘图导出为 GeoJSON"));
+    connect(save, &QAction::triggered, this, &MainWindow::saveDrawings);
+    QAction *load = m_drawBar->addAction(tr("导入"));
+    load->setToolTip(tr("从 GeoJSON 导入绘图"));
+    connect(load, &QAction::triggered, this, &MainWindow::importDrawings);
+    QAction *clr = m_drawBar->addAction(tr("清空"));
+    clr->setToolTip(tr("删除所有绘图"));
+    connect(clr, &QAction::triggered, this, [this]() {
+        if (m_draw->count() == 0)
+            return;
+        if (ui::confirm(this, tr("确定清空所有绘图（%1 个图形）？").arg(m_draw->count()),
+                        tr("清空绘图"), true))
+            m_draw->clear();
+    });
+}
+
+void MainWindow::updateDrawColorIcon()
+{
+    if (m_drawColorAction)
+        m_drawColorAction->setIcon(colorSwatchIcon(m_drawColor, ui::sz(14)));
+}
+
+// 工具切换：绘图与套索/标尺互斥（否则会抢同一个左键）
+void MainWindow::setDrawTool(DrawTool t)
+{
+    if (t != DrawTool::None) {
+        if (m_lasso->isActive())
+            m_lasso->deactivate();
+        if (m_ruler->isActive())
+            m_ruler->deactivate();
+    }
+    m_globe->setDrawTool(t);
+    if (m_drawGroup) {
+        for (QAction *a : m_drawGroup->actions())
+            a->setChecked(a->data().toInt() == int(t));
+    }
+}
+
+void MainWindow::onDrawText(double lat, double lon, const QPoint &globalPos)
+{
+    Q_UNUSED(globalPos);
+    if (app::testMode())
+        return;                       // 自检直接调 DrawingManager，不弹窗
+    ui::TextDialog dlg(m_drawColor, this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    if (m_draw->addText(lat, lon, dlg.text(), dlg.color(), dlg.fontPx()) <= 0)
+        m_statusBar->setError(tr("文本内容为空，未插入"));
+    else
+        m_statusBar->setError(QString());
+}
+
+void MainWindow::onDrawFill(int featureId)
+{
+    if (featureId <= 0) {
+        m_statusBar->setError(tr("该位置没有可填充的封闭图形（圆 / 多边形 / 矩形）"));
+        return;
+    }
+    if (app::testMode())
+        return;
+    const DrawingFeature *f = m_draw->feature(featureId);
+    const QColor cur = (f && f->fill.isValid()) ? f->fill : QColor(255, 192, 0, 90);
+    ui::FillDialog dlg(cur, this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    m_draw->setFill(featureId, dlg.fillColor());
+    m_statusBar->setError(QString());
+}
+
+void MainWindow::saveDrawings()
+{
+    if (m_draw->count() == 0) {
+        m_statusBar->setError(tr("还没有绘制任何图形"));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("保存绘图"),
+        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("drawing.json")),
+        tr("GeoJSON 绘图 (*.json);;所有文件 (*)"));
+    if (path.isEmpty())
+        return;
+    QString err;
+    if (!m_draw->saveToFile(path, &err)) {
+        QMessageBox::warning(this, tr("保存绘图"), err);
+        return;
+    }
+    m_statusBar->setError(QString());
+    QMessageBox::information(this, tr("保存绘图"),
+                             tr("已保存 %1 个图形到：\n%2").arg(m_draw->count()).arg(path));
+}
+
+void MainWindow::importDrawings()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("导入绘图"), QCoreApplication::applicationDirPath(),
+        tr("GeoJSON 绘图 (*.json);;所有文件 (*)"));
+    if (path.isEmpty())
+        return;
+    QString err;
+    if (!m_draw->loadFromFile(path, &err)) {
+        QMessageBox::warning(this, tr("导入绘图"), err);
+        return;
+    }
+    m_statusBar->setError(QString());
+    QMessageBox::information(this, tr("导入绘图"), tr("已导入 %1 个图形").arg(m_draw->count()));
+}
+
 // 旗标右键「绘制距离圆」：弹窗（版式与标准色盘复用导入弹窗那套）→ 以旗标为圆心生成测地圆。
 // 圆的顶点由 geocalc::geodesicCircle 按 Vincenty 正算逐方位角求得，是椭球上的等距圆。
 void MainWindow::drawDistanceCircle(const QString &flagId)
@@ -1173,9 +1363,14 @@ void MainWindow::toggleLabels()
         m_labelAction->setChecked(m_globe->showLabels());
 }
 
-// Esc：套索绘制中先取消绘制；已有套索筛选则清除；再关标尺；最后取消单独显示
+// Esc：绘图先取消当前笔画，再退出绘图工具；然后套索、标尺、单独显示
 void MainWindow::onEscape()
 {
+    if (m_globe->drawTool() != DrawTool::None) {
+        if (!m_globe->cancelDrawing())      // 没有未完成的笔画时才退出工具
+            setDrawTool(DrawTool::None);
+        return;
+    }
     if (m_lasso && m_lasso->isActive()) {
         m_lasso->clearAll();
         m_filterPanel->refreshUi();

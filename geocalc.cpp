@@ -176,4 +176,54 @@ QVector<QPointF> geodesicCircle(double lat, double lon, double radiusKm, int seg
     return out;
 }
 
+QVector<QPointF> geodesicPath(double lat1, double lon1, double lat2, double lon2, double maxStepDeg)
+{
+    QVector<QPointF> out;
+    if (!std::isfinite(lat1) || !std::isfinite(lon1) || !std::isfinite(lat2) || !std::isfinite(lon2))
+        return out;
+    const double d2r = M_PI / 180.0;
+    const double p1 = lat1 * d2r, l1 = lon1 * d2r, p2 = lat2 * d2r, l2 = lon2 * d2r;
+    const double e2 = 2 * kF - kF * kF;      // WGS-84 第一偏心率平方
+    // 用椭球面上的点（不是法线方向）做单位向量：反算时才能用 atan2(z, (1-e²)p) 还原大地纬度，
+    // 直接拿 (cosφcosλ, cosφsinλ, sinφ) 会多算一次扁率修正，纬度偏 0.19°（约 21 km）
+    const double n1 = 1.0 / std::sqrt(1 - e2 * std::sin(p1) * std::sin(p1));
+    const double n2 = 1.0 / std::sqrt(1 - e2 * std::sin(p2) * std::sin(p2));
+    double ax = n1 * std::cos(p1) * std::cos(l1);
+    double ay = n1 * std::cos(p1) * std::sin(l1);
+    double az = n1 * (1 - e2) * std::sin(p1);
+    double bx = n2 * std::cos(p2) * std::cos(l2);
+    double by = n2 * std::cos(p2) * std::sin(l2);
+    double bz = n2 * (1 - e2) * std::sin(p2);
+    const double na = std::sqrt(ax * ax + ay * ay + az * az);
+    const double nb = std::sqrt(bx * bx + by * by + bz * bz);
+    ax /= na; ay /= na; az /= na;
+    bx /= nb; by /= nb; bz /= nb;
+    const double ang = std::acos(qBound(-1.0, ax * bx + ay * by + az * bz, 1.0));
+    if (maxStepDeg <= 0.0)
+        maxStepDeg = 0.25;
+    int n = int(std::ceil(ang / (maxStepDeg * d2r)));
+    n = qBound(1, n, 2048);
+    out.reserve(n + 1);
+    for (int i = 0; i <= n; ++i) {
+        const double f = double(i) / n;
+        double x = ax, y = ay, z = az;
+        if (ang > 1e-12) {
+            const double s = std::sin(ang);
+            const double w1 = std::sin((1 - f) * ang) / s, w2 = std::sin(f * ang) / s;
+            x = ax * w1 + bx * w2;
+            y = ay * w1 + by * w2;
+            z = az * w1 + bz * w2;
+        }
+        const double norm = std::sqrt(x * x + y * y + z * z);
+        if (norm < 1e-12)
+            continue;
+        x /= norm; y /= norm; z /= norm;
+        // 方向向量 -> 大地纬度（直接 asin(z) 是地心纬度，最多差 0.19°）
+        const double lat = std::atan2(z, (1 - e2) * std::sqrt(x * x + y * y));
+        const double lon = std::atan2(y, x);
+        out.append(QPointF(lon / d2r, lat / d2r));
+    }
+    return out;
+}
+
 } // namespace geocalc

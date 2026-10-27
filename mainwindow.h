@@ -2,6 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QAbstractButton>
+#include <QColor>
 #include <QHash>
 #include <QList>
 #include <QMainWindow>
@@ -9,6 +10,7 @@
 #include <QSet>
 #include <QWidget>
 
+#include "drawingmanager.h"
 #include "lucide.h"
 #include "sidepanels.h"
 #include "track.h"
@@ -22,6 +24,8 @@ class TrackImporter;
 class ReplayController;
 class AppStatusBar;
 class QDialog;
+class QToolBar;
+class QActionGroup;
 class ManageState;
 class ManagePanel;
 class FlagStore;
@@ -115,6 +119,7 @@ public:
     RulerState *ruler() const { return m_ruler; }
     SpatialLasso *spatialLasso() const { return m_lasso; }
     DrawingManager *drawing() const { return m_draw; }
+    void setDrawTool(DrawTool t);            // 绘图工具栏切换（Esc 也会回到漫游）
     ui::UndoToast *undoToast() const { return m_undoToast; }
     SettingsPanel *settingsPanel() const { return m_settingsPanel; }
     void toggleLabels();
@@ -140,6 +145,12 @@ private slots:
 
 private:
     void buildMenuBar();
+    void buildDrawToolBar();
+    void updateDrawColorIcon();
+    void onDrawText(double lat, double lon, const QPoint &globalPos);
+    void onDrawFill(int featureId);
+    void saveDrawings();
+    void importDrawings();
     void drawDistanceCircle(const QString &flagId);   // 旗标右键「绘制距离圆」
     QStackedWidget *buildEditorArea();
     void loadPersisted();
@@ -175,6 +186,10 @@ private:
     RulerState *m_ruler = nullptr;
     SpatialLasso *m_lasso = nullptr;
     DrawingManager *m_draw = nullptr;
+    QToolBar *m_drawBar = nullptr;
+    QActionGroup *m_drawGroup = nullptr;
+    QAction *m_drawColorAction = nullptr;
+    QColor m_drawColor = QColor(0xf5, 0x9e, 0x0b);
     FlagPanel *m_flagPanel = nullptr;
     SettingsPanel *m_settingsPanel = nullptr;
     ui::UndoToast *m_undoToast = nullptr;

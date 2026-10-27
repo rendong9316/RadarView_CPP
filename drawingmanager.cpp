@@ -36,14 +36,35 @@ bool pointFromJson(const QJsonValue &v, QPointF *out)
     return true;
 }
 
+// 稀疏顶点 -> 贴地闭合环：每条边按大圆加密，末尾重复首点
+QVector<QPointF> densifyRing(const QVector<QPointF> &verts)
+{
+    QVector<QPointF> out;
+    if (verts.size() < 2)
+        return out;
+    for (int i = 0; i < verts.size(); ++i) {
+        const QPointF &a = verts.at(i);
+        const QPointF &b = verts.at((i + 1) % verts.size());
+        const QVector<QPointF> seg = geocalc::geodesicPath(a.y(), a.x(), b.y(), b.x());
+        for (int k = 0; k + 1 < seg.size(); ++k)      // 每段含终点，下一条边会补上
+            out.append(seg.at(k));
+    }
+    if (!out.isEmpty())
+        out.append(out.first());
+    return out;
+}
+
 } // namespace
 
 QString drawKindName(DrawKind k)
 {
     switch (k) {
     case DrawKind::Circle:   return QStringLiteral("circle");
+    case DrawKind::Line:     return QStringLiteral("line");
     case DrawKind::Polygon:  return QStringLiteral("polygon");
     case DrawKind::Rect:     return QStringLiteral("rect");
+    case DrawKind::Fill:     return QStringLiteral("fill");
+    case DrawKind::Text:     return QStringLiteral("text");
     case DrawKind::Polyline: break;
     }
     return QStringLiteral("polyline");
@@ -51,10 +72,13 @@ QString drawKindName(DrawKind k)
 
 bool drawKindFromName(const QString &name, DrawKind *out)
 {
-    if (name == QLatin1String("circle"))       { *out = DrawKind::Circle;   return true; }
-    if (name == QLatin1String("polygon"))      { *out = DrawKind::Polygon;  return true; }
-    if (name == QLatin1String("rect"))         { *out = DrawKind::Rect;     return true; }
-    if (name == QLatin1String("polyline"))     { *out = DrawKind::Polyline; return true; }
+    if (name == QLatin1String("circle"))   { *out = DrawKind::Circle;   return true; }
+    if (name == QLatin1String("line"))     { *out = DrawKind::Line;     return true; }
+    if (name == QLatin1String("polyline")) { *out = DrawKind::Polyline; return true; }
+    if (name == QLatin1String("polygon"))  { *out = DrawKind::Polygon;  return true; }
+    if (name == QLatin1String("rect"))     { *out = DrawKind::Rect;     return true; }
+    if (name == QLatin1String("fill"))     { *out = DrawKind::Fill;     return true; }
+    if (name == QLatin1String("text"))     { *out = DrawKind::Text;     return true; }
     return false;
 }
 
@@ -78,7 +102,9 @@ int DrawingManager::indexOf(int id) const
 
 int DrawingManager::addFeature(const DrawingFeature &f)
 {
-    if (f.pts.size() < 2)
+    if (f.pts.isEmpty())
+        return 0;
+    if (f.pts.size() < 2 && f.kind != DrawKind::Text)
         return 0;
     DrawingFeature item = f;
     item.id = m_nextId++;
@@ -109,6 +135,103 @@ int DrawingManager::addCircle(double lat, double lon, double radiusKm, const QCo
     return addFeature(f);
 }
 
+int DrawingManager::addLine(double lat1, double lon1, double lat2, double lon2, const QColor &color,
+                            double widthPx)
+{
+    const QVector<QPointF> path = geocalc::geodesicPath(lat1, lon1, lat2, lon2);
+    if (path.size() < 2)
+        return 0;
+    DrawingFeature f;
+    f.kind = DrawKind::Line;
+    f.color = color.isValid() ? color : QColor(0xf5, 0x9e, 0x0b);
+    f.widthPx = qBound(1.0, widthPx, 20.0);
+    f.pts = path;
+    return addFeature(f);
+}
+
+int DrawingManager::addPolyline(const QVector<QPointF> &wgsPts, const QColor &color, double widthPx)
+{
+    if (wgsPts.size() < 2)
+        return 0;
+    DrawingFeature f;
+    f.kind = DrawKind::Polyline;
+    f.color = color.isValid() ? color : QColor(0xf5, 0x9e, 0x0b);
+    f.widthPx = qBound(1.0, widthPx, 20.0);
+    f.pts = wgsPts;
+    return addFeature(f);
+}
+
+int DrawingManager::addPolygon(const QVector<QPointF> &verts, const QColor &color, double widthPx)
+{
+    if (verts.size() < 3)
+        return 0;
+    const QVector<QPointF> ring = densifyRing(verts);
+    if (ring.size() < 4)
+        return 0;
+    DrawingFeature f;
+    f.kind = DrawKind::Polygon;
+    f.color = color.isValid() ? color : QColor(0xf5, 0x9e, 0x0b);
+    f.widthPx = qBound(1.0, widthPx, 20.0);
+    f.pts = ring;
+    return addFeature(f);
+}
+
+int DrawingManager::addRect(double lat1, double lon1, double lat2, double lon2, const QColor &color,
+                            double widthPx)
+{
+    const double south = qMin(lat1, lat2), north = qMax(lat1, lat2);
+    const double west = qMin(lon1, lon2), east = qMax(lon1, lon2);
+    if (north - south < 1e-9 && east - west < 1e-9)
+        return 0;
+    QVector<QPointF> corners;
+    corners << QPointF(west, south) << QPointF(east, south)
+            << QPointF(east, north) << QPointF(west, north);
+    const QVector<QPointF> ring = densifyRing(corners);
+    if (ring.size() < 4)
+        return 0;
+    DrawingFeature f;
+    f.kind = DrawKind::Rect;
+    f.color = color.isValid() ? color : QColor(0xf5, 0x9e, 0x0b);
+    f.widthPx = qBound(1.0, widthPx, 20.0);
+    f.pts = ring;
+    return addFeature(f);
+}
+
+int DrawingManager::addText(double lat, double lon, const QString &text, const QColor &color, int sizePx)
+{
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return 0;
+    DrawingFeature f;
+    f.kind = DrawKind::Text;
+    f.color = color.isValid() ? color : QColor(Qt::white);
+    f.widthPx = 3.0;
+    f.text = trimmed;
+    f.textSizePx = qBound(8, sizePx, 72);
+    f.pts.append(QPointF(lon, lat));
+    return addFeature(f);
+}
+
+bool DrawingManager::setFill(int id, const QColor &fill)
+{
+    const int i = indexOf(id);
+    if (i < 0)
+        return false;
+    DrawingFeature &f = m_features[i];
+    if (!f.isClosed())
+        return false;
+    if (fill.isValid() && fill.alpha() == 255) {
+        QColor c = fill;
+        c.setAlphaF(0.35);          // 不透明度没指定时给个能看见底图的默认值
+        f.fill = c;
+    } else {
+        f.fill = fill;
+    }
+    ++m_version;
+    emit changed();
+    return true;
+}
+
 bool DrawingManager::removeFeature(int id)
 {
     const int i = indexOf(id);
@@ -118,6 +241,24 @@ bool DrawingManager::removeFeature(int id)
     ++m_version;
     emit changed();
     return true;
+}
+
+// 框选删除一次删一批：只在最后 emit 一次，避免每个要素都触发一次重绘
+void DrawingManager::removeFeatures(const QVector<int> &ids)
+{
+    if (ids.isEmpty())
+        return;
+    bool any = false;
+    for (int i = m_features.size() - 1; i >= 0; --i) {
+        if (ids.contains(m_features.at(i).id)) {
+            m_features.remove(i);
+            any = true;
+        }
+    }
+    if (any) {
+        ++m_version;
+        emit changed();
+    }
 }
 
 void DrawingManager::clear()
@@ -138,10 +279,10 @@ QJsonObject DrawingManager::toJson() const
             coords.append(pointJson(p));
 
         QJsonObject geom;
-        if (f.kind == DrawKind::Polyline) {
-            geom.insert(QStringLiteral("type"), QStringLiteral("LineString"));
-            geom.insert(QStringLiteral("coordinates"), coords);
-        } else {
+        if (f.kind == DrawKind::Text) {
+            geom.insert(QStringLiteral("type"), QStringLiteral("Point"));
+            geom.insert(QStringLiteral("coordinates"), coords.first());
+        } else if (f.isClosed()) {
             // GeoJSON 要求环首尾相同；内部顶点本来就已经闭合，这里只是兜底
             if (f.pts.size() > 2 && f.pts.first() != f.pts.last())
                 coords.append(pointJson(f.pts.first()));
@@ -149,6 +290,9 @@ QJsonObject DrawingManager::toJson() const
             rings.append(coords);
             geom.insert(QStringLiteral("type"), QStringLiteral("Polygon"));
             geom.insert(QStringLiteral("coordinates"), rings);
+        } else {
+            geom.insert(QStringLiteral("type"), QStringLiteral("LineString"));
+            geom.insert(QStringLiteral("coordinates"), coords);
         }
 
         QJsonObject props;
@@ -158,12 +302,20 @@ QJsonObject DrawingManager::toJson() const
         props.insert(QStringLiteral("width"), f.widthPx);
         if (!f.label.isEmpty())
             props.insert(QStringLiteral("label"), f.label);
+        if (f.fill.isValid()) {
+            props.insert(QStringLiteral("fill"), f.fill.name().toUpper());
+            props.insert(QStringLiteral("fillOpacity"), f.fill.alphaF());
+        }
         if (f.kind == DrawKind::Circle) {
             QJsonArray center;
             center.append(round6(f.centerLon));
             center.append(round6(f.centerLat));
             props.insert(QStringLiteral("center"), center);
             props.insert(QStringLiteral("radiusKm"), f.radiusKm);
+        }
+        if (f.kind == DrawKind::Text) {
+            props.insert(QStringLiteral("text"), f.text);
+            props.insert(QStringLiteral("textSize"), f.textSizePx);
         }
 
         QJsonObject fo;
@@ -218,11 +370,15 @@ bool DrawingManager::fromJson(const QJsonObject &root, QString *error)
                 if (pointFromJson(c, &p))
                     pts.append(p);
             }
+        } else if (geomType == QLatin1String("Point")) {
+            QPointF p;
+            if (pointFromJson(geom.value(QStringLiteral("coordinates")), &p))
+                pts.append(p);
         } else {
-            ++skipped;                    // Point / MultiLineString 之类暂不支持
+            ++skipped;                    // MultiLineString / MultiPolygon 之类暂不支持
             continue;
         }
-        if (pts.size() < 2) {
+        if (pts.isEmpty()) {
             ++skipped;
             continue;
         }
@@ -230,10 +386,14 @@ bool DrawingManager::fromJson(const QJsonObject &root, QString *error)
         DrawingFeature f;
         f.pts = pts;
         f.kind = geomType == QLatin1String("Polygon") ? DrawKind::Polygon : DrawKind::Polyline;
+        if (geomType == QLatin1String("Point"))
+            f.kind = DrawKind::Text;
         drawKindFromName(props.value(QStringLiteral("kind")).toString(), &f.kind);   // 声明优先
-        if (f.kind == DrawKind::Polyline && geomType == QLatin1String("Polygon"))
-            f.kind = DrawKind::Polygon;   // kind 字段缺失/非法时按几何类型兜底
-        if (f.kind != DrawKind::Polyline && f.pts.size() > 2 && f.pts.first() != f.pts.last())
+        if (f.kind != DrawKind::Text && f.pts.size() < 2) {
+            ++skipped;
+            continue;
+        }
+        if (f.isClosed() && f.pts.size() > 2 && f.pts.first() != f.pts.last())
             f.pts.append(f.pts.first());
 
         const QColor color(props.value(QStringLiteral("color")).toString());
@@ -241,12 +401,28 @@ bool DrawingManager::fromJson(const QJsonObject &root, QString *error)
         const double w = props.value(QStringLiteral("width")).toDouble(3.0);
         f.widthPx = qBound(1.0, w > 0.0 ? w : 3.0, 20.0);
         f.label = props.value(QStringLiteral("label")).toString();
+
+        const QColor fill(props.value(QStringLiteral("fill")).toString());
+        if (fill.isValid()) {
+            QColor c = fill;
+            c.setAlphaF(qBound(0.0, props.value(QStringLiteral("fillOpacity")).toDouble(0.35), 1.0));
+            f.fill = c;
+        }
+
         const QJsonArray center = props.value(QStringLiteral("center")).toArray();
         if (center.size() >= 2) {
             f.centerLon = center.at(0).toDouble();
             f.centerLat = center.at(1).toDouble();
         }
         f.radiusKm = props.value(QStringLiteral("radiusKm")).toDouble(0.0);
+        if (f.kind == DrawKind::Text) {
+            f.text = props.value(QStringLiteral("text")).toString();
+            f.textSizePx = qBound(8, props.value(QStringLiteral("textSize")).toInt(16), 72);
+            if (f.text.isEmpty()) {
+                ++skipped;
+                continue;
+            }
+        }
 
         const int id = props.value(QStringLiteral("id")).toInt(0);
         f.id = id > 0 ? id : nextId;
@@ -255,7 +431,7 @@ bool DrawingManager::fromJson(const QJsonObject &root, QString *error)
     }
 
     if (parsed.isEmpty() && !features.isEmpty())
-        return fail(QStringLiteral("没有可用的线/多边形要素（跳过 %1 个）").arg(skipped));
+        return fail(QStringLiteral("没有可用的要素（跳过 %1 个）").arg(skipped));
 
     m_features = parsed;
     m_nextId = nextId;

@@ -16,6 +16,8 @@
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QGridLayout>
+#include <QSlider>
+#include <QSpinBox>
 
 namespace ui {
 
@@ -65,6 +67,22 @@ private:
 QString fontCss(int px)
 {
     return QStringLiteral("font-family: %1; font-size: %2px;").arg(uiFamilies()).arg(px);
+}
+
+// 三个绘图弹窗（距离圆 / 填充 / 文本）共用的外观：输入框、滑杆、按钮
+QString dialogQss()
+{
+    return QStringLiteral("QDialog { background: var(--bg-primary); }"
+                          "QLabel { color: var(--text-primary); }"
+                          "QLineEdit, QSpinBox, QDoubleSpinBox { background: var(--bg-secondary); color: var(--text-primary);"
+                          " padding: 8px; border: 1px solid var(--border-primary); border-radius: 4px; }"
+                          "QSlider::groove:horizontal { height: 4px; background: var(--bg-tertiary); border-radius: 2px; }"
+                          "QSlider::handle:horizontal { width: 12px; margin: -5px 0; border-radius: 6px;"
+                          " background: var(--accent-primary); }"
+                          "QDialogButtonBox QPushButton { padding: 8px 18px; min-height: 24px; background: var(--bg-tertiary);"
+                          " color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 4px; }"
+                          "QDialogButtonBox QPushButton:default { background: var(--accent-primary); color: white; }"
+                          "QDialogButtonBox QPushButton:disabled { color: var(--text-muted); }");
 }
 } // namespace
 
@@ -288,21 +306,179 @@ DistanceCircleDialog::DistanceCircleDialog(const QString &flagLabel, double lat,
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
-    setThemedStyle(this, QStringLiteral("QDialog { background: var(--bg-primary); }"
-                                        "QLabel { color: var(--text-primary); }"
-                                        "#circleError { color: var(--error); }"
-                                        "QDoubleSpinBox { background: var(--bg-secondary); color: var(--text-primary); padding: 8px;"
-                                        " border: 1px solid var(--border-primary); border-radius: 4px; }"
-                                        "QDialogButtonBox QPushButton { padding: 8px 18px; min-height: 24px; background: var(--bg-tertiary);"
-                                        " color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 4px; }"
-                                        "QDialogButtonBox QPushButton:default { background: var(--accent-primary); color: white; }"
-                                        "QDialogButtonBox QPushButton:disabled { color: var(--text-muted); }"));
+    setThemedStyle(this, dialogQss() + QStringLiteral("#circleError { color: var(--error); }"));
     validate();
     m_radius->setFocus();
     m_radius->selectAll();
 }
 
 double DistanceCircleDialog::radiusKm() const { return m_radius->value(); }
+
+// ---------------------------------------------------------------
+// 油漆桶：填充色 + 不透明度
+// ---------------------------------------------------------------
+FillDialog::FillDialog(const QColor &initial, QWidget *parent) : QDialog(parent)
+{
+    if (initial.isValid()) {
+        m_color = QColor(initial.red(), initial.green(), initial.blue());
+        m_opacity = qBound(5, qRound(initial.alphaF() * 100.0), 100);
+    } else {
+        m_color = QColor(0xff, 0xc0, 0x00);
+        m_opacity = 35;
+    }
+    setObjectName(QStringLiteral("fillDialog"));
+    setWindowTitle(QStringLiteral("填充颜色"));
+    setModal(true);
+    setMinimumWidth(sz(420));
+    QVBoxLayout *body = new QVBoxLayout(this);
+    bindMargins(body, 20, 18, 20, 18);
+    bindSpacing(body, 12);
+
+    body->addWidget(new QLabel(QStringLiteral("填充色（点击色块选择）"), this));
+    ColorSwatchGrid *palette = new ColorSwatchGrid(m_color, this);
+    body->addWidget(palette);
+
+    body->addWidget(new QLabel(QStringLiteral("不透明度"), this));
+    QHBoxLayout *row = new QHBoxLayout;
+    bindSpacing(row, 10);
+    QSlider *slider = new QSlider(Qt::Horizontal, this);
+    slider->setObjectName(QStringLiteral("fillOpacity"));
+    slider->setRange(5, 100);
+    slider->setValue(m_opacity);
+    QLabel *percent = new QLabel(this);
+    percent->setObjectName(QStringLiteral("fillOpacityText"));
+    bindSize(percent, SizeKind::MinWidth, 44);
+    row->addWidget(slider, 1);
+    row->addWidget(percent);
+    body->addLayout(row);
+
+    QLabel *preview = new QLabel(this);
+    preview->setObjectName(QStringLiteral("fillPreview"));
+    preview->setAlignment(Qt::AlignCenter);
+    bindSize(preview, SizeKind::MinHeight, 44);
+    body->addWidget(preview);
+
+    auto updatePreview = [this, percent, preview]() {
+        percent->setText(QStringLiteral("%1%").arg(m_opacity));
+        preview->setText(QStringLiteral("▩  填充预览  %1  %2%").arg(m_color.name().toUpper()).arg(m_opacity));
+        preview->setStyleSheet(QStringLiteral("QLabel { background: rgba(%1,%2,%3,%4); color: #ffffff;"
+                                              " padding: 8px; border-radius: 4px; border: 1px solid var(--border-primary); }")
+                                   .arg(m_color.red()).arg(m_color.green()).arg(m_color.blue())
+                                   .arg(m_opacity / 100.0, 0, 'f', 2));
+    };
+    connect(slider, &QSlider::valueChanged, this, [this, updatePreview](int v) {
+        m_opacity = v;
+        updatePreview();
+    });
+    connect(palette, &ColorSwatchGrid::colorChanged, this, [this, updatePreview](const QColor &c) {
+        m_color = c;
+        updatePreview();
+    });
+    updatePreview();
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("填充"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    buttons->button(QDialogButtonBox::Ok)->setDefault(true);
+    body->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    setThemedStyle(this, dialogQss());
+    slider->setFocus();
+}
+
+QColor FillDialog::fillColor() const
+{
+    QColor c = m_color;
+    c.setAlphaF(m_opacity / 100.0);
+    return c;
+}
+
+// ---------------------------------------------------------------
+// 文本框：内容 + 字号 + 颜色
+// ---------------------------------------------------------------
+TextDialog::TextDialog(const QColor &initial, QWidget *parent) : QDialog(parent)
+{
+    m_color = initial.isValid() ? initial : QColor(Qt::white);
+    setObjectName(QStringLiteral("textDialog"));
+    setWindowTitle(QStringLiteral("插入文本"));
+    setModal(true);
+    setMinimumWidth(sz(420));
+    QVBoxLayout *body = new QVBoxLayout(this);
+    bindMargins(body, 20, 18, 20, 18);
+    bindSpacing(body, 12);
+
+    body->addWidget(new QLabel(QStringLiteral("文本内容"), this));
+    m_text = new QLineEdit(this);
+    m_text->setObjectName(QStringLiteral("textContent"));
+    m_text->setMaxLength(200);
+    m_text->setPlaceholderText(QStringLiteral("例如：重点区域"));
+    body->addWidget(m_text);
+
+    body->addWidget(new QLabel(QStringLiteral("字号"), this));
+    m_size = new QSpinBox(this);
+    m_size->setObjectName(QStringLiteral("textSize"));
+    m_size->setRange(8, 72);
+    m_size->setValue(16);
+    m_size->setSuffix(QStringLiteral(" px"));
+    body->addWidget(m_size);
+
+    body->addWidget(new QLabel(QStringLiteral("颜色（点击色块选择）"), this));
+    ColorSwatchGrid *palette = new ColorSwatchGrid(m_color, this);
+    body->addWidget(palette);
+
+    QLabel *preview = new QLabel(this);
+    preview->setObjectName(QStringLiteral("textPreview"));
+    preview->setAlignment(Qt::AlignCenter);
+    bindSize(preview, SizeKind::MinHeight, 44);
+    body->addWidget(preview);
+
+    auto updatePreview = [this, preview]() {
+        const QString t = text();
+        preview->setText(t.isEmpty() ? QStringLiteral("（输入内容后在这里预览）") : t);
+        QFont f = preview->font();
+        f.setPixelSize(sz(m_size->value()));
+        f.setBold(true);
+        preview->setFont(f);
+        preview->setStyleSheet(QStringLiteral("QLabel { background: #202020; color: %1; padding: 8px; border-radius: 4px; }")
+                                   .arg(m_color.name()));
+    };
+    connect(m_text, &QLineEdit::textChanged, this, [updatePreview](const QString &) { updatePreview(); });
+    connect(m_size, QOverload<int>::of(&QSpinBox::valueChanged), this, [updatePreview](int) { updatePreview(); });
+    connect(palette, &ColorSwatchGrid::colorChanged, this, [this, updatePreview](const QColor &c) {
+        m_color = c;
+        updatePreview();
+    });
+    updatePreview();
+
+    QLabel *error = new QLabel(this);
+    error->setObjectName(QStringLiteral("textError"));
+    error->setWordWrap(true);
+    body->addWidget(error);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("插入"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    buttons->button(QDialogButtonBox::Ok)->setDefault(true);
+    body->addWidget(buttons);
+
+    auto validate = [this, error, buttons]() {
+        const bool ok = !text().isEmpty();
+        error->setText(ok ? QString() : QStringLiteral("请输入文本内容。"));
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+    };
+    connect(m_text, &QLineEdit::textChanged, this, [validate](const QString &) { validate(); });
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    setThemedStyle(this, dialogQss() + QStringLiteral("#textError { color: var(--error); }"));
+    validate();
+    m_text->setFocus();
+}
+
+QString TextDialog::text() const { return m_text->text().trimmed(); }
+int TextDialog::fontPx() const { return m_size->value(); }
 
 bool confirm(QWidget *parent, const QString &message, const QString &title, bool danger,
              const QString &confirmText, const QString &cancelText)
