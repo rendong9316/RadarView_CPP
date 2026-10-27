@@ -88,7 +88,8 @@ public:
     void syncSourceActions();
 
     // 导入数据文件（后台解析，完成后后台入库）；displayName 为空时雷达数据自动命名 Radar / Radar2 ...
-    void importFile(TrackSource kind, const QString &path, const QString &displayName = QString());
+    void importFile(TrackSource kind, const QString &path, const QString &displayName = QString(),
+                    const QColor &color = QColor());
     bool isImporting() const { return m_importer != nullptr; }
     bool isPersisting() const { return m_saveJob != nullptr || !m_saveQueue.isEmpty(); }
     TrackStore *trackStore() { return &m_store; }
@@ -154,6 +155,8 @@ private:
 
     TrackStore     m_store;
     TrackImporter *m_importer = nullptr;
+    QColor m_importColor;
+    QHash<QString, QColor> m_customFileColors;
     QList<QAction *> m_importActions;
     ReplayController *m_replay = nullptr;
     AppStatusBar  *m_statusBar = nullptr;   // 底部状态栏（逐项对应 RadarView StatusBar.vue）
@@ -173,6 +176,8 @@ private:
     ui::UndoToast *m_undoToast = nullptr;
     QString m_isoKey;                       // 单独显示的航迹（按 key 记，删除航迹后下标会变）
     QSet<QString> m_dotKeys;                // 显示点迹的航迹
+    QSet<QString> m_overviewDotKeys;        // 进入单条查看前的点迹选择
+    bool m_haveOverviewDots = false;
     QAction *m_labelAction = nullptr;
     QAction *m_srcOffline = nullptr;
     QAction *m_srcTdt = nullptr;

@@ -241,7 +241,15 @@ namespace ui {
 int defaultFontPx()
 {
     // 启动时读一次持久化的根字号；后续运行时改走 UiScale::setBasePx
-    return app::settings().value(QStringLiteral("display.font_size"), 14).toInt();
+    QSettings &s = app::settings();
+    int px = s.value(QStringLiteral("display.font_size"), kFontDefaultPx).toInt();
+    // 首次更新时升级旧的小字号；之后保留用户在设置面板里的选择。
+    if (!s.value(QStringLiteral("display.readable_ui_v1"), false).toBool()) {
+        px = qMax(px, kFontDefaultPx);
+        s.setValue(QStringLiteral("display.font_size"), px);
+        s.setValue(QStringLiteral("display.readable_ui_v1"), true);
+    }
+    return px;
 }
 
 QString uiFamilies()
@@ -297,6 +305,9 @@ void UiScale::applyAppFont()
         m_haveAppFont = true;
     }
     QFont f = m_appFont;
+    f.setFamilies(QStringList() << QStringLiteral("Microsoft YaHei") << QStringLiteral("Segoe UI")
+                               << QStringLiteral("WenQuanYi Micro Hei") << QStringLiteral("Noto Sans CJK SC")
+                               << m_appFont.family());
     if (m_appFont.pixelSize() > 0)
         f.setPixelSize(qMax(1, int(std::lround(m_appFont.pixelSize() * scale()))));
     else

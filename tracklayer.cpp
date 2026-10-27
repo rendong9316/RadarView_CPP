@@ -360,6 +360,7 @@ void TrackLayer::setIsolatedTrack(int index)
         return;
     m_isoTrack = index;
     m_dynamicDirty = true;
+    m_ptDotsDirty = true;
 }
 
 void TrackLayer::setTrackMask(const QVector<bool> &mask)
@@ -428,6 +429,7 @@ void TrackLayer::rebuildStatic()
     m_dynamicDirty = true;
     m_rangesDirty = true;
     const QVector<Track> &tracks = m_store->tracks();
+    m_ptDotsDirty = true;  // 样式重建后点迹也要刷新，避免沿用旧分组的颜色/范围
     m_baseTime = m_store->minTime();
     m_trackGroup.resize(tracks.size());
     m_trackPieces = QVector<QVector<Piece>>(tracks.size());
@@ -444,7 +446,8 @@ void TrackLayer::rebuildStatic()
         if (g < 0) {
             Group grp;
             grp.key = key;
-            grp.color = m_sourceColor.contains(int(t.source)) ? m_sourceColor.value(int(t.source))
+            grp.color = m_fileColor.contains(key) ? m_fileColor.value(key)
+                       : m_sourceColor.contains(int(t.source)) ? m_sourceColor.value(int(t.source))
                                                           : m_store->fileColor(t.source, t.fileName);
             grp.alpha = t.source == TrackSource::RadarRaw ? 0.75f : 0.88f;
             const double base = t.source == TrackSource::RadarRaw ? 3.5 : 6.0;
@@ -562,16 +565,12 @@ void TrackLayer::setPointDotTracks(const QVector<int> &indices)
     m_ptDotsDirty = true;
 }
 
-// RadarView CesiumMap.vue contrastColor：色相转半圈，饱和度至少 0.75，亮度 0.55
-QColor TrackLayer::contrastColor(const QColor &c)
+QColor TrackLayer::pointDotColor(int track) const
 {
-    const QColor hsl = c.toHsl();
-    double h = hsl.hslHueF(), s = hsl.hslSaturationF();
-    if (h < 0.0)
-        h = 0.0;
-    h = std::fmod(h + 0.5, 1.0);
-    s = qMax(s, 0.75);
-    return QColor::fromHslF(h, s, 0.55);
+    for (const DotTrack &dot : m_ptDots)
+        if (dot.track == track)
+            return dot.color;
+    return QColor();
 }
 
 // 点迹：要显示点迹的航迹，把（时间窗口内的）每个原始点各画成一个小圆点
@@ -596,7 +595,7 @@ void TrackLayer::rebuildPointDots()
             d.pos.append(scenePos(pts[k].lon, pts[k].lat, kAltitudeM));
         }
         d.count = d.t.size();
-        d.color = contrastColor(m_groups[m_trackGroup[ti]].color);
+        d.color = m_groups[m_trackGroup[ti]].color;
         m_ptDots.append(d);
     }
     m_gl->glBindBuffer(GL_ARRAY_BUFFER, m_ptDotVbo);

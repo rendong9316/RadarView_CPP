@@ -29,8 +29,15 @@ public:
     // ---- 自检用 ----
     int fontValue() const;
     void setFontValue(int px);
+    double lineWidthValue() const;
+    void setLineWidthValue(double px);
+    double pointScaleValue() const;
+    void setPointScaleValue(double scale);
 
 signals:
+    void fontValueChanged(int px);
+    void lineWidthValueChanged(double px);
+    void pointScaleValueChanged(double scale);
     void toggleLabelsRequested();
     void resetViewRequested();
     void clearDisplayRequested();
@@ -43,6 +50,8 @@ private:
 
     Host m_host;
     QSlider *m_font = nullptr;
+    QSlider *m_lineWidth = nullptr;
+    QSlider *m_pointScale = nullptr;
     QLabel *m_batchLabel = nullptr;
 };
 

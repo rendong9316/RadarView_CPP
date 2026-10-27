@@ -30,10 +30,20 @@
 #include "trackdb.h"
 #include "theme.h"
 #include "settingspanel.h"
+#include "trackimporter.h"
 
 #include <QMouseEvent>
 #include <QDialog>
+#include <QDialogButtonBox>
+#include <QLineEdit>
+#include <QSettings>
+#include <QLocale>
 #include <QWindow>
+#include <QTemporaryFile>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QMenu>
+#include <QToolTip>
 
 #include <QFileInfo>
 #include <QDir>
@@ -151,6 +161,114 @@ void runSelfTest(MainWindow *w)
         if (!ok)
             ++st->failures;
     };
+
+    {
+        check(UiScale::instance()->basePx() == ui::kFontDefaultPx, QStringLiteral("默认界面字号 22px"));
+        ui::RadarImportDialog dlg(QStringLiteral("radar.mat"), QStringLiteral("Radar"), QColor("#FF0000"),
+                                  QStringList() << QStringLiteral("已有名称"), w);
+        QLineEdit *name = dlg.findChild<QLineEdit *>(QStringLiteral("radarImportName"));
+        QDialogButtonBox *buttons = dlg.findChild<QDialogButtonBox *>();
+        QPushButton *blue = dlg.findChild<QPushButton *>(QStringLiteral("radarColor_7"));
+        check(name && buttons && blue, QStringLiteral("雷达导入包含名称、标准色和确认控件"));
+        if (name && buttons && blue) {
+            name->setText(QStringLiteral("   "));
+            check(!buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("雷达名称不能为空"));
+            name->setText(QStringLiteral("已有名称"));
+            check(!buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("雷达批次名称不能重复"));
+            name->setText(QStringLiteral("  东部雷达  "));
+            blue->click();
+            check(dlg.trackName() == QStringLiteral("东部雷达") && dlg.trackColor() == QColor("#0070C0")
+                  && buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("雷达自定义名称与标准蓝色选择"));
+            if (qEnvironmentVariableIsSet("RV_SHOT")) {
+                dlg.show();
+                QCoreApplication::processEvents();
+                dlg.grab().save(QCoreApplication::applicationDirPath() + QStringLiteral("/radar-import-preview.png"));
+            }
+            buttons->button(QDialogButtonBox::Cancel)->click();
+            check(dlg.result() == QDialog::Rejected, QStringLiteral("取消导入对话框"));
+        }
+    }
+
+    {
+        ui::RadarImportDialog dlg(QStringLiteral("adsb.csv"), QStringLiteral("上午 ADS-B"), QColor(),
+                                  QStringList() << QStringLiteral("已有批次"), w, true);
+        QLineEdit *name = dlg.findChild<QLineEdit *>(QStringLiteral("radarImportName"));
+        QDialogButtonBox *buttons = dlg.findChild<QDialogButtonBox *>();
+        check(name && buttons && !dlg.findChild<QPushButton *>(QStringLiteral("radarColor_0")),
+              QStringLiteral("ADS-B 导入只选择批次名称，不显示颜色盘"));
+        if (name && buttons) {
+            name->setText(QStringLiteral("已有批次"));
+            check(!buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("ADS-B 拒绝重复批次名"));
+            name->setText(QStringLiteral("  下午 ADS-B  "));
+            check(dlg.trackName() == QStringLiteral("下午 ADS-B") && buttons->button(QDialogButtonBox::Ok)->isEnabled(),
+                  QStringLiteral("ADS-B 接受自定义中文批次名并去掉首尾空格"));
+            if (qEnvironmentVariableIsSet("RV_SHOT")) {
+                dlg.show();
+                QCoreApplication::processEvents();
+                dlg.grab().save(QCoreApplication::applicationDirPath() + QStringLiteral("/adsb-import-preview.png"));
+            }
+            dlg.reject();
+        }
+        QTemporaryFile csv(QCoreApplication::applicationDirPath() + QStringLiteral("/named-adsb-XXXXXX.csv"));
+        check(csv.open(), QStringLiteral("创建 ADS-B 命名回归数据"));
+        csv.write("ABC123,30,120,90,10000,250,,RX,A320,B-1234,2026-04-27 10:00:00,PEK,SHA,CA1234,,0,CCA1234,,AirChina\n");
+        csv.close();
+        TrackStore named;
+        for (const QString &batch : { QStringLiteral("上午 ADS-B"), QStringLiteral("下午 ADS-B") }) {
+            TrackImporter importer(TrackSource::Adsb, csv.fileName(), batch);
+            importer.start();
+            importer.wait();
+            const bool ok = importer.ok() && importer.tracks().size() == 1 && importer.tracks().first().fileName == batch;
+            check(ok, QStringLiteral("导入器保留批次名：%1").arg(batch));
+            if (ok) {
+                named.addTracks(importer.tracks());
+                DbSaveJob save(batch, TrackSource::Adsb, importer.tracks());
+                save.start();
+                save.wait();
+                check(save.ok(), QStringLiteral("自定义 ADS-B 批次入库：%1").arg(batch));
+            }
+        }
+        check(named.size() == 2 && named.tracks()[0].key() != named.tracks()[1].key(),
+              QStringLiteral("相同 ICAO 的两批 ADS-B 航迹保持独立"));
+        const QVector<Track> restored = trackdb::loadAll();
+        check(restored.size() == 2 && restored[0].fileName != restored[1].fileName,
+              QStringLiteral("数据库恢复后仍保留两个独立自定义批次"));
+        for (const BatchInfo &batch : trackdb::batches())
+            trackdb::deleteBatch(batch.id);
+    }
+
+    {
+        SettingsPanel *sp = w->settingsPanel();
+        QSpinBox *font = w->findChild<QSpinBox *>(QStringLiteral("menuFontSize"));
+        QDoubleSpinBox *width = w->findChild<QDoubleSpinBox *>(QStringLiteral("menuLineWidth"));
+        QDoubleSpinBox *dots = w->findChild<QDoubleSpinBox *>(QStringLiteral("menuPointScale"));
+        check(font && width && dots && w->findChild<QMenu *>(QStringLiteral("displaySettingsMenu")),
+              QStringLiteral("顶部设置菜单包含字号、线宽、点迹大小"));
+        if (font && width && dots) {
+            check(width->value() == 3.0 && g->trackLayer()->lineFullWidthPx() == 3.0f, QStringLiteral("默认航迹线宽加粗为 3px"));
+            width->setValue(5.0);
+            dots->setValue(1.8);
+            font->setValue(24);
+            check(sp->lineWidthValue() == 5.0 && g->trackLayer()->lineFullWidthPx() == 5.0f
+                  && std::fabs(g->trackLayer()->pointDotPx() - 12.6f) < 0.01f && sp->fontValue() == 24
+                  && app::settings().value(QStringLiteral("display.line_width")).toDouble() == 5.0,
+                  QStringLiteral("菜单设置即时应用到地图、侧栏和持久化配置"));
+            sp->setLineWidthValue(3.0);
+            sp->setPointScaleValue(1.0);
+            sp->setFontValue(ui::kFontDefaultPx);
+            check(width->value() == 3.0 && dots->value() == 1.0 && font->value() == ui::kFontDefaultPx,
+                  QStringLiteral("侧栏设置同步回顶部菜单"));
+            check(font->cleanText() == QStringLiteral("22") && width->cleanText() == QStringLiteral("3.0")
+                  && dots->cleanText() == QStringLiteral("1.0"), QStringLiteral("设置数字不受系统区域设置影响"));
+            if (qEnvironmentVariableIsSet("RV_SHOT")) {
+                QMenu *menu = w->findChild<QMenu *>(QStringLiteral("displaySettingsMenu"));
+                menu->popup(w->mapToGlobal(QPoint(150, 35)));
+                QCoreApplication::processEvents();
+                menu->grab().save(QCoreApplication::applicationDirPath() + QStringLiteral("/settings-menu-preview.png"));
+                menu->hide();
+            }
+        }
+    }
 
     // ---- 空间套索几何自检（纯函数，不依赖 GL）----
     {
@@ -613,7 +731,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             const QPointF center(g->width() / 2.0, g->height() / 2.0);
             check(onScreen && (sp - center).manhattanLength() < 4.0,
                   QStringLiteral("航迹点投影到屏幕中心 (%1, %2)").arg(sp.x(), 0, 'f', 1).arg(sp.y(), 0, 'f', 1));
-            const int hit = g->trackAt(sp);
+            const int hit = g->trackAt(sp.toPoint()); // 鼠标事件使用整数像素，与实际点击位置一致
             check(hit >= 0, QStringLiteral("中心点拾取到航迹 %1").arg(hit));
 
             // 悬停：移动鼠标到航迹上，下一帧应画出高亮
@@ -621,6 +739,12 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             afterFrames([=]() {
                 check(layer->hoveredTrack() == hit && layer->hoverDrawn(),
                       QStringLiteral("悬停高亮 hovered=%1 drawn=%2").arg(layer->hoveredTrack()).arg(layer->hoverDrawn()));
+                check(QToolTip::text().contains(QStringLiteral("font-size:14px")),
+                      QStringLiteral("航迹悬停信息使用独立的 14px 字号"));
+                if (qEnvironmentVariableIsSet("RV_SHOT"))
+                    for (QWidget *tip : QApplication::topLevelWidgets())
+                        if (tip->inherits("QTipLabel") && tip->isVisible())
+                            tip->grab().save(QCoreApplication::applicationDirPath() + QStringLiteral("/hover-preview.png"));
                 // 单击：单独显示
                 sendMouse(QEvent::MouseButtonPress, sp, Qt::LeftButton);
                 sendMouse(QEvent::MouseButtonRelease, sp, Qt::LeftButton);
@@ -791,6 +915,16 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                   QStringLiteral("数据库读回 %1 条 %2 点（内存 %3 条 %4 点）").arg(back.size()).arg(pts).arg(store->size()).arg(store->pointCount()));
             // 同一数据源的不同文件颜色互不相同：Radar 与 RadarRaw 来自同一个 .mat，再导入一个 Radar 文件
             const QColor c1 = store->fileColor(TrackSource::Radar, QStringLiteral("Radar"));
+            bool customColorApplied = false;
+            for (int i = 0; i < store->size(); ++i)
+                if (store->tracks()[i].source == TrackSource::Radar) {
+                    customColorApplied = store->tracks()[i].fileName == QStringLiteral("Radar")
+                                         && layer->trackColor(i) == QColor("#0070C0");
+                    break;
+                }
+            check(c1 == QColor("#0070C0") && customColorApplied, QStringLiteral("雷达自定义名称与蓝色已应用到真实导入航迹"));
+            check(app::settings().value(QStringLiteral("display.custom_file_color")).toString().contains(QStringLiteral("#0070c0")),
+                  QStringLiteral("雷达自定义颜色已持久保存"));
             TrackStore probe;
             probe.setFileColors(store->fileColors());
             QVector<Track> extra;
@@ -955,6 +1089,14 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                 afterFrames([=]() {
                     check(w->pointDotsShown(ti) && layer->pointDotCount() == store->tracks()[ti].points.size(),
                           QStringLiteral("点迹 %1 个（期望 %2）").arg(layer->pointDotCount()).arg(store->tracks()[ti].points.size()));
+                    check(layer->pointDotColor(ti) == layer->trackColor(ti), QStringLiteral("点迹使用所属航迹的实际颜色"));
+                    const QString batchKey = trackSourceName(store->tracks()[ti].source) + QStringLiteral("::") + store->tracks()[ti].fileName;
+                    layer->setFileColorOverride(batchKey, QColor("#0070C0"));
+                    const QImage dotsImage = g->grabFramebuffer();
+                    if (qEnvironmentVariableIsSet("RV_SHOT"))
+                        dotsImage.save(QCoreApplication::applicationDirPath() + QStringLiteral("/dots-preview.png"));
+                    check(layer->pointDotColor(ti) == QColor("#0070C0") && layer->trackColor(ti) == QColor("#0070C0"),
+                          QStringLiteral("更换批次颜色后点迹与航迹一起更新"));
                     QPointF sp;
                     g->screenPos(mid.lon, mid.lat, TrackLayer::kAltitudeM, &sp);
                     sendMouse(QEvent::MouseMove, sp, Qt::NoButton);
@@ -962,9 +1104,17 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                     g->pointHover(&ht, &hp);
                     check(ht == ti && hp >= 0, QStringLiteral("悬停点迹 航迹 %1 点 %2").arg(ht).arg(hp));
                     w->togglePointDots(ti);
+                    check(!w->pointDotsShown(ti), QStringLiteral("单条查看可以临时隐藏点迹"));
                     w->isolateTrack(-1);
+                    check(w->pointDotsShown(ti), QStringLiteral("返回总览恢复原点迹选择"));
+                    const int other = ti == 0 ? 1 : 0;
+                    w->isolateTrack(other);
+                    w->onEscape();
+                    check(w->pointDotsShown(ti) && layer->hasPointDots(ti), QStringLiteral("查看另一航迹并 Esc 返回仍保留原点迹"));
                     afterFrames([=]() {
-                        check(!w->pointDotsShown(ti) && layer->pointDotCount() == 0, QStringLiteral("隐藏点迹"));
+                        check(w->pointDotsShown(ti) && layer->pointDotCount() == store->tracks()[ti].points.size(),
+                              QStringLiteral("返回总览后实际绘制原航迹全部点迹"));
+                        w->togglePointDots(ti);
                         // 时间筛选
                         FilterPanel *fp = w->filterPanel();
                         const qint64 midT = 1777253315000LL + (1777282200000LL - 1777253315000LL) / 2;
@@ -991,18 +1141,18 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                         // 宽松格式输入：斜杠日期、紧凑格式、只填时间、只填日期
                         {
                             const QDateTime b = QDateTime::fromMSecsSinceEpoch(lo + 8LL * 3600 * 1000, Qt::UTC);
-                            const QString d1 = b.toString(QStringLiteral("yyyy/M/d H:mm"));
-                            const QString d2 = b.addSecs(3600).toString(QStringLiteral("yyyyMMdd HHmm"));
+                            const QString d1 = QLocale::c().toString(b, QStringLiteral("yyyy/M/d H:mm"));
+                            const QString d2 = QLocale::c().toString(b.addSecs(3600), QStringLiteral("yyyyMMdd HHmm"));
                             fp->setInputTexts(d1, d2);
                             fp->clickApply();
                             check(fp->errorText().isEmpty() && w->displayedTrackCount() == expect,
                                   QStringLiteral("宽松格式「%1」~「%2」：%3 条（期望 %4）%5").arg(d1, d2).arg(w->displayedTrackCount())
                                       .arg(expect).arg(fp->errorText()));
-                            fp->setInputTexts(b.toString(QStringLiteral("yyyy-MM-dd HH:mm")), b.addSecs(3600).toString(QStringLiteral("H:mm")));
+                            fp->setInputTexts(QLocale::c().toString(b, QStringLiteral("yyyy-MM-dd HH:mm")), QLocale::c().toString(b.addSecs(3600), QStringLiteral("H:mm")));
                             fp->clickApply();
                             check(fp->errorText().isEmpty() && w->displayedTrackCount() == expect,
                                   QStringLiteral("结束只填时间：%1 条 %2").arg(w->displayedTrackCount()).arg(fp->errorText()));
-                            fp->setInputTexts(b.toString(QStringLiteral("yyyy年M月d日")), b.toString(QStringLiteral("yyyy-MM-dd")));
+                            fp->setInputTexts(QLocale::c().toString(b, QStringLiteral("yyyy年M月d日")), QLocale::c().toString(b, QStringLiteral("yyyy-MM-dd")));
                             fp->clickApply();
                             check(fp->errorText().isEmpty() && w->displayedTrackCount() > 0,
                                   QStringLiteral("只填日期（整天）：%1 条 %2").arg(w->displayedTrackCount()).arg(fp->errorText()));
@@ -1153,7 +1303,8 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             return;
         }
         const Job &j = jobs->at(*step);
-        w->importFile(j.kind, j.path);
+        w->importFile(j.kind, j.path, j.kind == TrackSource::Radar ? QStringLiteral("Radar") : QString(),
+                      j.kind == TrackSource::Radar ? QColor("#0070C0") : QColor());
         check(sb->isLoadingShown(), QStringLiteral("导入 %1 时显示进度").arg(trackSourceName(j.kind)));
         statusConsistent(QStringLiteral("导入中"));
     };

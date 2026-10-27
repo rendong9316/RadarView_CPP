@@ -20,6 +20,10 @@
 #include <QKeySequence>
 #include <QEvent>
 #include <QDialog>
+#include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QWidgetAction>
+#include <QLocale>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPainter>
@@ -121,8 +125,10 @@ ActivityBar::ActivityBar(QWidget *parent) : QWidget(parent)
         ActivityButton *b = new ActivityButton(kPanels[i].icon, this);
         b->setToolTip(QString::fromUtf8(kPanels[i].tooltip));
         b->setAccessibleName(QString::fromUtf8(kPanels[i].tooltip));
-        if (i == int(PanelId::Settings))
+        if (i == int(PanelId::Settings)) {
+            b->setVisible(false);         // 设置入口改到标题栏菜单，侧栏不再显示；保留索引以维持 activatePanel(Settings)
             lay->addStretch(1);           // 设置固定在底部
+        }
         lay->addWidget(b);
         m_buttons << b;
         connect(b, &QAbstractButton::clicked, this, [this, i]() { emit iconClicked(i); });
@@ -444,6 +450,14 @@ void MainWindow::loadPersisted()
     for (auto it = co.begin(); it != co.end(); ++it)
         colors.insert(it.key(), QColor(it.value().toString()));
     m_store.setFileColors(colors);
+    const QJsonObject custom = QJsonDocument::fromJson(s.value(QStringLiteral("display.custom_file_color")).toString().toUtf8()).object();
+    for (auto it = custom.begin(); it != custom.end(); ++it) {
+        const QColor color(it.value().toString());
+        if (color.isValid()) {
+            m_customFileColors.insert(it.key(), color);
+            m_globe->trackLayer()->setFileColorOverride(it.key(), color);
+        }
+    }
 
     QString err;
     if (trackdb::open(&err)) {
@@ -495,6 +509,11 @@ void MainWindow::saveFileColors()
         o.insert(it.key(), it.value().name());
     app::settings().setValue(QStringLiteral("display.file_line_color"),
                              QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+    QJsonObject custom;
+    for (auto it = m_customFileColors.constBegin(); it != m_customFileColors.constEnd(); ++it)
+        custom.insert(it.key(), it.value().name());
+    app::settings().setValue(QStringLiteral("display.custom_file_color"),
+                             QString::fromUtf8(QJsonDocument(custom).toJson(QJsonDocument::Compact)));
 }
 
 bool MainWindow::openTiles(const QString &path)
@@ -661,18 +680,37 @@ void MainWindow::openTileFile()
     }
 }
 
-void MainWindow::importFile(TrackSource kind, const QString &path, const QString &displayName)
+void MainWindow::importFile(TrackSource kind, const QString &path, const QString &displayName, const QColor &color)
 {
     if (m_importer)
         return;
     QString name = displayName;
-    if (name.isEmpty() && kind != TrackSource::Adsb) {
+    QColor selectedColor = color;
+    if (name.isEmpty() && (kind != TrackSource::Adsb || !app::testMode())) {
         QSet<QString> used;   // 数据库里已有的同类批次名也要避开
         for (const BatchInfo &b : trackdb::batches())
             if (b.source == kind)
                 used.insert(b.fileName);
-        name = m_store.uniqueFileName(kind, used);
+        for (const Track &t : m_store.tracks())
+            if (t.source == kind)
+                used.insert(t.fileName);
+        const bool adsb = kind == TrackSource::Adsb;
+        name = adsb ? QFileInfo(path).completeBaseName() : m_store.uniqueFileName(kind, used);
+        if (adsb) {
+            const QString base = name;
+            for (int n = 2; used.contains(name); ++n)
+                name = base + QStringLiteral(" (%1)").arg(n);
+        }
+        if (!app::testMode()) {
+            ui::RadarImportDialog dlg(path, name, QColor(kind == TrackSource::Radar ? "#FF0000" : "#FFC000"), used.values(), this, adsb);
+            if (dlg.exec() != QDialog::Accepted)
+                return;
+            name = dlg.trackName();
+            if (!adsb)
+                selectedColor = dlg.trackColor();
+        }
     }
+    m_importColor = selectedColor;
     m_importer = new TrackImporter(kind, path, name, this);
     connect(m_importer, &TrackImporter::progressChanged, this,
             [this](int percent) { m_statusBar->setLoading(true, percent); });
@@ -707,6 +745,14 @@ void MainWindow::onImportDone()
         // 重新导入：清掉这些航迹的软删除，撤销栈里对应的条目作废
         m_globe->resetInteraction();
         const int added = m_store.addTracks(tracks);
+        if (m_importColor.isValid() && !tracks.isEmpty()) {
+            const QString key = trackSourceName(imp->kind()) + QStringLiteral("::") + tracks.first().fileName;
+            QHash<QString, QColor> colors = m_store.fileColors();
+            colors.insert(key, m_importColor);
+            m_store.setFileColors(colors);
+            m_customFileColors.insert(key, m_importColor);
+            m_globe->trackLayer()->setFileColorOverride(key, m_importColor);
+        }
         saveFileColors();
         msg = tr("%1：新增 %2 条航迹（共 %3 条，%4 个点），解析 %5 ms")
                   .arg(QFileInfo(imp->path()).fileName()).arg(added)
@@ -745,6 +791,7 @@ void MainWindow::onImportDone()
             QMessageBox::warning(this, tr("导入失败"), msg);
     }
     imp->deleteLater();
+    m_importColor = QColor();
     emit importFinished(ok, msg);
 }
 
@@ -814,8 +861,14 @@ void MainWindow::applyDisplay()
     TrackLayer *layer = m_globe->trackLayer();
     const QSet<QString> &vis = m_manage->visibleKeys();
     const int iso = isolatedTrack();
-    if (iso < 0)
+    if (iso < 0) {
         m_isoKey.clear();
+        if (m_haveOverviewDots) {
+            m_dotKeys = m_overviewDotKeys;
+            m_overviewDotKeys.clear();
+            m_haveOverviewDots = false;
+        }
+    }
 
     // 空间套索 → 航迹管理系统的查询范围（查询条件，不是可见集合）：
     // 命中集合按套索多边形独立算一遍，与地图可见集合/单独显示互不影响，
@@ -895,6 +948,14 @@ void MainWindow::isolateTrack(int index)
         index = -1;
     if (index == isolatedTrack())
         return;
+    if (index >= 0 && isolatedTrack() < 0) {
+        m_overviewDotKeys = m_dotKeys;
+        m_haveOverviewDots = true;
+    } else if (index < 0 && m_haveOverviewDots) {
+        m_dotKeys = m_overviewDotKeys;
+        m_overviewDotKeys.clear();
+        m_haveOverviewDots = false;
+    }
     m_isoKey = index >= 0 ? m_store.tracks()[index].key() : QString();
     applyDisplay();
 }
@@ -1137,6 +1198,8 @@ void MainWindow::buildMenuBar()
         m_globe->resetInteraction();
         m_isoKey.clear();
         m_dotKeys.clear();
+        m_overviewDotKeys.clear();
+        m_haveOverviewDots = false;
         m_replay->stop();
         m_store.clear();
         m_manage->clearVisible();
@@ -1169,6 +1232,61 @@ void MainWindow::buildMenuBar()
     item(mEdit, tr("清除选中"), QKeySequence(Qt::Key_Escape), [this]() { onEscape(); });
     mEdit->addSeparator();
     item(mEdit, tr("首选项设置"), QKeySequence(Qt::CTRL + Qt::Key_Comma), [this]() { activatePanel(PanelId::Settings); });
+
+    QMenu *mSettings = mb->addMenu(tr("设置"));
+    mSettings->setObjectName(QStringLiteral("displaySettingsMenu"));
+    setThemedStyle(mSettings, menuQss() + QStringLiteral(
+        "QLabel, QSpinBox, QDoubleSpinBox { font-family: %1; font-size: 13px; }"
+        "QLabel { color: var(--menu-fg); background: transparent; }"
+        "QSpinBox, QDoubleSpinBox { color: var(--input-fg); background: var(--input-bg);"
+        " border: 1px solid var(--border-primary); border-radius: 3px; padding: 4px 6px; min-width: 80px; }").arg(ui::uiFamilies()));
+    auto settingRow = [mSettings](const QString &label, QWidget *control) {
+        QWidget *row = new QWidget(mSettings);
+        QHBoxLayout *layout = new QHBoxLayout(row);
+        ui::bindMargins(layout, 12, 6, 12, 6);
+        layout->addWidget(new QLabel(label, row));
+        layout->addStretch();
+        layout->addWidget(control);
+        QWidgetAction *action = new QWidgetAction(mSettings);
+        action->setDefaultWidget(row);
+        mSettings->addAction(action);
+    };
+    QSpinBox *fontSize = new QSpinBox(mSettings);
+    fontSize->setLocale(QLocale::c());
+    fontSize->setObjectName(QStringLiteral("menuFontSize"));
+    fontSize->setRange(ui::kFontMinPx, ui::kFontMaxPx);
+    fontSize->setSuffix(QStringLiteral(" px"));
+    fontSize->setValue(m_settingsPanel->fontValue());
+    settingRow(tr("界面字号"), fontSize);
+    connect(fontSize, QOverload<int>::of(&QSpinBox::valueChanged), m_settingsPanel, &SettingsPanel::setFontValue);
+    connect(m_settingsPanel, &SettingsPanel::fontValueChanged, fontSize, &QSpinBox::setValue);
+    QDoubleSpinBox *lineWidth = new QDoubleSpinBox(mSettings);
+    lineWidth->setLocale(QLocale::c());
+    lineWidth->setObjectName(QStringLiteral("menuLineWidth"));
+    lineWidth->setDecimals(1);
+    lineWidth->setRange(0.5, 8.0);
+    lineWidth->setSingleStep(0.5);
+    lineWidth->setSuffix(QStringLiteral(" px"));
+    lineWidth->setValue(m_settingsPanel->lineWidthValue());
+    settingRow(tr("所有航迹线宽"), lineWidth);
+    connect(lineWidth, QOverload<double>::of(&QDoubleSpinBox::valueChanged), m_settingsPanel, &SettingsPanel::setLineWidthValue);
+    connect(m_settingsPanel, &SettingsPanel::lineWidthValueChanged, lineWidth, &QDoubleSpinBox::setValue);
+    QDoubleSpinBox *pointScale = new QDoubleSpinBox(mSettings);
+    pointScale->setLocale(QLocale::c());
+    pointScale->setObjectName(QStringLiteral("menuPointScale"));
+    pointScale->setDecimals(1);
+    pointScale->setRange(0.2, 5.0);
+    pointScale->setSingleStep(0.1);
+    pointScale->setSuffix(tr(" 倍"));
+    pointScale->setValue(m_settingsPanel->pointScaleValue());
+    settingRow(tr("点迹大小"), pointScale);
+    connect(pointScale, QOverload<double>::of(&QDoubleSpinBox::valueChanged), m_settingsPanel, &SettingsPanel::setPointScaleValue);
+    connect(m_settingsPanel, &SettingsPanel::pointScaleValueChanged, pointScale, &QDoubleSpinBox::setValue);
+    mSettings->addSeparator();
+    item(mSettings, tr("更多显示设置…"), QKeySequence(), [this]() {
+        if (activePanel() != int(PanelId::Settings))
+            activatePanel(PanelId::Settings);
+    });
 
     QMenu *mView = mb->addMenu(tr("视图"));
     item(mView, tr("航迹管理系统"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_M), [this]() { activatePanel(PanelId::Manage); });

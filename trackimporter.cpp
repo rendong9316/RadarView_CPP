@@ -22,9 +22,12 @@ void TrackImporter::run()
             emit progressChanged(pct);   // 跨线程：自动排队到主线程
         }
     };
-    if (m_kind == TrackSource::Adsb)
+    if (m_kind == TrackSource::Adsb) {
         m_ok = parseAdsbCsv(m_path, &m_tracks, &m_error, progress);
-    else
+        if (m_ok && !m_displayName.trimmed().isEmpty())
+            for (Track &track : m_tracks)
+                track.fileName = m_displayName.trimmed();
+    } else
         m_ok = parseRadarMat(m_path, m_kind == TrackSource::RadarRaw, m_displayName,
                              &m_tracks, &m_error, progress);
     m_elapsed = clock.elapsed();

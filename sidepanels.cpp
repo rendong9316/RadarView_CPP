@@ -38,8 +38,8 @@ const qint64 kBjMs = 8LL * 3600 * 1000;
 // 北京时间文本；整分钟只显示到分，否则带秒
 QString bjMinute(qint64 ms)
 {
-    return QDateTime::fromMSecsSinceEpoch(ms + kBjMs, Qt::UTC)
-        .toString(ms % 60000 == 0 ? QStringLiteral("yyyy-MM-dd HH:mm") : QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    return QLocale::c().toString(QDateTime::fromMSecsSinceEpoch(ms + kBjMs, Qt::UTC),
+        ms % 60000 == 0 ? QStringLiteral("yyyy-MM-dd HH:mm") : QStringLiteral("yyyy-MM-dd HH:mm:ss"));
 }
 
 QDate bjDate(qint64 ms)
