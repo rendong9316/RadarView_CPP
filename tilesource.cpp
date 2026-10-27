@@ -50,6 +50,14 @@ bool TileSource::open(const QString &path, QString *error)
                     m_gcj = v.startsWith(QStringLiteral("gcj"));
                 }
 
+                // 行号方案：规范 MBTiles 是 TMS（从南往北），缺省按规范处理；
+                // scheme=xyz 的包（有些工具直接写 XYZ 的 y）才不翻转
+                m_xyzScheme = false;
+                if (q.exec(QStringLiteral("SELECT value FROM metadata WHERE name='scheme'")) && q.next()) {
+                    const QString v = q.value(0).toString().trimmed().toLower();
+                    m_xyzScheme = (v == QLatin1String("xyz"));
+                }
+
                 m_query = new QSqlQuery(db);
                 m_query->prepare(QStringLiteral(
                     "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?"));
@@ -91,11 +99,12 @@ QImage TileSource::tile(int z, int x, int y)
     if (!m_open)
         return QImage();
 
-    // mbtiles 按 TMS 存储：行号从南往北数
-    const int tmsY = (1 << z) - 1 - y;
+    // 规范 MBTiles 按 TMS 存：行号从南往北数，要翻一下；
+    // scheme=xyz 的包已经是"从北往南"，直接用
+    const int row = m_xyzScheme ? y : (1 << z) - 1 - y;
     m_query->bindValue(0, z);
     m_query->bindValue(1, x);
-    m_query->bindValue(2, tmsY);
+    m_query->bindValue(2, row);
     if (!m_query->exec() || !m_query->next())
         return QImage();
 

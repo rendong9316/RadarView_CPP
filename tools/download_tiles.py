@@ -1,36 +1,39 @@
 # -*- coding: utf-8 -*-
 """
-高德 z16 近岸离线瓦片下载工具
-- 读取 tools/tilelist_z16.json 清单
-- 多线程下载到临时文件(每线程独立, 无共享状态), 完成后单进程合并进 mbtiles
-- 断点续传: 临时文件已存在且有效则跳过; 重新运行自动继续
-- 输出 mbtiles 与 TileSource 直接兼容(metadata crs=gcj)
+高德 近岸离线瓦片下载工具 (z1-z16)
+- 读取 tools/tilelist_z1_z16.json (多 zoom 清单，XYZ 编号)
+- 多线程下载到 tools/tiletmp_all/{z}_{x}_{y}.png (y 为 XYZ，与 URL 一致)，断点续传
+- 完成后单进程合并到 tools/amap_coast_z1_z16.mbtiles
+
+注意：MBTiles 规范里 tile_row 是 **TMS**（从南往北数），而下载用的 y 是
+XYZ（从北往南）。合并时必须翻转成 2^z-1-y，否则整包会在南北方向镜像，
+在球面上表现为"瓦片全部错位"（本工具早期版本就踩过这个坑，
+可用 tools/migrate_tile_rows.py 修复已生成的库）。
 
 用法:
     python tools/download_tiles.py [workers] [limit]
+    limit: 测试用, 最多处理多少张
 """
-import json, os, sqlite3, sys, time, threading, hashlib
+import json, os, sqlite3, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.request import urlopen, Request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-LIST = os.path.join(HERE, 'tilelist_z16.json')
-DB = os.path.join(HERE, 'amap_z16_coast.mbtiles')
-TMP_DIR = os.path.join(HERE, 'tiletmp_z16')
-Z = 16
+LIST = os.path.join(HERE, 'tilelist_z1_z16.json')
+DB = os.path.join(HERE, 'amap_coast_z1_z16.mbtiles')
+TMP_DIR = os.path.join(HERE, 'tiletmp_all')
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) RadarView/1.0'
 REFERER = 'https://www.amap.com/'
 
 
-def tmp_path(x, y):
-    return os.path.join(TMP_DIR, '%d_%d_%d.png' % (Z, x, y))
+def tmp_path(z, x, y):
+    return os.path.join(TMP_DIR, '%d_%d_%d.png' % (z, x, y))
 
 
-def fetch_tile(x, y, retries=2, timeout=20):
+def fetch_tile(z, x, y, retries=2, timeout=20):
     sub = str((x + y) % 4 + 1)
     url = ("http://webrd0%s.is.autonavi.com/appmaptile?"
-           "lang=zh_cn&size=1&scale=1&style=8&x=%d&y=%d&z=%d") % (sub, x, y, Z)
+           "lang=zh_cn&size=1&scale=1&style=8&x=%d&y=%d&z=%d") % (sub, x, y, z)
     for attempt in range(retries + 1):
         try:
             req = Request(url, headers={'User-Agent': UA, 'Referer': REFERER})
@@ -43,22 +46,19 @@ def fetch_tile(x, y, retries=2, timeout=20):
 
 
 def worker(item):
-    x, y = item
-    p = tmp_path(x, y)
-    # 已有有效缓存
+    z, x, y = item
+    p = tmp_path(z, x, y)
     if os.path.exists(p) and os.path.getsize(p) > 0:
         return 'cached'
-    data = fetch_tile(x, y)
+    data = fetch_tile(z, x, y)
     if data is None:
         return 'fail'
-    # 空瓦片(纯海) 也记一个 0 字节占位, 避免下次重下
     with open(p, 'wb') as f:
         f.write(data)
     return 'empty' if not data else 'ok'
 
 
 def merge_to_mbtiles():
-    """把所有临时文件灌进 mbtiles (单进程, 无锁)."""
     con = sqlite3.connect(DB)
     con.executescript("""
     CREATE TABLE IF NOT EXISTS metadata (name TEXT, value TEXT);
@@ -71,44 +71,65 @@ def merge_to_mbtiles():
     CREATE INDEX IF NOT EXISTS idx_tiles_tile_coords ON tiles
         (zoom_level, tile_column, tile_row);
     """)
-    con.execute("INSERT OR REPLACE INTO metadata VALUES('name','amap_z16_coast')")
-    con.execute("INSERT OR REPLACE INTO metadata VALUES('crs','gcj')")
-    con.execute("INSERT OR REPLACE INTO metadata VALUES('format','png')")
+    con.execute("DELETE FROM metadata WHERE name IN "
+                "('name','type','format','crs','scheme','minzoom','maxzoom')")
+    con.execute("INSERT INTO metadata VALUES('name','amap_coast_z1_z16')")
+    con.execute("INSERT INTO metadata VALUES('type','baselayer')")
+    con.execute("INSERT INTO metadata VALUES('crs','gcj')")      # 高德瓦片是 GCJ-02
+    con.execute("INSERT INTO metadata VALUES('format','png')")
+    con.execute("INSERT INTO metadata VALUES('scheme','tms')")   # 规范：行号从南往北
     con.commit()
 
     files = [f for f in os.listdir(TMP_DIR) if f.endswith('.png')]
-    n, nempty, nfail = 0, 0, 0
+    n, nempty, batch = 0, 0, []
     for fname in files:
-        z_, x, y = map(int, fname[:-4].split('_'))
+        z, x, y = map(int, fname[:-4].split('_'))
         data = open(os.path.join(TMP_DIR, fname), 'rb').read()
         if not data:
             nempty += 1
             continue
-        con.execute("INSERT OR REPLACE INTO tiles VALUES(?,?,?,?)",
-                    (z_, x, y, sqlite3.Binary(data)))
+        row = (1 << z) - 1 - y          # XYZ -> TMS
+        batch.append((z, x, row, sqlite3.Binary(data)))
         n += 1
+        if len(batch) >= 2000:
+            con.executemany("INSERT OR REPLACE INTO tiles VALUES(?,?,?,?)", batch)
+            con.commit()
+            batch.clear()
+    if batch:
+        con.executemany("INSERT OR REPLACE INTO tiles VALUES(?,?,?,?)", batch)
+        con.commit()
+
+    zmin, zmax = con.execute("SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles").fetchone()
+    for k, v in (('minzoom', zmin), ('maxzoom', zmax)):
+        if v is not None:
+            con.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", (k, str(v)))
     con.commit()
     total = con.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+    zooms = [r[0] for r in con.execute("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level")]
     con.close()
-    return n, nempty, total
+    return n, nempty, total, zooms
 
 
 def main():
     workers = int(sys.argv[1]) if len(sys.argv) > 1 else 16
     limit = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     with open(LIST, 'r') as f:
-        tiles = json.load(f)['tiles']
+        d = json.load(f)
+    # 展开成 (z,x,y) 列表, z1 在前(低层先下, 大区域少而快)
+    items = []
+    for z in sorted(d['zooms'].keys(), key=int):
+        for (x, y) in d['zooms'][z]:
+            items.append((int(z), x, y))
     if limit:
-        tiles = tiles[:limit]
+        items = items[:limit]
 
     os.makedirs(TMP_DIR, exist_ok=True)
-    print('清单 %d 张, 并发 %d' % (len(tiles), workers))
+    print('清单合计 %d 张 (z1-z%d), 本次处理 %d 张, 并发 %d'
+          % (len(items), max(int(z) for z, x, y in items), len(items), workers))
 
-    todo = [(x, y) for (x, y) in tiles
-            if not (os.path.exists(tmp_path(x, y)))
-            or (os.path.exists(tmp_path(x, y)) and os.path.getsize(tmp_path(x, y)) == 0)]
-    cached = len(tiles) - len(todo)
-    print('已有缓存 %d, 待下载 %d' % (cached, len(todo)))
+    todo = [it for it in items
+            if not (os.path.exists(tmp_path(*it)) and os.path.getsize(tmp_path(*it)) > 0)]
+    print('已缓存 %d, 待下载 %d' % (len(items) - len(todo), len(todo)))
 
     if todo:
         t0 = time.time()
@@ -130,11 +151,10 @@ def main():
         print('下载完成: ok=%d empty=%d fail=%d, 耗时 %.0f min'
               % (ok, empty, fail, (time.time() - t0) / 60))
         if fail:
-            print('有 %d 张失败(未写文件), 重跑本脚本可续传' % fail)
+            print('有 %d 张失败, 重跑本脚本可续传' % fail)
 
-    added, nempty, total = merge_to_mbtiles()
-    print('mbtiles: 本次写入 %d 张, 库内共 %d 张 (空瓦片 %d 未入库)'
-          % (added, total, nempty))
+    added, nempty, total, zooms = merge_to_mbtiles()
+    print('mbtiles: 库内共 %d 张, 层级 %s' % (total, zooms))
 
 
 if __name__ == '__main__':
