@@ -1179,10 +1179,9 @@ GLuint GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
 {
     const int maxZ = mapMaxZoom();
     const int minZ = mapMinZoom();
-    // 离线 + 严格模式：只画本层级真实存在的瓦片，缺块就空着。
-    // 在线源不这么做——它需要父级兜底来做"先糊后清"的渐进填充。
-    const int lowest = (m_tiles && !m_online && m_offlineStrict) ? t.z : minZ;
-    for (int az = qMin(t.z, maxZ); az >= lowest; --az) {
+    // 缺本层瓦片时向上找父级纹理，用子区域贴过去——低清但连续，
+    // 比露底色好；这也是缩放开合时不闪白的关键。
+    for (int az = qMin(t.z, maxZ); az >= minZ; --az) {
         const int dz = t.z - az;
         const int ax = t.x >> dz, ay = t.y >> dz;
         auto it = m_textures.find(tileKey(az, ax, ay));

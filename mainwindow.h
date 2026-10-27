@@ -175,7 +175,6 @@ private:
     QSet<QString> m_dotKeys;                // 显示点迹的航迹
     QAction *m_labelAction = nullptr;
     QAction *m_srcOffline = nullptr;
-    QAction *m_strictOfflineAction = nullptr;   // 离线瓦片缺块留空（不放大低层级）
     QAction *m_srcTdt = nullptr;
     QAction *m_srcAmap = nullptr;
     QAction *m_srcAmapOffline = nullptr;
