@@ -159,6 +159,7 @@ private:
     AppStatusBar  *m_statusBar = nullptr;   // 底部状态栏（逐项对应 RadarView StatusBar.vue）
     bool           m_adsbVisible = true;    // ADS-B 整体显隐（雷达按文件单独控制）
     QPushButton   *m_backAllBtn = nullptr;   // 单独显示时地图顶部的「← 返回全部」
+    QPushButton   *m_amapOfflineBtn = nullptr; // map top-right quick button -> amap_offline source
 
     ManageState *m_manage = nullptr;
     ManagePanel *m_managePanel = nullptr;

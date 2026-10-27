@@ -351,6 +351,16 @@ MainWindow::MainWindow(QWidget *parent)
         "QPushButton:hover { background-color: #1a8ae0; }"));
     m_backAllBtn->hide();
     connect(m_backAllBtn, &QPushButton::clicked, this, [this]() { isolateTrack(-1); });
+    m_amapOfflineBtn = new QPushButton(tr("\u25b2 高德离线球片"), m_globe);
+    m_amapOfflineBtn->setToolTip(tr("切换到「高德（离线 · 近岸 z1-z16）」底图源；\n"
+                                   "查找 tiles/amap_coast_z1_z16.mbtiles"));
+    m_amapOfflineBtn->setCursor(Qt::PointingHandCursor);
+    setThemedStyle(m_amapOfflineBtn, QStringLiteral(
+        "QPushButton { background-color: #107c10; color: #ffffff; border: none; border-radius: 2px;"
+        " padding: 4px 12px; font-size: 12px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #198c19; }"));
+    connect(m_amapOfflineBtn, &QPushButton::clicked, this, [this]() { setMapSource(QStringLiteral("amap_offline")); });
+
     m_globe->installEventFilter(this);
 
     // 管理面板 / 筛选 → 地图显示集合
@@ -574,6 +584,11 @@ void MainWindow::syncSourceActions()
             continue;
         QSignalBlocker blocker(it.action);
         it.action->setChecked(src == QLatin1String(it.id));
+    }
+    // 浮动快捷按钮的高亮状态要跟着当前源走，否则切到别的源后它一直亮着
+    if (m_amapOfflineBtn) {
+        m_amapOfflineBtn->setProperty("pressed", src == QLatin1String("amap_offline"));
+        m_amapOfflineBtn->update();
     }
 }
 
@@ -945,6 +960,8 @@ void MainWindow::applyAdsbVisibility()
 void MainWindow::placeBackAllButton()
 {
     m_backAllBtn->move((m_globe->width() - m_backAllBtn->width()) / 2, 8);
+    const int right = m_globe->width() - m_amapOfflineBtn->width() - 8;
+    m_amapOfflineBtn->move(right, 8);
 }
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *e)
