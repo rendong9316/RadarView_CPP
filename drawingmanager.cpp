@@ -354,7 +354,10 @@ void DrawingManager::clear()
 bool DrawingManager::canBreak(int id) const
 {
     const DrawingFeature *f = feature(id);
-    return f && !f->isClosed() && !f->isText() && f->pts.size() >= 3;
+    if (!f || f->isText())
+        return false;
+    // 闭合图形要多两个点才够剪开（环本身首尾重合）
+    return f->isClosed() ? f->pts.size() >= 5 : f->pts.size() >= 3;
 }
 
 int DrawingManager::nearestVertex(int id, double lat, double lon) const
@@ -374,7 +377,10 @@ int DrawingManager::nearestVertex(int id, double lat, double lon) const
     return best;
 }
 
-// 在 vertexIndex 处一分为二：两段共用这个顶点，几何一点不差（断点正好落在原顶点上）
+// 在 vertexIndex 处断开：
+//   开放图形 -> 一分为二，两段共用这个顶点，几何一点不差；
+//   闭合图形 -> 在这一点把环剪开，变成首尾重合的开放曲线（CAD 剪开一个环就是这个结果）。
+// 断点记进 marks，渲染成小圆点；要素被删掉时标记自然跟着消失。
 bool DrawingManager::breakFeature(int id, int vertexIndex)
 {
     if (!canBreak(id))
@@ -386,19 +392,41 @@ bool DrawingManager::breakFeature(int id, int vertexIndex)
     if (vertexIndex <= 0 || vertexIndex >= f.pts.size() - 1)
         return false;                       // 首尾顶点断不出两段
 
-    DrawingFeature a = f, b = f;
-    a.pts = f.pts.mid(0, vertexIndex + 1);
-    b.pts = f.pts.mid(vertexIndex);
-    if (a.pts.size() < 2 || b.pts.size() < 2)
-        return false;
+    QVector<DrawingFeature> pieces;
+    if (f.isClosed()) {
+        QVector<QPointF> ring = f.pts;
+        if (ring.size() > 1 && ring.first() == ring.last())
+            ring.removeLast();              // 去掉重复的收尾点，按下标绕环
+        if (vertexIndex >= ring.size())
+            return false;
+        DrawingFeature nf = f;
+        nf.kind = DrawKind::Polyline;       // 剪开后不再是闭合图形
+        nf.fill = QColor();
+        nf.centerLat = nf.centerLon = nf.radiusKm = 0.0;
+        nf.pts = ring.mid(vertexIndex) + ring.mid(0, vertexIndex + 1);
+        nf.marks.clear();
+        nf.marks.append(f.pts.at(vertexIndex));
+        pieces.append(nf);
+    } else {
+        DrawingFeature a = f, b = f;
+        a.pts = f.pts.mid(0, vertexIndex + 1);
+        b.pts = f.pts.mid(vertexIndex);
+        if (a.pts.size() < 2 || b.pts.size() < 2)
+            return false;
+        a.marks.clear();
+        a.marks.append(f.pts.at(vertexIndex));
+        b.marks.clear();
+        b.marks.append(f.pts.at(vertexIndex));
+        pieces << a << b;
+    }
 
-    // 一次打断 = 删一个 + 加两个，包成宏命令，撤销时一步还原
+    // 一次打断 = 删一个 + 加 N 个，包成宏命令，撤销时一步还原
     const bool macro = m_undo != nullptr;
     if (macro)
         m_undo->beginMacro(QStringLiteral("打断"));
     removeFeature(id);
-    addFeature(a);
-    addFeature(b);
+    for (const DrawingFeature &p : pieces)
+        addFeature(p);
     if (macro)
         m_undo->endMacro();
     return true;
@@ -408,8 +436,8 @@ QVector<int> DrawingManager::crossingFeatures(double lat1, double lon1, double l
 {
     QVector<int> out;
     for (const DrawingFeature &f : m_features) {
-        if (f.isText() || f.isClosed() || f.pts.size() < 2)
-            continue;                       // 只裁开放图形；闭合图形/文本不参与
+        if (f.isText() || f.pts.size() < 2)
+            continue;                       // 文本不参与；闭合图形的环首尾重合，照样能求交
         for (int k = 0; k + 1 < f.pts.size(); ++k) {
             if (!geocalc::greatCircleIntersections(lat1, lon1, lat2, lon2,
                                                    f.pts.at(k).y(), f.pts.at(k).x(),
@@ -449,23 +477,54 @@ int DrawingManager::trimCrossing(double lat1, double lon1, double lat2, double l
         if (hit.isEmpty())
             return false;
 
+        const int s0 = seg.first();
+        const int s1 = (hit.size() >= 2) ? seg.at(1) : seg.first();
+        const QPointF p0 = hit.first();
+        const QPointF p1 = hit.at(hit.size() >= 2 ? 1 : 0);
+
+        if (f.isClosed()) {
+            // 环：删掉两个交点之间那一段，剩下的是另一段弧（从 p1 绕过起点回到 p0），
+            // 剪开后就是一条开放曲线，不再是闭合图形
+            QVector<QPointF> ring = f.pts;
+            if (ring.size() > 1 && ring.first() == ring.last())
+                ring.removeLast();
+            QVector<QPointF> keep;
+            keep.append(p1);
+            for (int k = s1 + 1; k < ring.size(); ++k)
+                keep.append(ring.at(k));
+            for (int k = 0; k <= s0 && k < ring.size(); ++k)
+                keep.append(ring.at(k));
+            keep.append(p0);
+            DrawingFeature nf = f;
+            nf.kind = DrawKind::Polyline;
+            nf.fill = QColor();
+            nf.centerLat = nf.centerLon = nf.radiusKm = 0.0;
+            nf.pts = keep;
+            nf.marks.clear();
+            nf.marks << p0 << p1;
+            removeFeature(id);
+            addFeature(nf);
+            return true;
+        }
+
         QVector<QVector<QPointF>> pieces;
-        QVector<QPointF> head = f.pts.mid(0, seg.first() + 1);
-        head.append(hit.first());
+        QVector<QPointF> head = f.pts.mid(0, s0 + 1);
+        head.append(p0);
         pieces.append(head);
 
         QVector<QPointF> tail;
-        const int from = (hit.size() >= 2) ? seg.at(1) : seg.first();
-        tail.append(hit.at(hit.size() >= 2 ? 1 : 0));
-        tail += f.pts.mid(from + 1);
+        tail.append(p1);
+        tail += f.pts.mid(s1 + 1);
         pieces.append(tail);
 
         removeFeature(id);
-        for (const QVector<QPointF> &p : pieces) {
-            if (p.size() < 2)
+        for (int k = 0; k < pieces.size(); ++k) {
+            if (pieces.at(k).size() < 2)
                 continue;
             DrawingFeature nf = f;
-            nf.pts = p;
+            nf.pts = pieces.at(k);
+            nf.marks.clear();
+            nf.marks.append(k == 0 ? p0 : p1);   // 两段各留自己的断点标记
             addFeature(nf);
         }
         return true;
@@ -519,6 +578,12 @@ QJsonObject DrawingManager::toJson() const
         if (f.fill.isValid()) {
             props.insert(QStringLiteral("fill"), f.fill.name().toUpper());
             props.insert(QStringLiteral("fillOpacity"), f.fill.alphaF());
+        }
+        if (!f.marks.isEmpty()) {                 // 打断/裁剪点，跟着要素一起存取
+            QJsonArray ma;
+            for (const QPointF &p : f.marks)
+                ma.append(pointJson(p));
+            props.insert(QStringLiteral("marks"), ma);
         }
         if (f.kind == DrawKind::Circle) {
             QJsonArray center;
@@ -624,6 +689,11 @@ bool DrawingManager::fromJson(const QJsonObject &root, QString *error)
             QColor c = fill;
             c.setAlphaF(qBound(0.0, props.value(QStringLiteral("fillOpacity")).toDouble(0.35), 1.0));
             f.fill = c;
+        }
+        for (const QJsonValue &mv : props.value(QStringLiteral("marks")).toArray()) {
+            QPointF mp;
+            if (pointFromJson(mv, &mp))
+                f.marks.append(mp);
         }
 
         const QJsonArray center = props.value(QStringLiteral("center")).toArray();

@@ -450,6 +450,44 @@ void runSelfTest(MainWindow *w)
         check(bm.count() == 1 && bm.feature(bl) != nullptr && bm.feature(bl)->pts.size() == btotal,
               QStringLiteral("打断：撤销后还原成一条"));
 
+        // 闭合图形（矩形）也能打断：剪开后变成一条首尾在断点重合的开放曲线，并留下断点标记
+        DrawingManager rm;
+        QUndoStack rstack;
+        rm.setUndoStack(&rstack);
+        const int rectId = rm.addRect(28, 118, 32, 122, QColor("#00B050"));
+        const int rv = rm.nearestVertex(rectId, 32.0, 120.0);      // 北边中间那个顶点
+        check(rm.canBreak(rectId), QStringLiteral("打断：闭合图形也可以打断"));
+        check(rm.breakFeature(rectId, rv) && rm.count() == 1,
+              QStringLiteral("打断闭合图形：剪开后仍是 %1 个要素").arg(rm.count()));
+        {
+            const DrawingFeature &opened = rm.features().first();
+            check(opened.kind == DrawKind::Polyline && !opened.isClosed()
+                  && opened.pts.first() == opened.pts.last() && opened.marks.size() == 1,
+                  QStringLiteral("打断闭合图形：首尾在断点重合，带 %1 个断点标记")
+                      .arg(opened.marks.size()));
+            // 断点标记要能存进 GeoJSON 再读回来
+            DrawingManager rm2;
+            QString rerr;
+            rm2.fromJson(rm.toJson(), &rerr);
+            check(rm2.count() == 1 && rm2.features().first().marks.size() == 1,
+                  QStringLiteral("断点标记随 GeoJSON 存取：%1 个 %2")
+                      .arg(rm2.count()).arg(rerr));
+        }
+        rstack.undo();
+        check(rm.count() == 1 && rm.features().first().isClosed(),
+              QStringLiteral("打断闭合图形：撤销后恢复成闭合矩形"));
+
+        // 闭合图形裁剪：横线穿过矩形，剪掉中间一段，剩一条开放曲线 + 两个断点
+        DrawingManager cm1;
+        QUndoStack cstack1;
+        cm1.setUndoStack(&cstack1);
+        cm1.addRect(28, 118, 32, 122, QColor("#00B050"));
+        const int cut2 = cm1.trimCrossing(30, 116, 30, 124);
+        check(cut2 == 1 && cm1.count() == 1 && !cm1.features().first().isClosed()
+              && cm1.features().first().marks.size() == 2,
+              QStringLiteral("裁剪闭合图形：剩 %1 段、%2 个断点").arg(cm1.count())
+                  .arg(cm1.features().isEmpty() ? -1 : cm1.features().first().marks.size()));
+
         // 裁剪：U 形折线被一条横线穿过两次，中间那段被删掉，剩下两个残段
         DrawingManager tm;
         QUndoStack tstack;
@@ -738,8 +776,7 @@ void runSelfTest(MainWindow *w)
                     lasso->clearAll();
                     // 绘图工具栏默认收起：先记下状态，点开后再检查（两行按钮）
                     QToolBar *bar0 = w->findChild<QToolBar *>(QStringLiteral("drawToolBar"));
-                    QToolBar *bar2 = w->findChild<QToolBar *>(QStringLiteral("drawToolBar2"));
-                    const bool drawBarCollapsed = bar0 && bar0->isHidden() && bar2 && bar2->isHidden();
+                    const bool drawBarCollapsed = bar0 && bar0->isHidden();
                     w->setDrawingBarVisible(true);
                     // 贴地圆：加到视野中心，叠加层必须画出来（背面顶点会被断开，这里整圈都可见）
                     const int cid = w->drawing()->addCircle(30.0, 110.0, 800.0, QColor("#FFC000"),
@@ -748,16 +785,14 @@ void runSelfTest(MainWindow *w)
                     (*waitFrames)(2, [=]() {
                         check(g->featuresDrawn() == 1,
                               QStringLiteral("地图上画出距离圆 %1 个").arg(g->featuresDrawn()));
-                        // 绘图工具栏平时不显示，点开左上角「绘图」才出现，且分两行
+                        // 绘图工具栏平时不显示，点标题栏「帮助」右边的「绘图」才出现（一行）
                         QToolBar *bar = w->findChild<QToolBar *>(QStringLiteral("drawToolBar"));
                         check(drawBarCollapsed && bar && bar->isVisible() && bar->height() > 10
-                              && bar->actions().size() >= 11
-                              && bar2 && bar2->isVisible() && bar2->actions().size() >= 5
+                              && bar->actions().size() >= 16
                               && w->undoStack() && w->undoStack()->undoLimit() == 200
                               && g->drawTool() == DrawTool::None,
-                              QStringLiteral("绘图工具栏默认收起，点开后 %1 项 + %2 项，撤销上限 %3")
+                              QStringLiteral("绘图工具栏默认收起，点开后 %1 项，撤销上限 %2")
                                   .arg(bar ? bar->actions().size() : 0)
-                                  .arg(bar2 ? bar2->actions().size() : 0)
                                   .arg(w->undoStack() ? w->undoStack()->undoLimit() : -1));
 
                         auto send = [g](QEvent::Type type, const QPointF &p, Qt::MouseButton btn,
@@ -1765,7 +1800,10 @@ int main(int argc, char *argv[])
         const int rid = d->addRect(30.0, 95.0, 40.0, 115.0, QColor("#00B0F0"));
         d->setFill(rid, QColor(0x00, 0xb0, 0xf0, 70));
         d->addCircle(35.0, 105.0, 600.0, QColor("#FFC000"));
-        d->addLine(32.0, 100.0, 38.0, 112.0, QColor("#FF4444"));
+        const int demoLine = d->addLine(32.0, 100.0, 38.0, 112.0, QColor("#FF4444"));
+        // 顺手演示打断：断点处会画一个白心黑边的小圆点
+        if (const DrawingFeature *dl = d->feature(demoLine))
+            d->breakFeature(demoLine, dl->pts.size() / 2);
         d->addText(33.0, 101.0, QStringLiteral("重点区域"), QColor("#FFFF00"), 22);
     }
 

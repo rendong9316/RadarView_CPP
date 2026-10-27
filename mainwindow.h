@@ -183,7 +183,6 @@ private:
     AppStatusBar  *m_statusBar = nullptr;   // 底部状态栏（逐项对应 RadarView StatusBar.vue）
     bool           m_adsbVisible = true;    // ADS-B 整体显隐（雷达按文件单独控制）
     QPushButton   *m_backAllBtn = nullptr;   // 单独显示时地图顶部的「← 返回全部」
-    QPushButton   *m_amapOfflineBtn = nullptr; // map top-right quick button -> amap_offline source
 
     ManageState *m_manage = nullptr;
     ManagePanel *m_managePanel = nullptr;
@@ -194,9 +193,8 @@ private:
     SpatialLasso *m_lasso = nullptr;
     DrawingManager *m_draw = nullptr;
     QUndoStack *m_undo = nullptr;            // 绘图撤销栈（最多 200 步）
-    QToolBar *m_drawBar = nullptr;           // 第一行：工具
-    QToolBar *m_drawBar2 = nullptr;          // 第二行：撤销/重做/颜色/存取
-    QToolButton *m_drawToggle = nullptr;     // 左上角「绘图」入口
+    QToolBar *m_drawBar = nullptr;           // 绘图工具条（一行）
+    QAction *m_drawToggle = nullptr;         // 标题栏「帮助」右边的「绘图」入口
     QActionGroup *m_drawGroup = nullptr;
     QAction *m_drawColorAction = nullptr;
     QAction *m_undoAction = nullptr;

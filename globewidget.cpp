@@ -975,6 +975,17 @@ void GlobeWidget::drawFeatures(QPainter &p)
                       Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         for (const QPolygonF &c : chunks)
             p.drawPolyline(c);
+
+        // 打断/裁剪点：白心黑边的小圆点。标记挂在要素上，要素删了自然就没了
+        for (const QPointF &mk : f.marks) {
+            QPointF sp;
+            if (!visiblePos(mk.x(), mk.y(), 0.0, &sp))
+                continue;
+            p.setPen(QPen(QColor(0, 0, 0, 200), 1.0));
+            p.setBrush(QColor(255, 255, 255));
+            p.drawEllipse(sp, 3.5, 3.5);
+            p.setBrush(Qt::NoBrush);
+        }
         if (any)
             ++m_featuresDrawn;
     }
@@ -2230,7 +2241,7 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
                     if (id <= 0)
                         emit drawMessage(tr("这里没有可打断的线段"));
                     else if (!m_draw->breakFeature(id, m_draw->nearestVertex(id, lat, lon)))
-                        emit drawMessage(tr("闭合图形和文本不能打断"));
+                        emit drawMessage(tr("这里断不开（文本不能打断，端点处也断不出两段）"));
                     else
                         emit drawMessage(tr("已在该点打断成两段"));
                 } else {

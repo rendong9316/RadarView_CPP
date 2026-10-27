@@ -38,6 +38,9 @@ struct DrawingFeature {
     QString text;                              // Text 专用
     double textSizePx = 16.0;                  // Text 专用（逻辑像素，渲染时随界面字号缩放）
     QString label;
+    // 打断/裁剪点（WGS84）：渲染成一个小圆点。挂在要素自己身上，
+    // 所以要素被删掉时标记跟着消失，不会留下孤零零的点。
+    QVector<QPointF> marks;
 
     bool isText() const { return kind == DrawKind::Text; }
     bool isClosed() const
@@ -94,7 +97,8 @@ public:
     void clear();
 
     // ---- 打断 / 裁剪 ----
-    // 只有开放图形（直线 / 自由曲线）能在内部顶点处断开；闭合图形和文本不行
+    // 开放图形（直线/曲线）断成两段；闭合图形（圆/多边形/矩形/填充）在断点处剪开，
+    // 变成一条首尾重合的开放曲线（CAD 里剪开一个环就是这个结果）。文本不能打断。
     bool canBreak(int id) const;
     // 离 (lat,lon) 最近的顶点下标（打断用），失败返回 -1
     int nearestVertex(int id, double lat, double lon) const;

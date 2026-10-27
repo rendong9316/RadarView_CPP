@@ -381,16 +381,6 @@ MainWindow::MainWindow(QWidget *parent)
         "QPushButton:hover { background-color: #1a8ae0; }"));
     m_backAllBtn->hide();
     connect(m_backAllBtn, &QPushButton::clicked, this, [this]() { isolateTrack(-1); });
-    m_amapOfflineBtn = new QPushButton(tr("\u25b2 高德离线球片"), m_globe);
-    m_amapOfflineBtn->setToolTip(tr("切换到「高德（离线 · 近岸 z1-z16）」底图源；\n"
-                                   "查找 tiles/amap_coast_z1_z16.mbtiles"));
-    m_amapOfflineBtn->setCursor(Qt::PointingHandCursor);
-    setThemedStyle(m_amapOfflineBtn, QStringLiteral(
-        "QPushButton { background-color: #107c10; color: #ffffff; border: none; border-radius: 2px;"
-        " padding: 4px 12px; font-size: 12px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #198c19; }"));
-    connect(m_amapOfflineBtn, &QPushButton::clicked, this, [this]() { setMapSource(QStringLiteral("amap_offline")); });
-
     m_globe->installEventFilter(this);
 
     // 管理面板 / 筛选 → 地图显示集合
@@ -627,11 +617,6 @@ void MainWindow::syncSourceActions()
             continue;
         QSignalBlocker blocker(it.action);
         it.action->setChecked(src == QLatin1String(it.id));
-    }
-    // 浮动快捷按钮的高亮状态要跟着当前源走，否则切到别的源后它一直亮着
-    if (m_amapOfflineBtn) {
-        m_amapOfflineBtn->setProperty("pressed", src == QLatin1String("amap_offline"));
-        m_amapOfflineBtn->update();
     }
 }
 
@@ -1050,8 +1035,6 @@ void MainWindow::applyAdsbVisibility()
 void MainWindow::placeBackAllButton()
 {
     m_backAllBtn->move((m_globe->width() - m_backAllBtn->width()) / 2, 8);
-    const int right = m_globe->width() - m_amapOfflineBtn->width() - 8;
-    m_amapOfflineBtn->move(right, 8);
 }
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *e)
@@ -1228,17 +1211,8 @@ void MainWindow::buildDrawToolBar()
             tr("拖拽划一条剪切线：裁掉中间那一段\n单击线段：在该点一分为二"));
     addTool(DrawTool::BoxSelect, tr("框选删除"), tr("拉框删除与框相交的图形（可撤销）"));
 
-    // ---- 第二行：撤销/重做、颜色、存取 ----
-    m_drawBar2 = new QToolBar(tr("绘图操作"), this);
-    m_drawBar2->setObjectName(QStringLiteral("drawToolBar2"));
-    m_drawBar2->setMovable(false);
-    m_drawBar2->setFloatable(false);
-    m_drawBar2->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_drawBar2->setIconSize(QSize(ui::sz(14), ui::sz(14)));
-    addToolBarBreak(Qt::TopToolBarArea);
-    addToolBar(Qt::TopToolBarArea, m_drawBar2);
-    setThemedStyle(m_drawBar2, barQss);
-
+    // ---- 同一行继续：撤销/重做、颜色、存取 ----
+    m_drawBar->addSeparator();
     // 撤销/重做：动作挂在主窗口上（工具栏收起时 Ctrl+Z / Ctrl+Y 照样有效）
     m_undoAction = new QAction(tr("撤销"), this);
     m_undoAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_Z));
@@ -1248,7 +1222,7 @@ void MainWindow::buildDrawToolBar()
     addAction(m_undoAction);
     connect(m_undoAction, &QAction::triggered, m_undo, &QUndoStack::undo);
     connect(m_undo, &QUndoStack::canUndoChanged, m_undoAction, &QAction::setEnabled);
-    m_drawBar2->addAction(m_undoAction);
+    m_drawBar->addAction(m_undoAction);
 
     m_redoAction = new QAction(tr("重做"), this);
     m_redoAction->setShortcuts(QList<QKeySequence>()
@@ -1260,10 +1234,10 @@ void MainWindow::buildDrawToolBar()
     addAction(m_redoAction);
     connect(m_redoAction, &QAction::triggered, m_undo, &QUndoStack::redo);
     connect(m_undo, &QUndoStack::canRedoChanged, m_redoAction, &QAction::setEnabled);
-    m_drawBar2->addAction(m_redoAction);
+    m_drawBar->addAction(m_redoAction);
 
-    m_drawBar2->addSeparator();
-    m_drawColorAction = m_drawBar2->addAction(tr("颜色"));
+    m_drawBar->addSeparator();
+    m_drawColorAction = m_drawBar->addAction(tr("颜色"));
     m_drawColorAction->setToolTip(tr("新建图形使用的颜色"));
     connect(m_drawColorAction, &QAction::triggered, this, [this]() {
         const QColor c = QColorDialog::getColor(m_drawColor, this, tr("绘图颜色"));
@@ -1275,14 +1249,14 @@ void MainWindow::buildDrawToolBar()
     });
     updateDrawColorIcon();
 
-    m_drawBar2->addSeparator();
-    QAction *save = m_drawBar2->addAction(tr("保存"));
+    m_drawBar->addSeparator();
+    QAction *save = m_drawBar->addAction(tr("保存"));
     save->setToolTip(tr("把当前所有绘图导出为 GeoJSON"));
     connect(save, &QAction::triggered, this, &MainWindow::saveDrawings);
-    QAction *load = m_drawBar2->addAction(tr("导入"));
+    QAction *load = m_drawBar->addAction(tr("导入"));
     load->setToolTip(tr("从 GeoJSON 导入绘图"));
     connect(load, &QAction::triggered, this, &MainWindow::importDrawings);
-    QAction *clr = m_drawBar2->addAction(tr("清空"));
+    QAction *clr = m_drawBar->addAction(tr("清空"));
     clr->setToolTip(tr("删除所有绘图（可撤销）"));
     connect(clr, &QAction::triggered, this, [this]() {
         if (m_draw->count() == 0)
@@ -1292,23 +1266,6 @@ void MainWindow::buildDrawToolBar()
             m_draw->clear();
     });
 
-    // 「绘图」入口：放在顶部标题栏（菜单栏）最右端，默认收起
-    m_drawToggle = new QToolButton(this);
-    m_drawToggle->setObjectName(QStringLiteral("drawToggleButton"));
-    m_drawToggle->setText(tr("绘图"));
-    m_drawToggle->setCheckable(true);
-    m_drawToggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    m_drawToggle->setToolTip(tr("显示 / 隐藏绘图工具栏"));
-    m_drawToggle->setCursor(Qt::PointingHandCursor);
-    setThemedStyle(m_drawToggle, QStringLiteral(
-        "QToolButton { color: var(--text-primary); background: transparent; border: none;"
-        " padding: 2px 10px; font-family: %1; font-size: 13px; }"
-        "QToolButton:hover { background: var(--button-hover); border-radius: 3px; }"
-        "QToolButton:checked { background: var(--accent-primary); color: #ffffff; border-radius: 3px; }")
-        .arg(ui::uiFamilies()));
-    menuBar()->setCornerWidget(m_drawToggle, Qt::TopRightCorner);
-    connect(m_drawToggle, &QToolButton::toggled, this, &MainWindow::setDrawingBarVisible);
-
     setDrawingBarVisible(false);
 }
 
@@ -1316,8 +1273,6 @@ void MainWindow::setDrawingBarVisible(bool on)
 {
     if (m_drawBar)
         m_drawBar->setVisible(on);
-    if (m_drawBar2)
-        m_drawBar2->setVisible(on);
     if (m_drawToggle) {
         QSignalBlocker block(m_drawToggle);
         m_drawToggle->setChecked(on);
@@ -1681,6 +1636,14 @@ void MainWindow::buildMenuBar()
         QMessageBox::about(this, tr("关于 RadarView"), tr("RadarView（Qt 版）\n雷达 / ADS-B 航迹导入、显示与回放"));
     });
     item(mHelp, tr("关于 Qt"), QKeySequence(), []() { QApplication::aboutQt(); });
+
+    // 「绘图」入口：紧挨「帮助」右边（标题栏最后一个位置），点一下展开/收起绘图工具条。
+    // 用普通 QAction 挂在菜单栏上（QMenuBar 不显示 QWidgetAction 里的控件），点它就是按钮。
+    m_drawToggle = mb->addAction(tr("绘图"));
+    m_drawToggle->setObjectName(QStringLiteral("drawToggleAction"));
+    m_drawToggle->setCheckable(true);
+    m_drawToggle->setToolTip(tr("显示 / 隐藏绘图工具栏"));
+    connect(m_drawToggle, &QAction::triggered, this, &MainWindow::setDrawingBarVisible);
 }
 
 QStackedWidget *MainWindow::buildEditorArea()
