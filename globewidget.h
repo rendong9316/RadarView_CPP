@@ -27,6 +27,7 @@ class NetTileSource;
 class FlagStore;
 class RulerState;
 class SpatialLasso;
+class DrawingManager;
 struct Track;
 
 // 3D 地球：WGS84 椭球 + 本地 mbtiles（Web 墨卡托 XYZ）瓦片
@@ -71,6 +72,9 @@ public:
     void setMapTools(FlagStore *flags, RulerState *ruler);
     // 空间套索（交互状态由主窗口持有；激活后左键逐点/自由手绘，双击或右键闭合）
     void setSpatialLasso(SpatialLasso *lasso);
+    // 贴地绘图（旗标距离圆、自由曲线等）：数据由主窗口的 DrawingManager 持有，
+    // 这里只负责把顶点投影到屏幕画到叠加层上（与标尺/套索同一套投影口径）
+    void setDrawingManager(DrawingManager *drawing) { m_draw = drawing; update(); }
     // 航迹标签（RadarView Ctrl+T）
     void setShowLabels(bool on);
     bool showLabels() const { return m_showLabels; }
@@ -86,6 +90,7 @@ public:
     int flagsDrawn() const { return m_flagsDrawn; }
     int rulerMarkersDrawn() const { return m_rulerMarkersDrawn; }
     int lassoVerticesDrawn() const { return m_lassoVerticesDrawn; }
+    int featuresDrawn() const { return m_featuresDrawn; }   // 叠加层实际画出的绘图要素数
     bool pointHover(int *track, int *point) const;
     // 航迹下标即将失效（删除 / 重新加载）时清掉悬停状态
     void resetInteraction();
@@ -164,6 +169,7 @@ private:
     void drawFlags(QPainter &p);
     void drawLabels(QPainter &p);
     void drawLasso(QPainter &p);
+    void drawFeatures(QPainter &p);
     void drawPointTip(QPainter &p);
     // 两点间沿大圆插值的屏幕折线（背面部分断开）
     QVector<QPolygonF> geodesicLines(double lat1, double lon1, double lat2, double lon2);
@@ -174,8 +180,10 @@ private:
     FlagStore *m_flags = nullptr;
     RulerState *m_ruler = nullptr;
     SpatialLasso *m_lasso = nullptr;
+    DrawingManager *m_draw = nullptr;
     bool m_showLabels = false;
     int m_labelsDrawn = 0, m_flagsDrawn = 0, m_rulerMarkersDrawn = 0, m_lassoVerticesDrawn = 0;
+    int m_featuresDrawn = 0;
     int m_tipTrack = -1, m_tipPoint = -1;
     QHash<QString, QPixmap> m_labelCache;          // 标签文字 + 颜色 -> 带描边的位图
     QPixmap m_flagIcon;

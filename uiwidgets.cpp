@@ -12,8 +12,8 @@
 #include <QStyleOption>
 #include <QVBoxLayout>
 #include <QWidgetAction>
-#include <QButtonGroup>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QGridLayout>
 
@@ -97,16 +97,6 @@ RadarImportDialog::RadarImportDialog(const QString &filePath, const QString &def
     body->addWidget(hint);
     if (!nameOnly) {
         body->addWidget(new QLabel(QStringLiteral("标准颜色（点击色块选择）"), this));
-        QGridLayout *palette = new QGridLayout;
-        bindSpacing(palette, 6);
-        QButtonGroup *group = new QButtonGroup(this);
-        group->setExclusive(true);
-        const char *colors[] = { "#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050",
-                                 "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0",
-                                 "#FFFFFF", "#D9D9D9", "#808080", "#000000", "#FF66CC",
-                                 "#FF9900", "#00FFFF", "#40E0D0", "#A0522D", "#B4A7D6" };
-        const char *names[] = { "深红", "红色", "金色", "黄色", "浅绿", "绿色", "天蓝", "蓝色", "深蓝", "紫色",
-                                "白色", "浅灰", "灰色", "黑色", "粉色", "橙色", "青色", "松石绿", "棕色", "淡紫" };
         QLabel *preview = new QLabel(this);
         preview->setObjectName(QStringLiteral("radarColorPreview"));
         preview->setAlignment(Qt::AlignCenter);
@@ -115,29 +105,14 @@ RadarImportDialog::RadarImportDialog(const QString &filePath, const QString &def
             preview->setText(QStringLiteral("━━  航迹颜色预览  %1").arg(m_color.name().toUpper()));
             preview->setStyleSheet(QStringLiteral("QLabel { background: #202020; color: %1; padding: 8px; border-radius: 4px; }").arg(m_color.name()));
         };
-        for (int i = 0; i < 20; ++i) {
-            const QColor color(QString::fromLatin1(colors[i]));
-            QPushButton *swatch = new QPushButton(this);
-            swatch->setObjectName(QStringLiteral("radarColor_%1").arg(i));
-            swatch->setAccessibleName(QString::fromUtf8(names[i]));
-            swatch->setToolTip(QStringLiteral("%1  %2").arg(QString::fromUtf8(names[i]), color.name().toUpper()));
-            swatch->setCheckable(true);
-            swatch->setCursor(Qt::PointingHandCursor);
-            bindSize(swatch, SizeKind::Fixed, 30, 28);
-            const QString mark = color.lightnessF() > 0.55 ? QStringLiteral("#111111") : QStringLiteral("#ffffff");
-            setThemedStyle(swatch, QStringLiteral("QPushButton { background: %1; color: %2; border: 2px solid #888888; border-radius: 3px; padding: 0; }"
-                                                "QPushButton:checked { border: 3px solid var(--accent-primary); }"
-                                                "QPushButton:hover { border-color: var(--text-primary); }").arg(color.name(), mark));
-            group->addButton(swatch);
-            palette->addWidget(swatch, i / 10, i % 10);
-            connect(swatch, &QPushButton::toggled, swatch, [swatch](bool on) { swatch->setText(on ? QStringLiteral("✓") : QString()); });
-            connect(swatch, &QPushButton::clicked, this, [this, color, updatePreview]() { m_color = color; updatePreview(); });
-            if (color == m_color)
-                swatch->setChecked(true);
-    }
-    body->addLayout(palette);
-    updatePreview();
-    body->addWidget(preview);
+        ColorSwatchGrid *palette = new ColorSwatchGrid(m_color, this);
+        connect(palette, &ColorSwatchGrid::colorChanged, this, [this, updatePreview](const QColor &c) {
+            m_color = c;
+            updatePreview();
+        });
+        body->addWidget(palette);
+        updatePreview();
+        body->addWidget(preview);
     }
     QLabel *error = new QLabel(this);
     error->setObjectName(QStringLiteral("radarImportError"));
@@ -171,6 +146,163 @@ RadarImportDialog::RadarImportDialog(const QString &filePath, const QString &def
 }
 
 QString RadarImportDialog::trackName() const { return m_name->text().trimmed(); }
+
+// ---------------------------------------------------------------
+// 标准色盘：雷达导入弹窗与「绘制距离圆」共用（原来是 RadarImportDialog 里内联的一段）
+// ---------------------------------------------------------------
+namespace {
+
+const char *const kSwatchColors[] = { "#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050",
+                                      "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0",
+                                      "#FFFFFF", "#D9D9D9", "#808080", "#000000", "#FF66CC",
+                                      "#FF9900", "#00FFFF", "#40E0D0", "#A0522D", "#B4A7D6" };
+const char *const kSwatchNames[] = { "深红", "红色", "金色", "黄色", "浅绿", "绿色", "天蓝", "蓝色", "深蓝", "紫色",
+                                     "白色", "浅灰", "灰色", "黑色", "粉色", "橙色", "青色", "松石绿", "棕色", "淡紫" };
+const int kSwatchCount = 20;
+
+} // namespace
+
+ColorSwatchGrid::ColorSwatchGrid(const QColor &initial, QWidget *parent, const QString &objectPrefix)
+    : QWidget(parent), m_color(initial), m_prefix(objectPrefix)
+{
+    QGridLayout *grid = new QGridLayout(this);
+    grid->setContentsMargins(0, 0, 0, 0);
+    bindSpacing(grid, 6);
+    m_swatches.reserve(kSwatchCount);
+    m_colors.reserve(kSwatchCount);
+    for (int i = 0; i < kSwatchCount; ++i) {
+        const QColor color(QString::fromLatin1(kSwatchColors[i]));
+        QPushButton *swatch = new QPushButton(this);
+        swatch->setObjectName(QStringLiteral("%1_%2").arg(m_prefix).arg(i));
+        swatch->setAccessibleName(QString::fromUtf8(kSwatchNames[i]));
+        swatch->setToolTip(QStringLiteral("%1  %2").arg(QString::fromUtf8(kSwatchNames[i]), color.name().toUpper()));
+        swatch->setCheckable(true);
+        swatch->setCursor(Qt::PointingHandCursor);
+        bindSize(swatch, SizeKind::Fixed, 30, 28);
+        const QString mark = color.lightnessF() > 0.55 ? QStringLiteral("#111111") : QStringLiteral("#ffffff");
+        setThemedStyle(swatch, QStringLiteral("QPushButton { background: %1; color: %2; border: 2px solid #888888; border-radius: 3px; padding: 0; }"
+                                              "QPushButton:checked { border: 3px solid var(--accent-primary); }"
+                                              "QPushButton:hover { border-color: var(--text-primary); }").arg(color.name(), mark));
+        grid->addWidget(swatch, i / 10, i % 10);
+        connect(swatch, &QPushButton::toggled, swatch, [swatch](bool on) { swatch->setText(on ? QStringLiteral("✓") : QString()); });
+        connect(swatch, &QPushButton::clicked, this, [this, color]() { setColor(color); });
+        m_swatches.append(swatch);
+        m_colors.append(color);
+    }
+    checkFor(m_color);
+}
+
+void ColorSwatchGrid::checkFor(const QColor &c)
+{
+    for (int i = 0; i < m_swatches.size(); ++i)
+        m_swatches[i]->setChecked(m_colors[i] == c);
+}
+
+void ColorSwatchGrid::setColor(const QColor &c)
+{
+    if (!c.isValid())
+        return;
+    const bool diff = (m_color != c);
+    m_color = c;
+    checkFor(c);          // 点已选中的色块时 Qt 先把它取消勾选，这里无条件补回来
+    if (diff)
+        emit colorChanged(m_color);
+}
+
+// ---------------------------------------------------------------
+// 绘制距离圆（旗标右键）：版式沿用 RadarImportDialog，只是把名称换成半径
+// ---------------------------------------------------------------
+DistanceCircleDialog::DistanceCircleDialog(const QString &flagLabel, double lat, double lon,
+                                           const QColor &defaultColor, QWidget *parent)
+    : QDialog(parent), m_color(defaultColor)
+{
+    setObjectName(QStringLiteral("distanceCircleDialog"));
+    setWindowTitle(QStringLiteral("绘制距离圆"));
+    setModal(true);
+    setMinimumWidth(sz(420));
+    QVBoxLayout *body = new QVBoxLayout(this);
+    bindMargins(body, 20, 18, 20, 18);
+    bindSpacing(body, 12);
+
+    QLabel *where = new QLabel(QStringLiteral("圆心：%1（%2°, %3°）")
+                                   .arg(flagLabel.isEmpty() ? QStringLiteral("旗标") : flagLabel)
+                                   .arg(QString::number(lat, 'f', 4))
+                                   .arg(QString::number(lon, 'f', 4)), this);
+    where->setObjectName(QStringLiteral("circleCenter"));
+    where->setWordWrap(true);
+    body->addWidget(where);
+
+    body->addWidget(new QLabel(QStringLiteral("半径（公里）"), this));
+    m_radius = new QDoubleSpinBox(this);
+    m_radius->setObjectName(QStringLiteral("circleRadius"));
+    m_radius->setDecimals(1);
+    m_radius->setRange(0.1, 20000.0);
+    m_radius->setSingleStep(10.0);
+    m_radius->setValue(100.0);
+    m_radius->setSuffix(QStringLiteral(" km"));
+    m_radius->setToolTip(QStringLiteral("以旗标为圆心、按测地距离量取的半径；上限 20000 km"));
+    body->addWidget(m_radius);
+
+    body->addWidget(new QLabel(QStringLiteral("颜色（点击色块选择）"), this));
+    ColorSwatchGrid *palette = new ColorSwatchGrid(m_color, this);
+    body->addWidget(palette);
+
+    QLabel *preview = new QLabel(this);
+    preview->setObjectName(QStringLiteral("circlePreview"));
+    preview->setAlignment(Qt::AlignCenter);
+    bindSize(preview, SizeKind::MinHeight, 38);
+    auto updatePreview = [this, preview]() {
+        preview->setText(QStringLiteral("○  距离圆 %1 km  %2")
+                             .arg(m_radius->value(), 0, 'f', 1)
+                             .arg(m_color.name().toUpper()));
+        preview->setStyleSheet(QStringLiteral("QLabel { background: #202020; color: %1; padding: 8px; border-radius: 4px; }")
+                                   .arg(m_color.name()));
+    };
+    connect(m_radius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [updatePreview](double) { updatePreview(); });
+    connect(palette, &ColorSwatchGrid::colorChanged, this, [this, updatePreview](const QColor &c) {
+        m_color = c;
+        updatePreview();
+    });
+    updatePreview();
+    body->addWidget(preview);
+
+    QLabel *error = new QLabel(this);
+    error->setObjectName(QStringLiteral("circleError"));
+    error->setWordWrap(true);
+    body->addWidget(error);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("绘制"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    buttons->button(QDialogButtonBox::Ok)->setDefault(true);
+    body->addWidget(buttons);
+
+    auto validate = [this, error, buttons]() {
+        const double km = radiusKm();
+        const bool ok = km >= 0.1 && km <= 20000.0;
+        error->setText(ok ? QString() : QStringLiteral("半径需在 0.1 ~ 20000 公里之间。"));
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+    };
+    connect(m_radius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [validate](double) { validate(); });
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    setThemedStyle(this, QStringLiteral("QDialog { background: var(--bg-primary); }"
+                                        "QLabel { color: var(--text-primary); }"
+                                        "#circleError { color: var(--error); }"
+                                        "QDoubleSpinBox { background: var(--bg-secondary); color: var(--text-primary); padding: 8px;"
+                                        " border: 1px solid var(--border-primary); border-radius: 4px; }"
+                                        "QDialogButtonBox QPushButton { padding: 8px 18px; min-height: 24px; background: var(--bg-tertiary);"
+                                        " color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 4px; }"
+                                        "QDialogButtonBox QPushButton:default { background: var(--accent-primary); color: white; }"
+                                        "QDialogButtonBox QPushButton:disabled { color: var(--text-muted); }"));
+    validate();
+    m_radius->setFocus();
+    m_radius->selectAll();
+}
+
+double DistanceCircleDialog::radiusKm() const { return m_radius->value(); }
 
 bool confirm(QWidget *parent, const QString &message, const QString &title, bool danger,
              const QString &confirmText, const QString &cancelText)

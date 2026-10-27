@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QPushButton>
 #include <QToolButton>
+#include <QVector>
 #include <QWidget>
 #include <functional>
 
@@ -13,6 +14,7 @@
 
 class QLabel;
 class QLineEdit;
+class QDoubleSpinBox;
 
 // 通用小部件，样式逐项对应 RadarView 的 ConfirmDialog / HelpTip / UndoToast / 地图右键菜单
 namespace ui {
@@ -29,6 +31,44 @@ public:
 private:
     QLineEdit *m_name = nullptr;
     QColor m_color;
+};
+
+// 标准色盘（20 色）：雷达导入弹窗与「绘制距离圆」弹窗共用同一份实现，避免两处各写一遍。
+// 色块 objectName 默认 radarColor_0..19 —— 自检按这个名字点色块，改名前先改自检。
+class ColorSwatchGrid : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit ColorSwatchGrid(const QColor &initial, QWidget *parent = nullptr,
+                             const QString &objectPrefix = QStringLiteral("radarColor"));
+    QColor color() const { return m_color; }
+    void setColor(const QColor &c);      // 颜色不在色盘里时所有色块都不选中
+
+signals:
+    void colorChanged(const QColor &c);
+
+private:
+    void checkFor(const QColor &c);
+    QColor m_color;
+    QString m_prefix;
+    QVector<QPushButton *> m_swatches;
+    QVector<QColor> m_colors;
+};
+
+// 旗标右键「绘制距离圆」：圆心信息 + 半径（公里）+ 标准色盘，
+// 版式与 RadarImportDialog 一致（标题/说明/输入/色盘/预览/错误行/按钮）。
+class DistanceCircleDialog : public QDialog
+{
+    Q_OBJECT
+public:
+    DistanceCircleDialog(const QString &flagLabel, double lat, double lon, const QColor &defaultColor,
+                         QWidget *parent = nullptr);
+    double radiusKm() const;
+    QColor color() const { return m_color; }
+
+private:
+    QColor m_color;
+    QDoubleSpinBox *m_radius = nullptr;
 };
 
 // 自检时自动确认，不弹对话框

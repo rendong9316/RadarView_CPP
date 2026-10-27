@@ -1,7 +1,9 @@
 #ifndef GEOCALC_H
 #define GEOCALC_H
 
+#include <QPointF>
 #include <QString>
+#include <QVector>
 
 // 测距和方位，逐条对应 RadarView src/composables/useGeoCalc.ts
 namespace geocalc {
@@ -14,6 +16,16 @@ double vincentyKm(double lat1, double lng1, double lat2, double lng2);
 double initialBearing(double lat1, double lng1, double lat2, double lng2);
 // N / NE / E / SE / S / SW / W / NW
 QString bearingToCardinal(double deg);
+
+// 正算（Vincenty direct）：从 (lat1,lng1) 沿方位角 bearingDeg 走 distKm 到达的点。
+// 与 vincentyKm 同口径（WGS-84 椭球），两者互为反算；不收敛时退回球面公式。
+bool destination(double lat1, double lng1, double bearingDeg, double distKm,
+                 double *lat2, double *lng2);
+
+// 测地线圆：以 (lat,lon) 为圆心、radiusKm 为测地距离的一圈点，x=经度 y=纬度（WGS84 度）。
+// 每个点都是「从圆心沿该方位角走 radiusKm」的正算结果，所以圆在椭球上是等距圆，
+// 不是经纬度平面上的椭圆。首尾不重复；segments 建议 180（每 2° 一个点）。
+QVector<QPointF> geodesicCircle(double lat, double lon, double radiusKm, int segments = 180);
 
 } // namespace geocalc
 

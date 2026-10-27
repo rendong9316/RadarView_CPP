@@ -85,4 +85,95 @@ QString bearingToCardinal(double deg)
     return QLatin1String(kCardinals[(idx + 8) % 8]);
 }
 
+bool destination(double lat1, double lng1, double bearingDeg, double distKm,
+                 double *lat2, double *lng2)
+{
+    if (!lat2 || !lng2 || !std::isfinite(lat1) || !std::isfinite(lng1)
+        || !std::isfinite(bearingDeg) || !std::isfinite(distKm))
+        return false;
+    if (distKm <= 0.0) {          // 半径为 0：圆退化成点
+        *lat2 = lat1;
+        *lng2 = lng1;
+        return true;
+    }
+
+    const double alpha1 = toRad(bearingDeg);
+    const double sinAlpha1 = std::sin(alpha1), cosAlpha1 = std::cos(alpha1);
+    const double s = distKm * 1000.0;
+
+    // Vincenty 正算（与上面反算同一套公式）
+    const double tanU1 = (1 - kF) * std::tan(toRad(lat1));
+    const double cosU1 = 1.0 / std::sqrt(1 + tanU1 * tanU1);
+    const double sinU1 = tanU1 * cosU1;
+    const double sigma1 = std::atan2(tanU1, cosAlpha1);
+    const double sinAlpha = cosU1 * sinAlpha1;
+    const double cosSqAlpha = 1 - sinAlpha * sinAlpha;
+    const double uSq = cosSqAlpha * (kA * kA - kB * kB) / (kB * kB);
+    const double A = 1 + uSq / 16384.0 * (4096.0 + uSq * (-768.0 + uSq * (320.0 - 175.0 * uSq)));
+    const double B = uSq / 1024.0 * (256.0 + uSq * (-128.0 + uSq * (74.0 - 47.0 * uSq)));
+
+    double sigma = s / (kB * A);
+    double sinSigma = 0, cosSigma = 0, cos2SigmaM = 0;
+    for (int i = 0; i < 100; ++i) {
+        cos2SigmaM = std::cos(2 * sigma1 + sigma);
+        sinSigma = std::sin(sigma);
+        cosSigma = std::cos(sigma);
+        const double deltaSigma = B * sinSigma
+            * (cos2SigmaM + B / 4.0
+               * (cosSigma * (-1 + 2 * cos2SigmaM * cos2SigmaM)
+                  - B / 6.0 * cos2SigmaM * (-3 + 4 * sinSigma * sinSigma)
+                        * (-3 + 4 * cos2SigmaM * cos2SigmaM)));
+        const double next = s / (kB * A) + deltaSigma;
+        const bool done = std::fabs(next - sigma) < 1e-12;
+        sigma = next;
+        if (done)
+            break;
+    }
+
+    const double tmp = sinU1 * sinSigma - cosU1 * cosSigma * cosAlpha1;
+    const double phi2 = std::atan2(sinU1 * cosSigma + cosU1 * sinSigma * cosAlpha1,
+                                   (1 - kF) * std::sqrt(sinAlpha * sinAlpha + tmp * tmp));
+    const double lambda = std::atan2(sinSigma * sinAlpha1, cosU1 * cosSigma - sinU1 * sinSigma * cosAlpha1);
+    const double C = kF / 16.0 * cosSqAlpha * (4 + kF * (4 - 3 * cosSqAlpha));
+    const double L = lambda - (1 - C) * kF * sinAlpha
+        * (sigma + C * sinSigma * (cos2SigmaM + C * cosSigma * (-1 + 2 * cos2SigmaM * cos2SigmaM)));
+
+    double lat = toDeg(phi2);
+    double lon = lng1 + toDeg(L);
+    if (!std::isfinite(lat) || !std::isfinite(lon)) {
+        // 球面后备（半径接近半周长时不收敛）：误差 < 0.5%，总比画出 NaN 好
+        const double d = distKm / 6371.0;
+        const double phi1 = toRad(lat1);
+        const double p2 = std::asin(qBound(-1.0, std::sin(phi1) * std::cos(d)
+                                                    + std::cos(phi1) * std::sin(d) * cosAlpha1, 1.0));
+        lat = toDeg(p2);
+        lon = lng1 + toDeg(std::atan2(std::sin(alpha1) * std::sin(d) * std::cos(phi1),
+                                      std::cos(d) - std::sin(phi1) * std::sin(p2)));
+    }
+    while (lon > 180.0)  lon -= 360.0;
+    while (lon < -180.0) lon += 360.0;
+    *lat2 = lat;
+    *lng2 = lon;
+    return true;
+}
+
+QVector<QPointF> geodesicCircle(double lat, double lon, double radiusKm, int segments)
+{
+    QVector<QPointF> out;
+    if (!std::isfinite(lat) || !std::isfinite(lon) || !std::isfinite(radiusKm) || radiusKm <= 0.0)
+        return out;
+    if (std::fabs(lat) >= 90.0)          // 极点上「方位角」无定义，圆退化成纬圈
+        lat = lat > 0 ? 89.9999 : -89.9999;
+    segments = qBound(8, segments, 1024);
+    const double r = qMin(radiusKm, 20000.0);   // 超过半个周长会自交，钳一下
+    out.reserve(segments);
+    for (int i = 0; i < segments; ++i) {
+        double plat = lat, plon = lon;
+        if (!destination(lat, lon, 360.0 * i / segments, r, &plat, &plon))
+            return QVector<QPointF>();
+        out.append(QPointF(plon, plat));       // x = 经度, y = 纬度
+    }
+    return out;
+}
+
 } // namespace geocalc

@@ -34,6 +34,7 @@
 
 #include "apppaths.h"
 #include "appstatusbar.h"
+#include "drawingmanager.h"
 #include "globewidget.h"
 #include "managepanel.h"
 #include "maptools.h"
@@ -289,6 +290,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_lasso = new SpatialLasso(this);
     m_globe->setMapTools(m_flags, m_ruler);
     m_globe->setSpatialLasso(m_lasso);
+    m_draw = new DrawingManager(this);
+    m_globe->setDrawingManager(m_draw);
+    connect(m_draw, &DrawingManager::changed, m_globe, [this]() { m_globe->update(); });
     m_manage = new ManageState(&m_store, this);
 
     // 侧栏面板（顺序同 PanelId）
@@ -1124,6 +1128,7 @@ void MainWindow::onFlagContextMenu(const QString &flagId, const QPoint &globalPo
                 && !name.trimmed().isEmpty())
             m_flags->renameFlag(flagId, name);
     });
+    menu.addItem(LucideIcon::Circle, QStringLiteral("绘制距离圆"), [this, flagId]() { drawDistanceCircle(flagId); });
     menu.addItem(LucideIcon::Trash2, QStringLiteral("删除"), [this, flagId]() {
         const int k = m_flags->indexOf(flagId);
         if (k >= 0 && ui::confirm(this, QStringLiteral("确定要删除旗标「%1」吗？").arg(m_flags->flags()[k].label),
@@ -1131,6 +1136,27 @@ void MainWindow::onFlagContextMenu(const QString &flagId, const QPoint &globalPo
             m_flags->removeFlag(flagId);
     }, true);
     menu.exec(globalPos);
+}
+
+// 旗标右键「绘制距离圆」：弹窗（版式与标准色盘复用导入弹窗那套）→ 以旗标为圆心生成测地圆。
+// 圆的顶点由 geocalc::geodesicCircle 按 Vincenty 正算逐方位角求得，是椭球上的等距圆。
+void MainWindow::drawDistanceCircle(const QString &flagId)
+{
+    const int i = m_flags->indexOf(flagId);
+    if (i < 0)
+        return;
+    const MapFlag f = m_flags->flags().at(i);
+    double radiusKm = 100.0;
+    QColor color(QStringLiteral("#FFC000"));
+    if (!app::testMode()) {
+        ui::DistanceCircleDialog dlg(f.label, f.lat, f.lon, color, this);
+        if (dlg.exec() != QDialog::Accepted)
+            return;
+        radiusKm = dlg.radiusKm();
+        color = dlg.color();
+    }
+    if (m_draw->addCircle(f.lat, f.lon, radiusKm, color, f.label) <= 0)
+        QMessageBox::warning(this, tr("绘制距离圆"), tr("半径无效，未能生成距离圆。"));
 }
 
 void MainWindow::syncReplayToLayer()

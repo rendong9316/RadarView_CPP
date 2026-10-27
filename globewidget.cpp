@@ -4,6 +4,7 @@
 #include "track.h"
 #include "maptools.h"
 #include "spatiallasso.h"
+#include "drawingmanager.h"
 #include "geo.h"
 #include "theme.h"
 
@@ -825,6 +826,39 @@ void GlobeWidget::drawLasso(QPainter &p)
     p.setBrush(Qt::NoBrush);
 }
 
+// 贴地绘图：DrawingManager 里的顶点都已经按大圆加密（圆是 Vincenty 正算点环，
+// 折线每段用 slerp 插值），这里只做「WGS84 -> 屏幕」投影 + 折线，和标尺/套索同一套口径。
+// 背面顶点投影失败时断开折线，否则会画出一条横穿地球的假线。
+void GlobeWidget::drawFeatures(QPainter &p)
+{
+    m_featuresDrawn = 0;
+    if (!m_draw || m_draw->features().isEmpty())
+        return;
+    p.setBrush(Qt::NoBrush);
+    for (const DrawingFeature &f : m_draw->features()) {
+        if (f.pts.size() < 2)
+            continue;
+        p.setPen(QPen(f.color, qMax(1.0, f.widthPx), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPolygonF cur;
+        bool any = false;
+        for (const QPointF &pt : f.pts) {        // x = 经度, y = 纬度
+            QPointF sp;
+            if (visiblePos(pt.x(), pt.y(), 0.0, &sp)) {
+                cur << sp;
+                any = true;
+            } else if (!cur.isEmpty()) {
+                if (cur.size() > 1)
+                    p.drawPolyline(cur);
+                cur.clear();
+            }
+        }
+        if (cur.size() > 1)
+            p.drawPolyline(cur);
+        if (any)
+            ++m_featuresDrawn;
+    }
+}
+
 void GlobeWidget::drawFlags(QPainter &p)
 {
     m_flagsDrawn = 0;
@@ -934,11 +968,13 @@ void GlobeWidget::drawPointTip(QPainter &p)
 void GlobeWidget::paintOverlay(QPainter &p)
 {
     m_labelsDrawn = m_flagsDrawn = m_rulerMarkersDrawn = m_lassoVerticesDrawn = 0;
+    m_featuresDrawn = 0;
     if (!m_overlayWanted)
         return;
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     drawLabels(p);
+    drawFeatures(p);
     drawRuler(p);
     drawLasso(p);
     drawFlags(p);
@@ -1421,6 +1457,7 @@ void GlobeWidget::paintGL()
                          || (m_flags && !m_flags->flags().isEmpty())
                          || (m_ruler && m_ruler->isActive() && !m_ruler->waypoints().isEmpty())
                          || (m_lasso && !m_lasso->vertices().isEmpty())
+                         || (m_draw && !m_draw->features().isEmpty())
                          || m_tipTrack >= 0;
     if (overlay || m_overlayWanted) {
         m_overlayWanted = overlay;

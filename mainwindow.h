@@ -27,6 +27,7 @@ class ManagePanel;
 class FlagStore;
 class RulerState;
 class SpatialLasso;
+class DrawingManager;
 class DbSaveJob;
 namespace ui { class UndoToast; }
 
@@ -113,6 +114,7 @@ public:
     FlagStore *flagStore() const { return m_flags; }
     RulerState *ruler() const { return m_ruler; }
     SpatialLasso *spatialLasso() const { return m_lasso; }
+    DrawingManager *drawing() const { return m_draw; }
     ui::UndoToast *undoToast() const { return m_undoToast; }
     SettingsPanel *settingsPanel() const { return m_settingsPanel; }
     void toggleLabels();
@@ -138,6 +140,7 @@ private slots:
 
 private:
     void buildMenuBar();
+    void drawDistanceCircle(const QString &flagId);   // 旗标右键「绘制距离圆」
     QStackedWidget *buildEditorArea();
     void loadPersisted();
     void startNextSave();
@@ -171,6 +174,7 @@ private:
     FlagStore *m_flags = nullptr;
     RulerState *m_ruler = nullptr;
     SpatialLasso *m_lasso = nullptr;
+    DrawingManager *m_draw = nullptr;
     FlagPanel *m_flagPanel = nullptr;
     SettingsPanel *m_settingsPanel = nullptr;
     ui::UndoToast *m_undoToast = nullptr;

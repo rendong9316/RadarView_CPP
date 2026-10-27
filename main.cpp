@@ -20,6 +20,7 @@
 #include "trackpointdialog.h"
 #include "appstatusbar.h"
 #include "apppaths.h"
+#include "drawingmanager.h"
 #include "uiwidgets.h"
 #include "geocalc.h"
 #include "geo.h"
@@ -270,6 +271,65 @@ void runSelfTest(MainWindow *w)
         }
     }
 
+    // ---- 测地圆 / 绘图数据 / 距离圆弹窗（纯逻辑，不依赖 GL）----
+    {
+        // 正算与反算必须互逆：沿 45° 走 100 km，反算回来还是 100 km / 45°
+        double lat2 = 0.0, lon2 = 0.0;
+        const bool ok = geocalc::destination(30.0, 120.0, 45.0, 100.0, &lat2, &lon2);
+        const double back = geocalc::vincentyKm(30.0, 120.0, lat2, lon2);
+        // 反算得到的方位是「回程起始方位」= 去程终点方位 + 180°，与去程方位差一个子午线
+        // 收敛角（30°N 走 100 km 约 0.15°），所以只能断言到 1° 量级，不能拿 45° 直接比
+        const double rev = geocalc::initialBearing(lat2, lon2, 30.0, 120.0);
+        check(ok && std::fabs(back - 100.0) < 0.01 && std::fabs(rev - 225.0) < 1.0
+              && lat2 > 30.0 && lon2 > 120.0,
+              QStringLiteral("测地正算：100 km / 45° → (%1, %2)，反算 %3 km / 回程 %4°")
+                  .arg(lat2, 0, 'f', 4).arg(lon2, 0, 'f', 4).arg(back, 0, 'f', 3).arg(rev, 0, 'f', 3));
+
+        // 等距圆：一圈点到圆心的测地距离都等于半径（不是经纬度平面上的椭圆）
+        const QVector<QPointF> ring = geocalc::geodesicCircle(31.2, 121.5, 250.0, 180);
+        double maxErr = 0.0;
+        for (const QPointF &p : ring)
+            maxErr = qMax(maxErr, std::fabs(geocalc::vincentyKm(31.2, 121.5, p.y(), p.x()) - 250.0));
+        check(ring.size() == 180 && maxErr < 0.01,
+              QStringLiteral("测地圆：%1 点，半径误差 %2 m").arg(ring.size()).arg(maxErr * 1000.0, 0, 'f', 2));
+
+        DrawingManager dm;
+        const int cid = dm.addCircle(31.2, 121.5, 250.0, QColor("#0070C0"), QStringLiteral("旗标 1"));
+        const DrawingFeature *cf = dm.feature(cid);
+        check(cid > 0 && dm.count() == 1 && cf && cf->pts.size() == 181 && cf->pts.first() == cf->pts.last()
+              && cf->kind == DrawKind::Circle && cf->widthPx == 3.0,
+              QStringLiteral("距离圆要素：%1 个顶点，首尾闭合").arg(cf ? cf->pts.size() : -1));
+
+        // GeoJSON 往返：颜色、半径、圆心、顶点数都不能丢
+        DrawingManager dm2;
+        QString err;
+        const bool loaded = dm2.fromJson(dm.toJson(), &err);
+        const DrawingFeature *cf2 = loaded ? dm2.feature(cid) : nullptr;
+        check(loaded && dm2.count() == 1 && cf2 && cf2->pts.size() == 181
+              && cf2->color == QColor("#0070C0") && std::fabs(cf2->radiusKm - 250.0) < 1e-6
+              && std::fabs(cf2->centerLat - 31.2) < 1e-6 && cf2->kind == DrawKind::Circle,
+              QStringLiteral("GeoJSON 往返：%1 个要素 %2").arg(dm2.count()).arg(err));
+        check(dm2.removeFeature(cid) && dm2.count() == 0, QStringLiteral("删除绘图要素"));
+
+        // 距离圆弹窗：版式与导入弹窗一致，复用同一套标准色盘
+        ui::DistanceCircleDialog dlg(QStringLiteral("旗标 1"), 31.2, 121.5, QColor("#FFC000"), w);
+        QDoubleSpinBox *radius = dlg.findChild<QDoubleSpinBox *>(QStringLiteral("circleRadius"));
+        QDialogButtonBox *buttons = dlg.findChild<QDialogButtonBox *>();
+        QPushButton *blue = dlg.findChild<QPushButton *>(QStringLiteral("radarColor_7"));
+        check(radius && buttons && blue, QStringLiteral("距离圆弹窗包含半径、标准色盘和确认控件"));
+        if (radius && buttons && blue) {
+            radius->setValue(250.0);
+            blue->click();
+            check(dlg.radiusKm() == 250.0 && dlg.color() == QColor("#0070C0")
+                  && buttons->button(QDialogButtonBox::Ok)->isEnabled(),
+                  QStringLiteral("距离圆弹窗：半径 %1 km、颜色 %2").arg(dlg.radiusKm()).arg(dlg.color().name().toUpper()));
+            radius->setMinimum(0.0);
+            radius->setValue(0.0);
+            check(!buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("距离圆半径 0 时禁止提交"));
+            dlg.reject();
+        }
+    }
+
     // ---- 空间套索几何自检（纯函数，不依赖 GL）----
     {
         QVector<LassoVertex> poly;
@@ -509,7 +569,16 @@ void runSelfTest(MainWindow *w)
                     // 清理测试多边形，避免写进用户设置
                     w->filterPanel()->clickSpatialClear();
                     lasso->clearAll();
-                    finish();
+                    // 贴地圆：加到视野中心，叠加层必须画出来（背面顶点会被断开，这里整圈都可见）
+                    const int cid = w->drawing()->addCircle(30.0, 110.0, 800.0, QColor("#FFC000"),
+                                                            QStringLiteral("自检"));
+                    check(cid > 0, QStringLiteral("距离圆加入绘图管理器"));
+                    (*waitFrames)(2, [=]() {
+                        check(g->featuresDrawn() == 1,
+                              QStringLiteral("地图上画出距离圆 %1 个").arg(g->featuresDrawn()));
+                        w->drawing()->clear();
+                        finish();
+                    });
                 });
             });
         });

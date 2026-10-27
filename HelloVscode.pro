@@ -32,6 +32,7 @@ SOURCES += \
     managepanel.cpp \
     sidepanels.cpp \
     spatiallasso.cpp \
+    drawingmanager.cpp \
     settingspanel.cpp
 
 HEADERS += \
@@ -59,6 +60,7 @@ HEADERS += \
     managepanel.h \
     sidepanels.h \
     spatiallasso.h \
+    drawingmanager.h \
     settingspanel.h
 
 # Windows 用 Qt5Core 内置并导出的 zlib；其他平台链接系统 zlib
