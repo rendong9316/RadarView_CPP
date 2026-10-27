@@ -146,15 +146,22 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
         });
     }
 
-    // ---- 线宽调节（0.5–8，默认 2）----
+    // 只升级一次旧默认值，之后保留用户自己选择的线宽。
+    if (!s.value(QStringLiteral("display.thicker_lines_v1"), false).toBool()) {
+        const double width = s.value(QStringLiteral("display.line_width"), 3.0).toDouble();
+        s.setValue(QStringLiteral("display.line_width"), qMax(3.0, width));
+        s.setValue(QStringLiteral("display.thicker_lines_v1"), true);
+    }
+    // ---- 线宽调节（0.5–8，默认 3）----
     g = addGroup(main, int(LucideIcon::GripHorizontal), QStringLiteral("线宽调节"),
                  QStringLiteral("设置航迹线的像素宽度，范围 0.5-8 px。拖动滑块即时生效。"));
-    addSlider(g, QStringLiteral("线宽"), themeColor("text-primary"), 0.5, 8.0, 0.5,
-              s.value(QStringLiteral("display.line_width"), 2.0).toDouble(), QStringLiteral("px"),
+    m_lineWidth = addSlider(g, QStringLiteral("线宽"), themeColor("text-primary"), 0.5, 8.0, 0.5,
+              s.value(QStringLiteral("display.line_width"), 3.0).toDouble(), QStringLiteral("px"),
               [this, layer](double v) {
                   app::settings().setValue(QStringLiteral("display.line_width"), v);
                   if (layer)
                       layer->setLineWidthPx(float(v));
+                  emit lineWidthValueChanged(v);
                   if (m_host.globe)
                       m_host.globe->update();
               });
@@ -177,12 +184,13 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     // ---- 点迹圆球大小（0.2–5.0，基准 7px）----
     g = addGroup(main, int(LucideIcon::Dot), QStringLiteral("点迹显示"),
                  QStringLiteral("右键航迹「显示所有对应点迹」时每个采样点圆球的大小，范围 0.2-5.0 倍。"));
-    addSlider(g, QStringLiteral("圆球大小"), themeColor("accent-primary"), 0.2, 5.0, 0.1,
+    m_pointScale = addSlider(g, QStringLiteral("圆球大小"), themeColor("accent-primary"), 0.2, 5.0, 0.1,
               s.value(QStringLiteral("display.track_point_dot_scale"), 1.0).toDouble(), QString(),
               [this, layer](double v) {
                   app::settings().setValue(QStringLiteral("display.track_point_dot_scale"), v);
                   if (layer)
                       layer->setPointDotPx(float(7.0 * v));
+                  emit pointScaleValueChanged(v);
                   if (m_host.globe)
                       m_host.globe->update();
               });
@@ -203,9 +211,10 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
                  QStringLiteral("设置应用界面文字的基础字号，范围 10-50 px。侧栏、菜单栏、状态栏、地图标签等所有文本及其容器同步缩放。"));
     m_font = addSlider(g, QStringLiteral("应用字号"), themeColor("text-primary"), ui::kFontMinPx, ui::kFontMaxPx, 1,
                        UiScale::instance()->basePx(), QStringLiteral("px"),
-                       [](double v) {
+                       [this](double v) {
                            UiScale::instance()->setBasePx(int(v));
                            app::settings().setValue(QStringLiteral("display.font_size"), int(v));
+                           emit fontValueChanged(int(v));
                        });
 
     // ---- 工具 ----
@@ -350,3 +359,11 @@ void SettingsPanel::refresh()
 
 int SettingsPanel::fontValue() const { return m_font ? m_font->value() : UiScale::instance()->basePx(); }
 void SettingsPanel::setFontValue(int px) { if (m_font) m_font->setValue(px); }
+double SettingsPanel::lineWidthValue() const { return m_lineWidth->value() * 0.5; }
+void SettingsPanel::setLineWidthValue(double px)
+{
+    m_lineWidth->setValue(int(std::lround(px / 0.5)));
+    emit lineWidthValueChanged(lineWidthValue());
+}
+double SettingsPanel::pointScaleValue() const { return m_pointScale->value() * 0.1; }
+void SettingsPanel::setPointScaleValue(double scale) { m_pointScale->setValue(int(std::lround(scale / 0.1))); }

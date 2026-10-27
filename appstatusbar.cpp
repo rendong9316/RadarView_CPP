@@ -23,12 +23,12 @@
 
 namespace {
 
-const int kBarHeight = 22;          // .statusbar { height: 22px; border-top: 1px }（border-box）
+const int kBarHeight = 28;          // 加高回放与状态栏，文字和点击区域一起放大
 const int kPadX = 8;                // padding: 0 8px
 const int kGap = 6;                 // .statusbar-left/right { gap: 6px }
 // 字号随全局根字号缩放（0.786rem / 0.714rem），基准 14px 时等于 11 / 10px
-int kFontPx() { return ui::px(0.786); }
-int kSmallFontPx() { return ui::px(0.714); }
+int kFontPx() { return ui::px(0.9); }
+int kSmallFontPx() { return ui::px(0.85); }
 const int kSpeedOptions[] = { 1, 10, 50, 100, 300, 500, 2000 };   // useReplay.ts SPEED_OPTIONS
 
 // 界面字体：RadarView 为 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif；补上 Linux 中文字体

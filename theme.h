@@ -44,7 +44,7 @@ void setThemedStyle(QWidget *w, const QString &tmpl);
 inline QColor themeColor(const char *var) { return Theme::instance()->color(QLatin1String(var)); }
 
 namespace ui {
-const int kFontMinPx = 10, kFontMaxPx = 50, kFontBasePx = 14;   // 根字号范围（RadarView 为 10–20，这里放宽到 50）
+const int kFontMinPx = 10, kFontMaxPx = 50, kFontBasePx = 14, kFontDefaultPx = 22;
 }
 
 // 全局字号缩放（对应 RadarView useFontSize.ts：根字号可调，全 UI 按 rem 等比）。

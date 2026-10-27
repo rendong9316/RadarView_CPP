@@ -2,6 +2,7 @@
 #include "apppaths.h"
 
 #include <QDateTime>
+#include <QLocale>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -231,8 +232,8 @@ QString beijingText(qint64 ms)
 {
     if (ms <= 0)
         return QString();
-    return QDateTime::fromMSecsSinceEpoch(ms, Qt::OffsetFromUTC, 8 * 3600)
-        .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    return QLocale::c().toString(QDateTime::fromMSecsSinceEpoch(ms, Qt::OffsetFromUTC, 8 * 3600),
+                                QStringLiteral("yyyy-MM-dd HH:mm:ss"));
 }
 
 bool open(QString *error)
@@ -603,7 +604,7 @@ void DbSaveJob::run()
                 q.addBindValue(m_fileName);
                 q.addBindValue(src);
                 q.addBindValue(m_tracks.size());
-                q.addBindValue(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+                q.addBindValue(QLocale::c().toString(QDateTime::currentDateTime(), QStringLiteral("yyyy-MM-dd HH:mm:ss")));
                 okAll = q.exec();
                 batchId = q.lastInsertId().toLongLong();
             } else {

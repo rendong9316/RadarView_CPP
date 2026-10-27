@@ -906,14 +906,14 @@ void GlobeWidget::drawPointTip(QPainter &p)
     const QString l1 = QStringLiteral("%1  ·  %2m  ·  %3kt  ·  %4°")
                            .arg(label).arg(double(pt.alt), 0, 'f', 0).arg(double(pt.speed), 0, 'f', 0)
                            .arg(double(pt.heading), 0, 'f', 0);
-    const QString l2 = QDateTime::fromMSecsSinceEpoch(pt.t, Qt::OffsetFromUTC, 8 * 3600)
-                           .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-    const QFont f = remFont(1.0);
+    const QString l2 = formatBeijingTime(pt.t);
+    QFont f = remFont(1.0);
+    f.setPixelSize(14);   // 悬停信息独立于主界面字号，避免大面板遮挡地图。
     const QFontMetricsF fm(f);
     const double w = qMax(fm.horizontalAdvance(l1), fm.horizontalAdvance(l2));
     const double lineH = fm.height();
-    const double pad = ui::sz(8), padY = ui::sz(6);
-    const QRectF box(sp.x() + m_trackLayer.pointDotPx() + ui::sz(10), sp.y() - lineH - padY,
+    const double pad = 8, padY = 6;
+    const QRectF box(sp.x() + m_trackLayer.pointDotPx() + 10, sp.y() - lineH - padY,
                      w + 2 * pad, lineH * 2 + 2 * padY);
     p.fillRect(box, Qt::black);
     QColor outline(Qt::black);
@@ -1213,7 +1213,7 @@ void GlobeWidget::uploadTexture(quint64 key, const QImage &img)
     // 省掉一次整图 convertToFormat 的 256KB 内存拷贝。其余格式仍走 RGBA8888。
     QImage rgba;
     bool bgra = false;
-    if (img.format() == QImage::Format_RGB32) {
+    if (img.format() == QImage::Format_RGB32 && !context()->isOpenGLES()) {
         rgba = img;
         bgra = true;
     } else {
@@ -1689,8 +1689,8 @@ QString GlobeWidget::trackTooltip(int index) const
         lines << tr("航线：%1 → %2").arg(t.origin.toHtmlEscaped(), t.destination.toHtmlEscaped());
     lines << tr("点数：%1").arg(t.points.size());
     lines << tr("时间：%1 ~ %2").arg(formatBeijingTime(t.minTime()), formatBeijingTime(t.maxTime()));
-    return QStringLiteral("<qt style='white-space:pre'>") + lines.join(QStringLiteral("<br>"))
-         + QStringLiteral("</qt>");
+    return QStringLiteral("<qt><div style='font-size:14px'>") + lines.join(QStringLiteral("<br>"))
+         + QStringLiteral("</div></qt>");
 }
 
 void GlobeWidget::wheelEvent(QWheelEvent *e)

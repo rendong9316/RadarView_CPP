@@ -62,6 +62,7 @@ public:
     void setSourceColorOverride(TrackSource s, const QColor &c) { m_sourceColor[int(s)] = c; ++m_styleVersion; }
     bool hasSourceColorOverride(TrackSource s) const { return m_sourceColor.contains(int(s)); }
     void clearSourceColorOverride(TrackSource s) { if (m_sourceColor.remove(int(s))) ++m_styleVersion; }
+    void setFileColorOverride(const QString &key, const QColor &color) { m_fileColor[key] = color; ++m_styleVersion; }
 
     // 交互：参数为 TrackStore::tracks() 的下标，-1 表示无
     void setHoveredTrack(int index);
@@ -85,7 +86,7 @@ public:
     bool pickPointDot(const QMatrix4x4 &mvp, const QVector3D &eye, const QSizeF &viewport,
                       const QPointF &pos, int track, int *pointIndex) const;
     bool hasPointDots(int track) const;
-    static QColor contrastColor(const QColor &c);
+    QColor pointDotColor(int track) const;   // 已构建的点迹颜色
 
     // 上一帧各显示航迹的端点位置（回放时为插值位置），供标签绘制
     struct EndPoint {
@@ -174,10 +175,11 @@ private:
 
     bool m_replay = false;
     qint64 m_replayTime = 0;
-    float m_lineWidthPx = 2.0f;   // 全局线宽（SettingsPanel，RadarView 默认 2.0）
+    float m_lineWidthPx = 3.0f;   // 全局线宽（SettingsPanel）
     double m_trailSeconds = 0.0;
     QHash<int, double> m_dotScale;   // 按数据源下标的端点圆球缩放（默认 1.0）
     QHash<int, QColor> m_sourceColor;  // 按数据源下标的线颜色覆盖
+    QHash<QString, QColor> m_fileColor;  // 导入时明确指定的文件色优先于数据源色
 
     float relTime(qint64 ms) const;
     void ensureRanges() const;

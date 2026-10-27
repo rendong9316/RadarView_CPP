@@ -2,6 +2,8 @@
 #define UIWIDGETS_H
 
 #include <QMenu>
+#include <QDialog>
+#include <QColor>
 #include <QPushButton>
 #include <QToolButton>
 #include <QWidget>
@@ -10,9 +12,24 @@
 #include "lucide.h"
 
 class QLabel;
+class QLineEdit;
 
 // 通用小部件，样式逐项对应 RadarView 的 ConfirmDialog / HelpTip / UndoToast / 地图右键菜单
 namespace ui {
+
+// 雷达导入前设置名称与标准色；取消时不启动后台导入。
+class RadarImportDialog : public QDialog
+{
+public:
+    RadarImportDialog(const QString &filePath, const QString &defaultName, const QColor &defaultColor,
+                      const QStringList &usedNames, QWidget *parent = nullptr, bool nameOnly = false);
+    QString trackName() const;
+    QColor trackColor() const { return m_color; }
+
+private:
+    QLineEdit *m_name = nullptr;
+    QColor m_color;
+};
 
 // 自检时自动确认，不弹对话框
 void setAutoConfirm(bool on);
