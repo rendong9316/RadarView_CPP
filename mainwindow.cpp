@@ -648,9 +648,14 @@ void MainWindow::setMapSource(const QString &id)
 
     if (id == QLatin1String("offline")) {
         m_globe->closeOnlineMap();
-        if (m_globe->tileName().isEmpty())
-            loadDefaultTiles();               // 关掉在线底图后回到本地瓦片
+        // 先把用户意图记成 offline 再加载默认瓦片：loadDefaultTiles() 末尾会按
+        // map.source 恢复在线源，只有先置成 offline 才不会被拉回天地图/高德。
         app::settings().setValue(QStringLiteral("map.source"), id);
+        loadDefaultTiles();               // 始终切回目录里的默认离线瓦片
+        if (m_globe->tileName().isEmpty())
+            QMessageBox::warning(this, tr("离线瓦片"),
+                tr("未找到可用的 .mbtiles 瓦片文件。\n"
+                   "请将瓦片包放入程序目录或 tiles/ 子目录，或用「打开瓦片…」手动选择。"));
         syncSourceActions();
         return;
     }
