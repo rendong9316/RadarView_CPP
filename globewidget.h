@@ -74,7 +74,7 @@ public:
     void setSpatialLasso(SpatialLasso *lasso);
     // 贴地绘图（旗标距离圆、自由曲线等）：数据由主窗口的 DrawingManager 持有，
     // 这里只负责把顶点投影到屏幕画到叠加层上（与标尺/套索同一套投影口径）
-    void setDrawingManager(DrawingManager *drawing) { m_draw = drawing; update(); }
+    void setDrawingManager(DrawingManager *drawing);
 
     // ---- 绘图状态机 ----
     // 工具在工具栏切换；左键归画笔，右键拖拽旋转，滚轮始终缩放
@@ -83,6 +83,10 @@ public:
     void setDrawColor(const QColor &c) { m_drawColor = c; }
     QColor drawColor() const { return m_drawColor; }
     bool cancelDrawing();                    // 丢弃未完成的笔画/选框；返回是否有东西被丢弃
+    // 选择工具：选中一个要素后高亮，Delete 删除、双击改属性
+    int selectedFeature() const { return m_selectedFeature; }
+    void setSelectedFeature(int id);         // 0 = 取消选择
+    bool deleteSelected();                   // 删除选中的要素（Delete 键 / 菜单）
     int hoverFeature() const { return m_hoverFeature; }
     int strokePointCount() const { return m_stroke.size(); }
     bool boxSelecting() const { return m_bandActive; }
@@ -139,6 +143,9 @@ signals:
     void drawTextRequested(double lat, double lon, const QPoint &globalPos);
     void drawFillRequested(int featureId);      // 0 = 该位置没有封闭图形
     void drawFeatureAdded(int featureId);
+    void drawFeatureEditRequested(int featureId);   // 选择工具双击：主窗口弹属性窗
+    void drawSelectionChanged(int featureId);       // 0 = 取消选择
+    void drawMessage(const QString &text);          // 打断/裁剪的结果提示（空串 = 清除）
 
 protected:
     void initializeGL() override;
@@ -188,6 +195,9 @@ private:
     void drawFeatures(QPainter &p);
     void drawInProgress(QPainter &p);
     void drawBand(QPainter &p);
+    // 吸附：鼠标离已有图形的顶点不到 10px 就把当前点吸过去，保证图形能闭合
+    bool snapToFeature(const QPointF &pos, double *lonDeg, double *latDeg, QPointF *screen);
+    bool snappingTool() const;
     // 绘图交互辅助
     void finishDrawStroke(double lat, double lon);
     void closeDrawPolygon();
@@ -218,7 +228,11 @@ private:
     bool m_bandActive = false;
     QRect m_bandRect;
     int m_hoverFeature = 0;
+    int m_selectedFeature = 0;
     int m_drawPreviewSegments = 0;
+    bool m_snapActive = false;              // 当前光标点吸附到了已有顶点
+    QPointF m_snapPos;                      // 吸附到的屏幕位置（画小方块提示）
+    QColor m_snapColor = QColor(0x10, 0xb9, 0x81);
     int m_tipTrack = -1, m_tipPoint = -1;
     QHash<QString, QPixmap> m_labelCache;          // 标签文字 + 颜色 -> 带描边的位图
     QPixmap m_flagIcon;

@@ -33,6 +33,12 @@ QVector<QPointF> geodesicCircle(double lat, double lon, double radiusKm, int seg
 QVector<QPointF> geodesicPath(double lat1, double lon1, double lat2, double lon2,
                               double maxStepDeg = 0.25);
 
+// 大圆弧交点：A→B 与 C→D 两条大圆航线的交点，只保留**同时落在两条弧段范围内**的（0~2 个，
+// x = 经度, y = 纬度，WGS84 度）。两弧平行/重合（无唯一交点）时返回空。
+// 裁剪工具用它求「剪切线」与已有线段的球面交点，和 geodesicPath 同一套单位向量口径。
+QVector<QPointF> greatCircleIntersections(double lat1, double lon1, double lat2, double lon2,
+                                          double lat3, double lon3, double lat4, double lon4);
+
 } // namespace geocalc
 
 #endif // GEOCALC_H

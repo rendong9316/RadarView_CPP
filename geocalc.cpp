@@ -14,6 +14,22 @@ const double kF = 1.0 / 298.257223563;  // 扁率
 double toRad(double d) { return d * M_PI / 180.0; }
 double toDeg(double r) { return r * 180.0 / M_PI; }
 
+// 经纬度（度）-> 椭球面上的单位向量。和 geodesicPath 同一口径：取椭球面上的点
+// (N·cosφ·cosλ, N·cosφ·sinλ, N·(1-e²)·sinφ)，不是法线方向，这样反算回去纬度才不偏。
+void surfaceUnit(double latDeg, double lonDeg, double *x, double *y, double *z)
+{
+    const double e2 = 2 * kF - kF * kF;
+    const double p = toRad(latDeg), l = toRad(lonDeg);
+    const double n = 1.0 / std::sqrt(1 - e2 * std::sin(p) * std::sin(p));
+    const double ax = n * std::cos(p) * std::cos(l);
+    const double ay = n * std::cos(p) * std::sin(l);
+    const double az = n * (1 - e2) * std::sin(p);
+    const double norm = std::sqrt(ax * ax + ay * ay + az * az);
+    *x = ax / norm;
+    *y = ay / norm;
+    *z = az / norm;
+}
+
 } // namespace
 
 double haversineKm(double lat1, double lng1, double lat2, double lng2)
@@ -222,6 +238,59 @@ QVector<QPointF> geodesicPath(double lat1, double lon1, double lat2, double lon2
         const double lat = std::atan2(z, (1 - e2) * std::sqrt(x * x + y * y));
         const double lon = std::atan2(y, x);
         out.append(QPointF(lon / d2r, lat / d2r));
+    }
+    return out;
+}
+
+QVector<QPointF> greatCircleIntersections(double lat1, double lon1, double lat2, double lon2,
+                                          double lat3, double lon3, double lat4, double lon4)
+{
+    QVector<QPointF> out;
+    if (!std::isfinite(lat1) || !std::isfinite(lon1) || !std::isfinite(lat2) || !std::isfinite(lon2)
+        || !std::isfinite(lat3) || !std::isfinite(lon3) || !std::isfinite(lat4) || !std::isfinite(lon4))
+        return out;
+
+    double ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz;
+    surfaceUnit(lat1, lon1, &ax, &ay, &az);
+    surfaceUnit(lat2, lon2, &bx, &by, &bz);
+    surfaceUnit(lat3, lon3, &cx, &cy, &cz);
+    surfaceUnit(lat4, lon4, &dx, &dy, &dz);
+
+    // 两条弧所在大圆的法向量（叉积）；任一叉积为 0 表示该弧的两个端点重合
+    double n1x = ay * bz - az * by, n1y = az * bx - ax * bz, n1z = ax * by - ay * bx;
+    double n2x = cy * dz - cz * dy, n2y = cz * dx - cx * dz, n2z = cx * dy - cy * dx;
+    const double l1 = std::sqrt(n1x * n1x + n1y * n1y + n1z * n1z);
+    const double l2 = std::sqrt(n2x * n2x + n2y * n2y + n2z * n2z);
+    if (l1 < 1e-12 || l2 < 1e-12)
+        return out;
+    n1x /= l1; n1y /= l1; n1z /= l1;
+    n2x /= l2; n2y /= l2; n2z /= l2;
+
+    // 两个大圆平面的交线 = 两个法向量的叉积，方向即两个对跖交点
+    double ix = n1y * n2z - n1z * n2y, iy = n1z * n2x - n1x * n2z, iz = n1x * n2y - n1y * n2x;
+    const double il = std::sqrt(ix * ix + iy * iy + iz * iz);
+    if (il < 1e-9)                 // 平行或重合：没有唯一交点
+        return out;
+    ix /= il; iy /= il; iz /= il;
+
+    const double e2 = 2 * kF - kF * kF;
+    auto ang = [](double x1, double y1, double z1, double x2, double y2, double z2) {
+        return std::acos(qBound(-1.0, x1 * x2 + y1 * y2 + z1 * z2, 1.0));
+    };
+    const double ab = ang(ax, ay, az, bx, by, bz);
+    const double cd = ang(cx, cy, cz, dx, dy, dz);
+    const double tol = 1e-7;       // ≈0.6 m，只用来吸收浮点误差
+
+    for (int s = 0; s < 2; ++s) {
+        const double px = s ? -ix : ix, py = s ? -iy : iy, pz = s ? -iz : iz;
+        // 交点必须在两条弧的范围内：到两端点的弧长之和等于整段弧长
+        const bool onAB = ang(ax, ay, az, px, py, pz) + ang(px, py, pz, bx, by, bz) <= ab + tol;
+        const bool onCD = ang(cx, cy, cz, px, py, pz) + ang(px, py, pz, dx, dy, dz) <= cd + tol;
+        if (!onAB || !onCD)
+            continue;
+        const double lat = std::atan2(pz, (1 - e2) * std::sqrt(px * px + py * py));
+        const double lon = std::atan2(py, px);
+        out.append(QPointF(toDeg(lon), toDeg(lat)));
     }
     return out;
 }

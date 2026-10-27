@@ -25,7 +25,9 @@ class ReplayController;
 class AppStatusBar;
 class QDialog;
 class QToolBar;
+class QToolButton;
 class QActionGroup;
+class QUndoStack;
 class ManageState;
 class ManagePanel;
 class FlagStore;
@@ -119,7 +121,11 @@ public:
     RulerState *ruler() const { return m_ruler; }
     SpatialLasso *spatialLasso() const { return m_lasso; }
     DrawingManager *drawing() const { return m_draw; }
+    QUndoStack *undoStack() const { return m_undo; }
     void setDrawTool(DrawTool t);            // 绘图工具栏切换（Esc 也会回到漫游）
+    // 绘图工具栏平时不显示：左上角「绘图」按钮点开才展开（两行按钮）
+    void setDrawingBarVisible(bool on);
+    bool drawingBarVisible() const;
     ui::UndoToast *undoToast() const { return m_undoToast; }
     SettingsPanel *settingsPanel() const { return m_settingsPanel; }
     void toggleLabels();
@@ -149,6 +155,7 @@ private:
     void updateDrawColorIcon();
     void onDrawText(double lat, double lon, const QPoint &globalPos);
     void onDrawFill(int featureId);
+    void onDrawFeatureEdit(int featureId);   // 选择工具双击：改颜色/线宽/填充/半径/文本
     void saveDrawings();
     void importDrawings();
     void drawDistanceCircle(const QString &flagId);   // 旗标右键「绘制距离圆」
@@ -186,9 +193,15 @@ private:
     RulerState *m_ruler = nullptr;
     SpatialLasso *m_lasso = nullptr;
     DrawingManager *m_draw = nullptr;
-    QToolBar *m_drawBar = nullptr;
+    QUndoStack *m_undo = nullptr;            // 绘图撤销栈（最多 200 步）
+    QToolBar *m_drawBar = nullptr;           // 第一行：工具
+    QToolBar *m_drawBar2 = nullptr;          // 第二行：撤销/重做/颜色/存取
+    QToolButton *m_drawToggle = nullptr;     // 左上角「绘图」入口
     QActionGroup *m_drawGroup = nullptr;
     QAction *m_drawColorAction = nullptr;
+    QAction *m_undoAction = nullptr;
+    QAction *m_redoAction = nullptr;
+    QAction *m_deleteDrawAction = nullptr;   // Delete：删除选中的图形
     QColor m_drawColor = QColor(0xf5, 0x9e, 0x0b);
     FlagPanel *m_flagPanel = nullptr;
     SettingsPanel *m_settingsPanel = nullptr;

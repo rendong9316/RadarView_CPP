@@ -24,7 +24,9 @@
 #include <QDialog>
 #include <QDoubleSpinBox>
 #include <QToolBar>
+#include <QToolButton>
 #include <QSpinBox>
+#include <QUndoStack>
 #include <QWidgetAction>
 #include <QLocale>
 #include <QJsonDocument>
@@ -294,11 +296,22 @@ MainWindow::MainWindow(QWidget *parent)
     m_globe->setMapTools(m_flags, m_ruler);
     m_globe->setSpatialLasso(m_lasso);
     m_draw = new DrawingManager(this);
+    m_undo = new QUndoStack(this);
+    m_undo->setUndoLimit(200);          // 需求：最多保留 200 步操作历史
+    m_draw->setUndoStack(m_undo);
     m_globe->setDrawingManager(m_draw);
     m_globe->setDrawColor(m_drawColor);
     connect(m_draw, &DrawingManager::changed, m_globe, [this]() { m_globe->update(); });
     connect(m_globe, &GlobeWidget::drawTextRequested, this, &MainWindow::onDrawText);
     connect(m_globe, &GlobeWidget::drawFillRequested, this, &MainWindow::onDrawFill);
+    connect(m_globe, &GlobeWidget::drawFeatureEditRequested, this, &MainWindow::onDrawFeatureEdit);
+    connect(m_globe, &GlobeWidget::drawSelectionChanged, this, [this](int id) {
+        if (m_deleteDrawAction)
+            m_deleteDrawAction->setEnabled(id > 0);
+    });
+    connect(m_globe, &GlobeWidget::drawMessage, this, [this](const QString &text) {
+        m_statusBar->setError(text);
+    });
     m_manage = new ManageState(&m_store, this);
 
     // 侧栏面板（顺序同 PanelId）
@@ -1166,8 +1179,21 @@ QIcon colorSwatchIcon(const QColor &c, int px)
 
 } // namespace
 
+// 绘图工具栏平时不显示：左上角菜单栏的「绘图」按钮点开才出现。
+// 按钮多，分两行：第一行是工具，第二行是撤销/重做、颜色、存取。
 void MainWindow::buildDrawToolBar()
 {
+    const QString barQss = QStringLiteral(
+        "QToolBar { background: var(--bg-secondary); border: none;"
+        " border-bottom: 1px solid var(--border-primary); padding: 2px 6px; spacing: 2px; }"
+        "QToolBar::separator { background: var(--border-primary); width: 1px; margin: 4px 8px; }"
+        "QToolButton { color: var(--text-secondary); padding: 4px 10px; border-radius: 3px;"
+        " font-family: %1; font-size: 12px; }"
+        "QToolButton:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "QToolButton:checked { background: var(--accent-primary); color: #ffffff; }"
+        "QToolButton:disabled { color: var(--text-muted); }").arg(ui::uiFamilies());
+
+    // ---- 第一行：绘图工具 ----
     m_drawBar = new QToolBar(tr("绘图"), this);
     m_drawBar->setObjectName(QStringLiteral("drawToolBar"));
     m_drawBar->setMovable(false);
@@ -1175,14 +1201,7 @@ void MainWindow::buildDrawToolBar()
     m_drawBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_drawBar->setIconSize(QSize(ui::sz(14), ui::sz(14)));
     addToolBar(Qt::TopToolBarArea, m_drawBar);
-    setThemedStyle(m_drawBar, QStringLiteral(
-        "QToolBar { background: var(--bg-secondary); border: none;"
-        " border-bottom: 1px solid var(--border-primary); padding: 2px 6px; spacing: 2px; }"
-        "QToolBar::separator { background: var(--border-primary); width: 1px; margin: 4px 8px; }"
-        "QToolButton { color: var(--text-secondary); padding: 4px 10px; border-radius: 3px;"
-        " font-family: %1; font-size: 12px; }"
-        "QToolButton:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "QToolButton:checked { background: var(--accent-primary); color: #ffffff; }").arg(ui::uiFamilies()));
+    setThemedStyle(m_drawBar, barQss);
 
     m_drawGroup = new QActionGroup(this);
     m_drawGroup->setExclusive(true);
@@ -1197,17 +1216,54 @@ void MainWindow::buildDrawToolBar()
     };
     // 工具按钮用文字（lucide 里没有直线/矩形/油漆桶这些图标，硬凑反而看不懂）
     addTool(DrawTool::None, tr("漫游"), tr("左键拖拽旋转地球（默认）"))->setChecked(true);
-    addTool(DrawTool::Line, tr("直线"), tr("按住左键拖出一条贴地直线"));
+    addTool(DrawTool::Select, tr("选择"), tr("单击图形选中：Delete 删除，双击改属性"));
+    addTool(DrawTool::Line, tr("直线"), tr("按住左键拖出一条贴地直线，端点会吸附到已有顶点"));
     addTool(DrawTool::Polyline, tr("曲线"), tr("按住左键自由手绘"));
-    addTool(DrawTool::Polygon, tr("多边形"), tr("单击放顶点，双击或右键闭合"));
+    addTool(DrawTool::Polygon, tr("多边形"), tr("单击放顶点，双击或右键闭合；吸到起点自动闭合"));
     addTool(DrawTool::Rect, tr("矩形"), tr("按住左键拖出矩形"));
     addTool(DrawTool::Text, tr("文本"), tr("单击放置文本框"));
     addTool(DrawTool::Fill, tr("填充"), tr("单击封闭图形内部，设置颜色与透明度"));
     addTool(DrawTool::Eraser, tr("橡皮"), tr("单击线条或图形删除"));
-    addTool(DrawTool::BoxSelect, tr("框选删除"), tr("拉框删除与框相交的图形"));
+    addTool(DrawTool::Break, tr("裁剪/打断"),
+            tr("拖拽划一条剪切线：裁掉中间那一段\n单击线段：在该点一分为二"));
+    addTool(DrawTool::BoxSelect, tr("框选删除"), tr("拉框删除与框相交的图形（可撤销）"));
 
-    m_drawBar->addSeparator();
-    m_drawColorAction = m_drawBar->addAction(tr("颜色"));
+    // ---- 第二行：撤销/重做、颜色、存取 ----
+    m_drawBar2 = new QToolBar(tr("绘图操作"), this);
+    m_drawBar2->setObjectName(QStringLiteral("drawToolBar2"));
+    m_drawBar2->setMovable(false);
+    m_drawBar2->setFloatable(false);
+    m_drawBar2->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_drawBar2->setIconSize(QSize(ui::sz(14), ui::sz(14)));
+    addToolBarBreak(Qt::TopToolBarArea);
+    addToolBar(Qt::TopToolBarArea, m_drawBar2);
+    setThemedStyle(m_drawBar2, barQss);
+
+    // 撤销/重做：动作挂在主窗口上（工具栏收起时 Ctrl+Z / Ctrl+Y 照样有效）
+    m_undoAction = new QAction(tr("撤销"), this);
+    m_undoAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_Z));
+    m_undoAction->setShortcutContext(Qt::WindowShortcut);
+    m_undoAction->setToolTip(tr("撤销上一步绘图操作（Ctrl+Z）"));
+    m_undoAction->setEnabled(false);
+    addAction(m_undoAction);
+    connect(m_undoAction, &QAction::triggered, m_undo, &QUndoStack::undo);
+    connect(m_undo, &QUndoStack::canUndoChanged, m_undoAction, &QAction::setEnabled);
+    m_drawBar2->addAction(m_undoAction);
+
+    m_redoAction = new QAction(tr("重做"), this);
+    m_redoAction->setShortcuts(QList<QKeySequence>()
+                               << QKeySequence(Qt::CTRL + Qt::Key_Y)
+                               << QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_Z));
+    m_redoAction->setShortcutContext(Qt::WindowShortcut);
+    m_redoAction->setToolTip(tr("重做被撤销的操作（Ctrl+Y）"));
+    m_redoAction->setEnabled(false);
+    addAction(m_redoAction);
+    connect(m_redoAction, &QAction::triggered, m_undo, &QUndoStack::redo);
+    connect(m_undo, &QUndoStack::canRedoChanged, m_redoAction, &QAction::setEnabled);
+    m_drawBar2->addAction(m_redoAction);
+
+    m_drawBar2->addSeparator();
+    m_drawColorAction = m_drawBar2->addAction(tr("颜色"));
     m_drawColorAction->setToolTip(tr("新建图形使用的颜色"));
     connect(m_drawColorAction, &QAction::triggered, this, [this]() {
         const QColor c = QColorDialog::getColor(m_drawColor, this, tr("绘图颜色"));
@@ -1219,15 +1275,15 @@ void MainWindow::buildDrawToolBar()
     });
     updateDrawColorIcon();
 
-    m_drawBar->addSeparator();
-    QAction *save = m_drawBar->addAction(tr("保存"));
+    m_drawBar2->addSeparator();
+    QAction *save = m_drawBar2->addAction(tr("保存"));
     save->setToolTip(tr("把当前所有绘图导出为 GeoJSON"));
     connect(save, &QAction::triggered, this, &MainWindow::saveDrawings);
-    QAction *load = m_drawBar->addAction(tr("导入"));
+    QAction *load = m_drawBar2->addAction(tr("导入"));
     load->setToolTip(tr("从 GeoJSON 导入绘图"));
     connect(load, &QAction::triggered, this, &MainWindow::importDrawings);
-    QAction *clr = m_drawBar->addAction(tr("清空"));
-    clr->setToolTip(tr("删除所有绘图"));
+    QAction *clr = m_drawBar2->addAction(tr("清空"));
+    clr->setToolTip(tr("删除所有绘图（可撤销）"));
     connect(clr, &QAction::triggered, this, [this]() {
         if (m_draw->count() == 0)
             return;
@@ -1235,6 +1291,44 @@ void MainWindow::buildDrawToolBar()
                         tr("清空绘图"), true))
             m_draw->clear();
     });
+
+    // 「绘图」入口：放在顶部标题栏（菜单栏）最右端，默认收起
+    m_drawToggle = new QToolButton(this);
+    m_drawToggle->setObjectName(QStringLiteral("drawToggleButton"));
+    m_drawToggle->setText(tr("绘图"));
+    m_drawToggle->setCheckable(true);
+    m_drawToggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_drawToggle->setToolTip(tr("显示 / 隐藏绘图工具栏"));
+    m_drawToggle->setCursor(Qt::PointingHandCursor);
+    setThemedStyle(m_drawToggle, QStringLiteral(
+        "QToolButton { color: var(--text-primary); background: transparent; border: none;"
+        " padding: 2px 10px; font-family: %1; font-size: 13px; }"
+        "QToolButton:hover { background: var(--button-hover); border-radius: 3px; }"
+        "QToolButton:checked { background: var(--accent-primary); color: #ffffff; border-radius: 3px; }")
+        .arg(ui::uiFamilies()));
+    menuBar()->setCornerWidget(m_drawToggle, Qt::TopRightCorner);
+    connect(m_drawToggle, &QToolButton::toggled, this, &MainWindow::setDrawingBarVisible);
+
+    setDrawingBarVisible(false);
+}
+
+void MainWindow::setDrawingBarVisible(bool on)
+{
+    if (m_drawBar)
+        m_drawBar->setVisible(on);
+    if (m_drawBar2)
+        m_drawBar2->setVisible(on);
+    if (m_drawToggle) {
+        QSignalBlocker block(m_drawToggle);
+        m_drawToggle->setChecked(on);
+    }
+    if (!on)
+        setDrawTool(DrawTool::None);      // 收起工具条就回到漫游，鼠标不会还停在画图状态
+}
+
+bool MainWindow::drawingBarVisible() const
+{
+    return m_drawBar && !m_drawBar->isHidden();
 }
 
 void MainWindow::updateDrawColorIcon()
@@ -1287,6 +1381,44 @@ void MainWindow::onDrawFill(int featureId)
     if (dlg.exec() != QDialog::Accepted)
         return;
     m_draw->setFill(featureId, dlg.fillColor());
+    m_statusBar->setError(QString());
+}
+
+// 选择工具双击：改颜色 / 线宽 / 填充透明度；圆还能改半径，文本还能改内容和字号。
+// 走 DrawingManager::updateFeature，压一条 ModifyFeatureCommand，撤销一步就整体回滚。
+void MainWindow::onDrawFeatureEdit(int featureId)
+{
+    const DrawingFeature *f = m_draw->feature(featureId);
+    if (!f)
+        return;
+    if (app::testMode())
+        return;                       // 自检直接调 DrawingManager，不弹窗
+    ui::FeatureStyleDialog dlg(*f, this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    DrawingFeature after = *f;
+    after.color = dlg.color();
+    after.widthPx = dlg.widthPx();
+    const int opacity = dlg.fillOpacityPercent();   // -1 = 该图形没有填充项
+    if (opacity == 0) {
+        after.fill = QColor();
+    } else if (opacity > 0) {
+        QColor c = after.fill.isValid() ? after.fill : after.color;
+        c.setAlphaF(opacity / 100.0);
+        after.fill = c;
+    }
+    if (f->isCircle() && dlg.radiusKm() > 0.0)
+        after.radiusKm = dlg.radiusKm();
+    if (f->isText()) {
+        if (dlg.text().isEmpty()) {
+            m_statusBar->setError(tr("文本内容不能为空，未修改"));
+            return;
+        }
+        after.text = dlg.text();
+        after.textSizePx = dlg.textPx();
+    }
+    m_draw->updateFeature(after);
     m_statusBar->setError(QString());
 }
 
@@ -1366,6 +1498,11 @@ void MainWindow::toggleLabels()
 // Esc：绘图先取消当前笔画，再退出绘图工具；然后套索、标尺、单独显示
 void MainWindow::onEscape()
 {
+    // 选中了图形：Esc 先取消选中，再按一次才退出工具
+    if (m_globe->selectedFeature() > 0) {
+        m_globe->setSelectedFeature(0);
+        return;
+    }
     if (m_globe->drawTool() != DrawTool::None) {
         if (!m_globe->cancelDrawing())      // 没有未完成的笔画时才退出工具
             setDrawTool(DrawTool::None);
@@ -1456,6 +1593,12 @@ void MainWindow::buildMenuBar()
 
     QMenu *mEdit = mb->addMenu(tr("编辑"));
     item(mEdit, tr("清除选中"), QKeySequence(Qt::Key_Escape), [this]() { onEscape(); });
+    // Delete：只删「选择」工具选中的图形，没选中时动作是禁用的（不抢其他控件的 Delete）
+    m_deleteDrawAction = item(mEdit, tr("删除选中图形"), QKeySequence(Qt::Key_Delete), [this]() {
+        if (m_globe->selectedFeature() > 0)
+            m_globe->deleteSelected();
+    });
+    m_deleteDrawAction->setEnabled(false);
     mEdit->addSeparator();
     item(mEdit, tr("首选项设置"), QKeySequence(Qt::CTRL + Qt::Key_Comma), [this]() { activatePanel(PanelId::Settings); });
 

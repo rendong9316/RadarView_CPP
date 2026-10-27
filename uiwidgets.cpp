@@ -480,6 +480,117 @@ TextDialog::TextDialog(const QColor &initial, QWidget *parent) : QDialog(parent)
 QString TextDialog::text() const { return m_text->text().trimmed(); }
 int TextDialog::fontPx() const { return m_size->value(); }
 
+// ---------------------------------------------------------------
+// 图形属性（选择工具双击）：颜色 / 线宽 / 填充透明度 / 圆半径 / 文本
+// ---------------------------------------------------------------
+namespace {
+
+QString kindLabel(DrawKind k)
+{
+    switch (k) {
+    case DrawKind::Circle:   return QStringLiteral("距离圆");
+    case DrawKind::Line:     return QStringLiteral("直线");
+    case DrawKind::Polyline: return QStringLiteral("曲线");
+    case DrawKind::Polygon:  return QStringLiteral("多边形");
+    case DrawKind::Rect:     return QStringLiteral("矩形");
+    case DrawKind::Fill:     return QStringLiteral("填充区域");
+    case DrawKind::Text:     return QStringLiteral("文本");
+    }
+    return QStringLiteral("图形");
+}
+
+} // namespace
+
+FeatureStyleDialog::FeatureStyleDialog(const DrawingFeature &f, QWidget *parent)
+    : QDialog(parent), m_feature(f), m_color(f.color.isValid() ? f.color : QColor(0xf5, 0x9e, 0x0b))
+{
+    setObjectName(QStringLiteral("featureStyleDialog"));
+    setWindowTitle(QStringLiteral("图形属性"));
+    setModal(true);
+    setMinimumWidth(sz(420));
+    QVBoxLayout *body = new QVBoxLayout(this);
+    bindMargins(body, 20, 18, 20, 18);
+    bindSpacing(body, 12);
+
+    QLabel *head = new QLabel(QStringLiteral("图形：%1").arg(kindLabel(f.kind)), this);
+    head->setObjectName(QStringLiteral("featureKind"));
+    body->addWidget(head);
+
+    body->addWidget(new QLabel(QStringLiteral("颜色（点击色块选择）"), this));
+    ColorSwatchGrid *palette = new ColorSwatchGrid(m_color, this);
+    body->addWidget(palette);
+    connect(palette, &ColorSwatchGrid::colorChanged, this, [this](const QColor &c) { m_color = c; });
+
+    body->addWidget(new QLabel(QStringLiteral("线宽"), this));
+    m_width = new QSpinBox(this);
+    m_width->setObjectName(QStringLiteral("featureWidth"));
+    m_width->setRange(1, 20);
+    m_width->setValue(qBound(1, int(qRound(f.widthPx)), 20));
+    m_width->setSuffix(QStringLiteral(" px"));
+    body->addWidget(m_width);
+
+    if (f.isClosed()) {
+        body->addWidget(new QLabel(QStringLiteral("填充不透明度（0 = 不填充）"), this));
+        QHBoxLayout *row = new QHBoxLayout;
+        bindSpacing(row, 10);
+        m_opacity = new QSlider(Qt::Horizontal, this);
+        m_opacity->setObjectName(QStringLiteral("featureFillOpacity"));
+        m_opacity->setRange(0, 100);
+        m_opacity->setValue(f.fill.isValid() ? qBound(0, qRound(f.fill.alphaF() * 100.0), 100) : 0);
+        QLabel *percent = new QLabel(QStringLiteral("%1%").arg(m_opacity->value()), this);
+        percent->setObjectName(QStringLiteral("featureFillOpacityText"));
+        bindSize(percent, SizeKind::MinWidth, 44);
+        connect(m_opacity, &QSlider::valueChanged, this, [percent](int v) {
+            percent->setText(QStringLiteral("%1%").arg(v));
+        });
+        row->addWidget(m_opacity, 1);
+        row->addWidget(percent);
+        body->addLayout(row);
+    }
+
+    if (f.isCircle()) {
+        body->addWidget(new QLabel(QStringLiteral("半径"), this));
+        m_radius = new QDoubleSpinBox(this);
+        m_radius->setObjectName(QStringLiteral("featureRadius"));
+        m_radius->setRange(0.1, 20000.0);
+        m_radius->setDecimals(1);
+        m_radius->setSuffix(QStringLiteral(" km"));
+        m_radius->setValue(f.radiusKm > 0.0 ? f.radiusKm : 100.0);
+        body->addWidget(m_radius);
+    }
+
+    if (f.isText()) {
+        body->addWidget(new QLabel(QStringLiteral("文本内容"), this));
+        m_text = new QLineEdit(f.text, this);
+        m_text->setObjectName(QStringLiteral("featureText"));
+        m_text->setMaxLength(200);
+        body->addWidget(m_text);
+        body->addWidget(new QLabel(QStringLiteral("字号"), this));
+        m_textSize = new QSpinBox(this);
+        m_textSize->setObjectName(QStringLiteral("featureTextSize"));
+        m_textSize->setRange(8, 72);
+        m_textSize->setValue(qBound(8, int(qRound(f.textSizePx)), 72));
+        m_textSize->setSuffix(QStringLiteral(" px"));
+        body->addWidget(m_textSize);
+    }
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("应用"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    buttons->button(QDialogButtonBox::Ok)->setDefault(true);
+    body->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    setThemedStyle(this, dialogQss());
+}
+
+double FeatureStyleDialog::widthPx() const { return m_width ? m_width->value() : m_feature.widthPx; }
+int FeatureStyleDialog::fillOpacityPercent() const { return m_opacity ? m_opacity->value() : -1; }
+double FeatureStyleDialog::radiusKm() const { return m_radius ? m_radius->value() : 0.0; }
+QString FeatureStyleDialog::text() const { return m_text ? m_text->text().trimmed() : m_feature.text; }
+int FeatureStyleDialog::textPx() const { return m_textSize ? m_textSize->value() : int(m_feature.textSizePx); }
+
 bool confirm(QWidget *parent, const QString &message, const QString &title, bool danger,
              const QString &confirmText, const QString &cancelText)
 {

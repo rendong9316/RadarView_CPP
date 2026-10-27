@@ -10,12 +10,14 @@
 #include <QWidget>
 #include <functional>
 
+#include "drawingmanager.h"
 #include "lucide.h"
 
 class QLabel;
 class QLineEdit;
 class QDoubleSpinBox;
 class QSpinBox;
+class QSlider;
 
 // 通用小部件，样式逐项对应 RadarView 的 ConfirmDialog / HelpTip / UndoToast / 地图右键菜单
 namespace ui {
@@ -100,6 +102,30 @@ private:
     QColor m_color;
     QLineEdit *m_text = nullptr;
     QSpinBox *m_size = nullptr;
+};
+
+// 选择工具双击「图形属性」：颜色 + 线宽 + 填充透明度；
+// 圆额外能改半径（导入的圆仍是圆心+半径模型，所以半径还能调），文本额外能改内容和字号。
+class FeatureStyleDialog : public QDialog
+{
+    Q_OBJECT
+public:
+    explicit FeatureStyleDialog(const DrawingFeature &f, QWidget *parent = nullptr);
+    QColor color() const { return m_color; }
+    double widthPx() const;
+    int fillOpacityPercent() const;      // 0 = 不填充
+    double radiusKm() const;             // 圆专用，其他图形返回 0
+    QString text() const;                // 文本专用
+    int textPx() const;                  // 文本专用
+
+private:
+    DrawingFeature m_feature;
+    QColor m_color;
+    QSpinBox *m_width = nullptr;
+    QSlider *m_opacity = nullptr;
+    QDoubleSpinBox *m_radius = nullptr;
+    QLineEdit *m_text = nullptr;
+    QSpinBox *m_textSize = nullptr;
 };
 
 // 自检时自动确认，不弹对话框

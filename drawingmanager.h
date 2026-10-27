@@ -19,10 +19,12 @@
 // 数据永远是 WGS84；高德底图的 GCJ-02 只在 GlobeWidget 投影那一刻转换。
 // 不依赖 GeographicLib：本工程禁止第三方库（见 CODEBUDDY.md）。
 
+class QUndoStack;
+
 enum class DrawKind { Circle, Line, Polyline, Polygon, Rect, Fill, Text };
 
 // 绘图工具（GlobeWidget 的状态机；None = 漫游，左键拖拽旋转）
-enum class DrawTool { None, Line, Polyline, Polygon, Rect, Text, Fill, Eraser, BoxSelect };
+enum class DrawTool { None, Line, Polyline, Polygon, Rect, Text, Fill, Eraser, BoxSelect, Select, Break };
 
 struct DrawingFeature {
     int id = 0;
@@ -43,6 +45,7 @@ struct DrawingFeature {
         return kind == DrawKind::Circle || kind == DrawKind::Polygon
             || kind == DrawKind::Rect || kind == DrawKind::Fill;
     }
+    bool isCircle() const { return kind == DrawKind::Circle; }
 };
 
 // 圆/直线/曲线/多边形/矩形/填充/文本的名字，用于 GeoJSON properties.kind
@@ -54,6 +57,11 @@ class DrawingManager : public QObject
     Q_OBJECT
 public:
     explicit DrawingManager(QObject *parent = nullptr);
+
+    // 撤销/重做：主窗口把 QUndoStack 交给这里以后，所有改动（画图、删除、框选删除、填充、
+    // 文字修改、打断、裁剪、清空）都会自动压栈，调用方不需要自己造命令对象。
+    void setUndoStack(QUndoStack *stack) { m_undo = stack; }
+    QUndoStack *undoStack() const { return m_undo; }
 
     const QVector<DrawingFeature> &features() const { return m_features; }
     int count() const { return m_features.size(); }
@@ -76,9 +84,27 @@ public:
     int addText(double lat, double lon, const QString &text, const QColor &color, int sizePx = 16);
     bool setFill(int id, const QColor &fill);     // alpha 即透明度；无效颜色表示清除填充
 
+    // 属性编辑：按 id 覆盖（颜色 / 线宽 / 填充 / 文本 / 半径），压一条 ModifyFeatureCommand。
+    // 圆会按 centerLat/centerLon/radiusKm 重新生成点环，所以改半径后仍是真正的等距圆。
+    bool updateFeature(const DrawingFeature &f);
+    bool setCircleRadius(int id, double radiusKm);
+
     bool removeFeature(int id);
     void removeFeatures(const QVector<int> &ids);
     void clear();
+
+    // ---- 打断 / 裁剪 ----
+    // 只有开放图形（直线 / 自由曲线）能在内部顶点处断开；闭合图形和文本不行
+    bool canBreak(int id) const;
+    // 离 (lat,lon) 最近的顶点下标（打断用），失败返回 -1
+    int nearestVertex(int id, double lat, double lon) const;
+    // 在 vertexIndex 处一分为二（首尾顶点不能断），返回是否成功
+    bool breakFeature(int id, int vertexIndex);
+    // 剪切线（两点定义的大圆弧）与哪些开放图形相交
+    QVector<int> crossingFeatures(double lat1, double lon1, double lat2, double lon2) const;
+    // 裁剪：与剪切线相交的每个图形，在交点处断开并删掉中间被划过的那一段
+    // （只交一次时退化成打断）。返回被改动的图形数。
+    int trimCrossing(double lat1, double lon1, double lat2, double lon2);
 
     quint64 version() const { return m_version; }
 
@@ -89,11 +115,18 @@ public:
     bool saveToFile(const QString &path, QString *error = nullptr) const;
     bool loadFromFile(const QString &path, QString *error = nullptr);
 
+    // ---- 撤销栈专用的底层操作（不压栈，直接改数据并发 changed()）----
+    void insertFeature(int index, const DrawingFeature &f);   // 保留 f.id
+    bool takeFeature(int id);
+    bool replaceFeature(const DrawingFeature &f);
+
 signals:
     void changed();
 
 private:
+    bool pushOrApply(class QUndoCommand *cmd);    // 有撤销栈就压栈，否则执行并删除
     QVector<DrawingFeature> m_features;
+    QUndoStack *m_undo = nullptr;
     int m_nextId = 1;
     quint64 m_version = 0;
 };

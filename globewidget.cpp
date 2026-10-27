@@ -45,6 +45,8 @@ const int kClickSlopPx = 4;                        // 按下到松开移动不�
 const double kFlagScale = 1.2;                     // RadarView 旗标缩放默认值
 const QColor kRulerColor(0xf5, 0x9e, 0x0b);        // #f59e0b
 const QColor kLassoColor(0x10, 0xb9, 0x81);        // #10b981（RadarView 套索绿）
+const QColor kSelectColor(0x3b, 0x82, 0xf6);       // #3b82f6（选中高亮蓝，和绘图橙区分开）
+const double kSnapPx = 10.0;                       // 吸附半径（屏幕像素）
 
 // 点到线段的屏幕距离（橡皮擦命中测试）
 double distToSegment(const QPointF &p, const QPointF &a, const QPointF &b)
@@ -558,6 +560,40 @@ void GlobeWidget::setSpatialLasso(SpatialLasso *lasso)
     }
 }
 
+void GlobeWidget::setDrawingManager(DrawingManager *drawing)
+{
+    if (m_draw)
+        disconnect(m_draw, nullptr, this, nullptr);
+    m_draw = drawing;
+    if (m_draw) {
+        // 撤销/删除后选中的要素可能已经不存在了，顺手把选中状态清掉
+        connect(m_draw, &DrawingManager::changed, this, [this]() {
+            if (m_selectedFeature > 0 && m_draw->indexOf(m_selectedFeature) < 0)
+                setSelectedFeature(0);
+            update();
+        });
+    }
+    update();
+}
+
+void GlobeWidget::setSelectedFeature(int id)
+{
+    if (m_selectedFeature == id)
+        return;
+    m_selectedFeature = id;
+    emit drawSelectionChanged(id);
+    update();
+}
+
+bool GlobeWidget::deleteSelected()
+{
+    if (!m_draw || m_selectedFeature <= 0)
+        return false;
+    const int id = m_selectedFeature;
+    setSelectedFeature(0);
+    return m_draw->removeFeature(id);
+}
+
 void GlobeWidget::setShowLabels(bool on)
 {
     m_showLabels = on;
@@ -868,6 +904,7 @@ void GlobeWidget::drawFeatures(QPainter &p)
     if (!m_draw || m_draw->features().isEmpty())
         return;
     for (const DrawingFeature &f : m_draw->features()) {
+        const bool sel = (f.id == m_selectedFeature);
         // 文本框：锚点投影后画描边文字（和航迹标签同一套描边参数）
         if (f.isText()) {
             if (f.pts.isEmpty())
@@ -877,7 +914,13 @@ void GlobeWidget::drawFeatures(QPainter &p)
                 continue;
             QFont font = pxFont(ui::sz(int(f.textSizePx)), true);
             QColor outline(0, 0, 0, 210);
-            drawOutlinedText(p, sp, f.text, font, f.color, outline, 2.5);
+            drawOutlinedText(p, sp, f.text, font, sel ? kSelectColor : f.color, outline, 2.5);
+            if (sel) {                       // 选中的文本：套一个虚线框，一眼看出选中的是谁
+                const QRectF box = QFontMetricsF(font).boundingRect(f.text).translated(sp);
+                p.setBrush(Qt::NoBrush);
+                p.setPen(QPen(kSelectColor, 1.0, Qt::DashLine));
+                p.drawRect(box.adjusted(-4, -3, 4, 3));
+            }
             ++m_featuresDrawn;
             continue;
         }
@@ -904,7 +947,8 @@ void GlobeWidget::drawFeatures(QPainter &p)
             ++m_featuresDrawn;
             continue;
         }
-        p.setPen(QPen(f.color, qMax(1.0, f.widthPx), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        // 先把顶点投影成屏幕折线（背面断开），再统一描边：选中的先画一圈光晕加粗
+        QVector<QPolygonF> chunks;
         QPolygonF cur;
         bool any = false;
         for (const QPointF &pt : f.pts) {        // x = 经度, y = 纬度
@@ -914,12 +958,23 @@ void GlobeWidget::drawFeatures(QPainter &p)
                 any = true;
             } else if (!cur.isEmpty()) {
                 if (cur.size() > 1)
-                    p.drawPolyline(cur);
+                    chunks.append(cur);
                 cur.clear();
             }
         }
         if (cur.size() > 1)
-            p.drawPolyline(cur);
+            chunks.append(cur);
+        if (sel) {
+            QColor halo = kSelectColor;
+            halo.setAlphaF(0.45f);
+            p.setPen(QPen(halo, qMax(1.0, f.widthPx) + 6.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            for (const QPolygonF &c : chunks)
+                p.drawPolyline(c);
+        }
+        p.setPen(QPen(sel ? kSelectColor : f.color, qMax(1.0, f.widthPx) + (sel ? 1.0 : 0.0),
+                      Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        for (const QPolygonF &c : chunks)
+            p.drawPolyline(c);
         if (any)
             ++m_featuresDrawn;
     }
@@ -978,6 +1033,17 @@ void GlobeWidget::drawInProgress(QPainter &p)
         }
     }
 
+    // 裁剪/打断：拖动时显示一条红色虚线，就是这把「刀」走的路径
+    if (m_tool == DrawTool::Break && m_strokeActive && m_cursorValid) {
+        QPen knife(QColor(0xef, 0x44, 0x44), 2.0, Qt::CustomDashLine);
+        knife.setDashPattern(QVector<qreal>() << 4.0 << 4.0);
+        p.setPen(knife);
+        for (const QPolygonF &line : geodesicLines(m_pressLat, m_pressLon, curLat, curLon)) {
+            p.drawPolyline(line);
+            ++m_drawPreviewSegments;
+        }
+    }
+
     if (m_tool == DrawTool::Polygon && !m_stroke.isEmpty()) {
         p.setPen(solid);
         for (int i = 0; i + 1 < m_stroke.size(); ++i) {
@@ -1007,6 +1073,14 @@ void GlobeWidget::drawInProgress(QPainter &p)
         }
         p.setBrush(Qt::NoBrush);
     }
+
+    // 吸附提示：绿色小方块画在吸到的那个顶点上，告诉用户「这一下会落在这里」
+    if (m_snapActive) {
+        p.setPen(QPen(QColor(0, 0, 0, 170), 1.0));
+        p.setBrush(m_snapColor);
+        p.drawRect(QRectF(m_snapPos - QPointF(4.0, 4.0), QSizeF(8.0, 8.0)));
+        p.setBrush(Qt::NoBrush);
+    }
 }
 
 // 框选删除的橡皮筋：半透明填充 + 虚线边框
@@ -1034,6 +1108,8 @@ void GlobeWidget::setDrawTool(DrawTool t)
     m_hoverFeature = 0;
     if (t == DrawTool::None)
         unsetCursor();
+    else if (t == DrawTool::Select)
+        setCursor(Qt::ArrowCursor);        // 选择工具用箭头，跟「画」区分开
     else
         setCursor(Qt::CrossCursor);
     update();
@@ -1041,17 +1117,55 @@ void GlobeWidget::setDrawTool(DrawTool t)
 
 bool GlobeWidget::cancelDrawing()
 {
-    const bool had = m_strokeActive || !m_stroke.isEmpty() || m_bandActive || m_hoverFeature != 0;
+    const bool had = m_strokeActive || !m_stroke.isEmpty() || m_bandActive || m_hoverFeature != 0
+                     || m_snapActive;
     m_stroke.clear();
     m_strokeActive = false;
     m_bandActive = false;
     m_bandRect = QRect();
     m_hoverFeature = 0;
+    m_snapActive = false;
     m_dragging = false;
     m_clickCandidate = false;
     if (had)
         update();
     return had;
+}
+
+// 只有需要「落点精确」的工具才吸附：直线 / 矩形 / 多边形。
+// 自由手绘是逐点采样，吸了反而会把线扯到别的图形上。
+bool GlobeWidget::snappingTool() const
+{
+    return m_tool == DrawTool::Line || m_tool == DrawTool::Rect || m_tool == DrawTool::Polygon;
+}
+
+// 吸附：找屏幕上离鼠标最近、且在 kSnapPx（10px）以内的已有顶点。
+// 命中时返回该顶点的 WGS84 经纬度与屏幕坐标，调用方用它替换当前落点。
+bool GlobeWidget::snapToFeature(const QPointF &pos, double *lonDeg, double *latDeg, QPointF *screen)
+{
+    if (!m_draw || m_draw->features().isEmpty())
+        return false;
+    double best = kSnapPx;
+    bool found = false;
+    QPointF bestPos;
+    for (const DrawingFeature &f : m_draw->features()) {
+        for (const QPointF &pt : f.pts) {
+            QPointF sp;
+            if (!visiblePos(pt.x(), pt.y(), 0.0, &sp))
+                continue;
+            const double d = std::hypot(sp.x() - pos.x(), sp.y() - pos.y());
+            if (d <= best) {
+                best = d;
+                bestPos = sp;
+                *lonDeg = pt.x();
+                *latDeg = pt.y();
+                found = true;
+            }
+        }
+    }
+    if (found && screen)
+        *screen = bestPos;
+    return found;
 }
 
 void GlobeWidget::finishDrawStroke(double lat, double lon)
@@ -1802,6 +1916,7 @@ void GlobeWidget::paintGL()
                          || (m_lasso && !m_lasso->vertices().isEmpty())
                          || (m_draw && !m_draw->features().isEmpty())
                          || (m_tool != DrawTool::None && (!m_stroke.isEmpty() || m_bandActive))
+                         || m_snapActive
                          || m_tipTrack >= 0;
     if (overlay || m_overlayWanted) {
         m_overlayWanted = overlay;
@@ -1865,6 +1980,18 @@ void GlobeWidget::mousePressEvent(QMouseEvent *e)
             return;
         double lon = 0.0, lat = 0.0;
         const bool hit = geoAt(e->pos(), &lon, &lat);
+        // 吸附：落点离已有顶点不到 10px 就吸过去（直线/矩形/多边形）
+        m_snapActive = false;
+        if (hit && snappingTool()) {
+            QPointF sp;
+            double sl = 0.0, sa = 0.0;
+            if (snapToFeature(e->pos(), &sl, &sa, &sp)) {
+                lon = sl;
+                lat = sa;
+                m_snapActive = true;
+                m_snapPos = sp;
+            }
+        }
         switch (m_tool) {
         case DrawTool::Text:
             if (hit)
@@ -1889,7 +2016,28 @@ void GlobeWidget::mousePressEvent(QMouseEvent *e)
                 return;
             if (m_stroke.isEmpty())
                 m_strokeActive = true;
+            // 吸到起点就自动闭合：闭合边严丝合缝，不会差出一点点
+            if (m_stroke.size() >= 3 && QPointF(lon, lat) == m_stroke.first()) {
+                closeDrawPolygon();
+                return;
+            }
             m_stroke.append(QPointF(lon, lat));      // 多边形：单击放顶点
+            update();
+            return;
+        case DrawTool::Select: {
+            int id = hit ? featureAtScreen(e->pos(), kPickTolPx) : 0;
+            if (id <= 0 && hit)
+                id = closedFeatureAt(e->pos());      // 点在填充/多边形内部也能选中
+            setSelectedFeature(id);
+            return;
+        }
+        case DrawTool::Break:
+            if (!hit)
+                return;
+            m_strokeActive = true;                   // 按下开始「下刀」，松开时判断是点还是拖
+            m_pressLat = lat;
+            m_pressLon = lon;
+            m_pressPos = e->pos();
             update();
             return;
         case DrawTool::Line:
@@ -1936,6 +2084,18 @@ void GlobeWidget::mouseMoveEvent(QMouseEvent *e)
     if (m_tool != DrawTool::None) {
         double lon = 0.0, lat = 0.0;
         const bool hit = geoAt(e->pos(), &lon, &lat);
+        // 吸附：预览点直接吸到已有顶点上，落笔位置和看到的一致
+        m_snapActive = false;
+        if (hit && snappingTool()) {
+            QPointF sp;
+            double sl = 0.0, sa = 0.0;
+            if (snapToFeature(e->pos(), &sl, &sa, &sp)) {
+                lon = sl;
+                lat = sa;
+                m_snapActive = true;
+                m_snapPos = sp;
+            }
+        }
         m_cursorValid = hit;
         if (hit) {
             m_cursorLon = qDegreesToRadians(lon);
@@ -2057,12 +2217,44 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
             update();
             return;
         }
+        // 裁剪/打断：拖得短算「点一下」（打断），拖得长算「划一刀」（裁剪）
+        if (m_tool == DrawTool::Break) {
+            const bool click = (e->pos() - m_pressPos).manhattanLength() < 5;
+            double lon = 0.0, lat = 0.0;
+            const bool hit = geoAt(e->pos(), &lon, &lat);
+            m_strokeActive = false;
+            m_snapActive = false;
+            if (m_draw && hit) {
+                if (click) {
+                    const int id = featureAtScreen(e->pos(), kPickTolPx);
+                    if (id <= 0)
+                        emit drawMessage(tr("这里没有可打断的线段"));
+                    else if (!m_draw->breakFeature(id, m_draw->nearestVertex(id, lat, lon)))
+                        emit drawMessage(tr("闭合图形和文本不能打断"));
+                    else
+                        emit drawMessage(tr("已在该点打断成两段"));
+                } else {
+                    const int n = m_draw->trimCrossing(m_pressLat, m_pressLon, lat, lon);
+                    emit drawMessage(n > 0 ? tr("已裁剪 %1 个图形").arg(n)
+                                           : tr("剪切线没有穿过任何开放线段"));
+                }
+            }
+            update();
+            return;
+        }
         if (!m_strokeActive)
             return;
         if (m_tool == DrawTool::Polygon)
             return;                              // 多边形等双击/右键闭合
         double lon = 0.0, lat = 0.0;
         const bool hit = geoAt(e->pos(), &lon, &lat);
+        if (hit && snappingTool()) {             // 落笔点也吸附，终点才能精确落在已有顶点上
+            double sl = 0.0, sa = 0.0;
+            if (snapToFeature(e->pos(), &sl, &sa, nullptr)) {
+                lon = sl;
+                lat = sa;
+            }
+        }
         if (m_tool == DrawTool::Polyline) {
             if (m_stroke.size() >= 2 && m_draw) {
                 const int id = m_draw->addPolyline(m_stroke, m_drawColor);
@@ -2114,8 +2306,18 @@ void GlobeWidget::mouseDoubleClickEvent(QMouseEvent *e)
 {
     // 绘图模式：多边形双击闭合；其他工具下双击也不能误放旗标
     if (m_tool != DrawTool::None) {
-        if (m_tool == DrawTool::Polygon && e->button() == Qt::LeftButton)
+        if (m_tool == DrawTool::Polygon && e->button() == Qt::LeftButton) {
             closeDrawPolygon();
+        } else if (m_tool == DrawTool::Select && e->button() == Qt::LeftButton) {
+            // 双击 = 打开属性窗（颜色 / 线宽 / 填充透明度 / 圆的半径）
+            int id = featureAtScreen(e->pos(), kPickTolPx);
+            if (id <= 0)
+                id = closedFeatureAt(e->pos());
+            if (id > 0) {
+                setSelectedFeature(id);
+                emit drawFeatureEditRequested(id);
+            }
+        }
         return;
     }
     // 套索绘制中：双击闭合多边形

@@ -1,4 +1,5 @@
 #include "drawingmanager.h"
+#include "drawcommands.h"
 #include "geocalc.h"
 
 #include <QFile>
@@ -7,6 +8,7 @@
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QtMath>
+#include <QUndoStack>
 #include <cmath>
 
 namespace {
@@ -100,6 +102,19 @@ int DrawingManager::indexOf(int id) const
     return -1;
 }
 
+bool DrawingManager::pushOrApply(QUndoCommand *cmd)
+{
+    if (!cmd)
+        return false;
+    if (m_undo)
+        m_undo->push(cmd);          // push() 内部会调用 redo()，由命令自己完成改动
+    else {
+        cmd->redo();                // 没有撤销栈（自检里的纯数据用法）：直接生效
+        delete cmd;
+    }
+    return true;
+}
+
 int DrawingManager::addFeature(const DrawingFeature &f)
 {
     if (f.pts.isEmpty())
@@ -107,11 +122,41 @@ int DrawingManager::addFeature(const DrawingFeature &f)
     if (f.pts.size() < 2 && f.kind != DrawKind::Text)
         return 0;
     DrawingFeature item = f;
-    item.id = m_nextId++;
-    m_features.append(item);
+    item.id = m_nextId++;           // id 在造命令时就定下来，重做后才能还原同一个 id
+    pushOrApply(new AddFeatureCommand(this, item));
+    return item.id;
+}
+
+// 撤销栈专用：插入时保留 id（重做要恢复原样），并把 nextId 推到最大值之后
+void DrawingManager::insertFeature(int index, const DrawingFeature &f)
+{
+    m_features.insert(qBound(0, index, m_features.size()), f);
+    if (f.id >= m_nextId)
+        m_nextId = f.id + 1;
     ++m_version;
     emit changed();
-    return item.id;
+}
+
+bool DrawingManager::takeFeature(int id)
+{
+    const int i = indexOf(id);
+    if (i < 0)
+        return false;
+    m_features.remove(i);
+    ++m_version;
+    emit changed();
+    return true;
+}
+
+bool DrawingManager::replaceFeature(const DrawingFeature &f)
+{
+    const int i = indexOf(f.id);
+    if (i < 0)
+        return false;
+    m_features[i] = f;
+    ++m_version;
+    emit changed();
+    return true;
 }
 
 // 旗标距离圆：以旗标为圆心、radiusKm 为测地半径生成一圈点。
@@ -217,19 +262,46 @@ bool DrawingManager::setFill(int id, const QColor &fill)
     const int i = indexOf(id);
     if (i < 0)
         return false;
-    DrawingFeature &f = m_features[i];
-    if (!f.isClosed())
+    DrawingFeature after = m_features.at(i);
+    if (!after.isClosed())
         return false;
     if (fill.isValid() && fill.alpha() == 255) {
         QColor c = fill;
         c.setAlphaF(0.35);          // 不透明度没指定时给个能看见底图的默认值
-        f.fill = c;
+        after.fill = c;
     } else {
-        f.fill = fill;
+        after.fill = fill;
     }
-    ++m_version;
-    emit changed();
-    return true;
+    return updateFeature(after);    // 走 ModifyFeatureCommand，可撤销
+}
+
+// 属性编辑：颜色 / 线宽 / 填充 / 文本 / 半径，一条 ModifyFeatureCommand 就能整体回滚
+bool DrawingManager::updateFeature(const DrawingFeature &f)
+{
+    const int i = indexOf(f.id);
+    if (i < 0)
+        return false;
+    DrawingFeature after = f;
+    // 圆按圆心 + 半径重新生成点环：改完半径才是真正的等距圆，而不是被拉伸的多边形
+    if (after.kind == DrawKind::Circle && after.radiusKm > 0.0) {
+        const QVector<QPointF> ring = geocalc::geodesicCircle(after.centerLat, after.centerLon,
+                                                             after.radiusKm, 180);
+        if (ring.size() >= 3) {
+            after.pts = ring;
+            after.pts.append(ring.first());
+        }
+    }
+    return pushOrApply(new ModifyFeatureCommand(this, m_features.at(i), after, QStringLiteral("修改属性")));
+}
+
+bool DrawingManager::setCircleRadius(int id, double radiusKm)
+{
+    const DrawingFeature *f = feature(id);
+    if (!f || !f->isCircle() || !(radiusKm > 0.0))
+        return false;
+    DrawingFeature after = *f;
+    after.radiusKm = qMin(radiusKm, 20000.0);
+    return updateFeature(after);
 }
 
 bool DrawingManager::removeFeature(int id)
@@ -237,37 +309,179 @@ bool DrawingManager::removeFeature(int id)
     const int i = indexOf(id);
     if (i < 0)
         return false;
-    m_features.remove(i);
-    ++m_version;
-    emit changed();
-    return true;
+    QVector<int> idx;
+    QVector<DrawingFeature> fs;
+    idx.append(i);
+    fs.append(m_features.at(i));
+    return pushOrApply(new RemoveFeaturesCommand(this, idx, fs, QStringLiteral("删除图形")));
 }
 
-// 框选删除一次删一批：只在最后 emit 一次，避免每个要素都触发一次重绘
+// 框选删除一次删一批：一个命令、一次重绘
 void DrawingManager::removeFeatures(const QVector<int> &ids)
 {
     if (ids.isEmpty())
         return;
-    bool any = false;
-    for (int i = m_features.size() - 1; i >= 0; --i) {
+    QVector<int> idx;
+    QVector<DrawingFeature> fs;
+    for (int i = 0; i < m_features.size(); ++i) {
         if (ids.contains(m_features.at(i).id)) {
-            m_features.remove(i);
-            any = true;
+            idx.append(i);
+            fs.append(m_features.at(i));
         }
     }
-    if (any) {
-        ++m_version;
-        emit changed();
-    }
+    if (fs.isEmpty())
+        return;
+    pushOrApply(new RemoveFeaturesCommand(this, idx, fs,
+                                          QStringLiteral("删除 %1 个图形").arg(fs.size())));
 }
 
 void DrawingManager::clear()
 {
     if (m_features.isEmpty())
         return;
-    m_features.clear();
-    ++m_version;
-    emit changed();
+    QVector<int> idx;
+    QVector<DrawingFeature> fs;
+    for (int i = 0; i < m_features.size(); ++i) {
+        idx.append(i);
+        fs.append(m_features.at(i));
+    }
+    pushOrApply(new RemoveFeaturesCommand(this, idx, fs, QStringLiteral("清空绘图")));
+}
+
+// ---------------------------------------------------------------
+//  打断 / 裁剪（CAD 的 Break / Trim）
+// ---------------------------------------------------------------
+bool DrawingManager::canBreak(int id) const
+{
+    const DrawingFeature *f = feature(id);
+    return f && !f->isClosed() && !f->isText() && f->pts.size() >= 3;
+}
+
+int DrawingManager::nearestVertex(int id, double lat, double lon) const
+{
+    const DrawingFeature *f = feature(id);
+    if (!f)
+        return -1;
+    int best = -1;
+    double bestD = 0.0;
+    for (int i = 0; i < f->pts.size(); ++i) {
+        const double d = geocalc::vincentyKm(lat, lon, f->pts.at(i).y(), f->pts.at(i).x());
+        if (best < 0 || d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+// 在 vertexIndex 处一分为二：两段共用这个顶点，几何一点不差（断点正好落在原顶点上）
+bool DrawingManager::breakFeature(int id, int vertexIndex)
+{
+    if (!canBreak(id))
+        return false;
+    const int i = indexOf(id);
+    if (i < 0)
+        return false;
+    const DrawingFeature f = m_features.at(i);
+    if (vertexIndex <= 0 || vertexIndex >= f.pts.size() - 1)
+        return false;                       // 首尾顶点断不出两段
+
+    DrawingFeature a = f, b = f;
+    a.pts = f.pts.mid(0, vertexIndex + 1);
+    b.pts = f.pts.mid(vertexIndex);
+    if (a.pts.size() < 2 || b.pts.size() < 2)
+        return false;
+
+    // 一次打断 = 删一个 + 加两个，包成宏命令，撤销时一步还原
+    const bool macro = m_undo != nullptr;
+    if (macro)
+        m_undo->beginMacro(QStringLiteral("打断"));
+    removeFeature(id);
+    addFeature(a);
+    addFeature(b);
+    if (macro)
+        m_undo->endMacro();
+    return true;
+}
+
+QVector<int> DrawingManager::crossingFeatures(double lat1, double lon1, double lat2, double lon2) const
+{
+    QVector<int> out;
+    for (const DrawingFeature &f : m_features) {
+        if (f.isText() || f.isClosed() || f.pts.size() < 2)
+            continue;                       // 只裁开放图形；闭合图形/文本不参与
+        for (int k = 0; k + 1 < f.pts.size(); ++k) {
+            if (!geocalc::greatCircleIntersections(lat1, lon1, lat2, lon2,
+                                                   f.pts.at(k).y(), f.pts.at(k).x(),
+                                                   f.pts.at(k + 1).y(), f.pts.at(k + 1).x()).isEmpty()) {
+                out.append(f.id);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+// 裁剪：剪切线（press -> release 的大圆弧）与每个相交的开放图形求球面交点。
+// 划两刀（两个交点）就把中间那一段删掉，两头的部分留下；只划一刀就退化成打断。
+int DrawingManager::trimCrossing(double lat1, double lon1, double lat2, double lon2)
+{
+    const QVector<int> ids = crossingFeatures(lat1, lon1, lat2, lon2);
+    if (ids.isEmpty())
+        return 0;
+
+    auto trimOne = [this, lat1, lon1, lat2, lon2](int id) -> bool {
+        const int i = indexOf(id);
+        if (i < 0)
+            return false;
+        const DrawingFeature f = m_features.at(i);
+        QVector<int> seg;                   // 交点所在线段下标
+        QVector<QPointF> hit;               // 交点（WGS84）
+        for (int k = 0; k + 1 < f.pts.size(); ++k) {
+            const QVector<QPointF> h = geocalc::greatCircleIntersections(
+                lat1, lon1, lat2, lon2, f.pts.at(k).y(), f.pts.at(k).x(),
+                f.pts.at(k + 1).y(), f.pts.at(k + 1).x());
+            for (const QPointF &p : h) {
+                seg.append(k);
+                hit.append(p);
+            }
+        }
+        if (hit.isEmpty())
+            return false;
+
+        QVector<QVector<QPointF>> pieces;
+        QVector<QPointF> head = f.pts.mid(0, seg.first() + 1);
+        head.append(hit.first());
+        pieces.append(head);
+
+        QVector<QPointF> tail;
+        const int from = (hit.size() >= 2) ? seg.at(1) : seg.first();
+        tail.append(hit.at(hit.size() >= 2 ? 1 : 0));
+        tail += f.pts.mid(from + 1);
+        pieces.append(tail);
+
+        removeFeature(id);
+        for (const QVector<QPointF> &p : pieces) {
+            if (p.size() < 2)
+                continue;
+            DrawingFeature nf = f;
+            nf.pts = p;
+            addFeature(nf);
+        }
+        return true;
+    };
+
+    const bool macro = m_undo != nullptr;
+    if (macro)
+        m_undo->beginMacro(QStringLiteral("裁剪"));
+    int changed = 0;
+    for (int id : ids) {
+        if (trimOne(id))
+            ++changed;
+    }
+    if (macro)
+        m_undo->endMacro();
+    return changed;
 }
 
 QJsonObject DrawingManager::toJson() const
@@ -312,6 +526,9 @@ QJsonObject DrawingManager::toJson() const
             center.append(round6(f.centerLat));
             props.insert(QStringLiteral("center"), center);
             props.insert(QStringLiteral("radiusKm"), f.radiusKm);
+            // 显式声明这是「圆」而不是多边形：导入时按圆心+半径还原，半径还能继续调
+            props.insert(QStringLiteral("shapeType"), QStringLiteral("circle"));
+            props.insert(QStringLiteral("radius"), f.radiusKm);   // 半径，公里
         }
         if (f.kind == DrawKind::Text) {
             props.insert(QStringLiteral("text"), f.text);
@@ -415,6 +632,20 @@ bool DrawingManager::fromJson(const QJsonObject &root, QString *error)
             f.centerLat = center.at(1).toDouble();
         }
         f.radiusKm = props.value(QStringLiteral("radiusKm")).toDouble(0.0);
+        // 圆：properties 里声明了 shapeType=circle 就还原成「圆心 + 半径」模型，点环重新生成，
+        // 而不是把导出的 180 边形当成普通多边形（那样半径就再也调不了了）。
+        const double radiusProp = props.value(QStringLiteral("radius")).toDouble(f.radiusKm);
+        if (props.value(QStringLiteral("shapeType")).toString() == QLatin1String("circle")
+            && center.size() >= 2 && radiusProp > 0.0) {
+            f.kind = DrawKind::Circle;
+            f.radiusKm = radiusProp;
+            const QVector<QPointF> ring = geocalc::geodesicCircle(f.centerLat, f.centerLon,
+                                                                 f.radiusKm, 180);
+            if (ring.size() >= 3) {
+                f.pts = ring;
+                f.pts.append(ring.first());
+            }
+        }
         if (f.kind == DrawKind::Text) {
             f.text = props.value(QStringLiteral("text")).toString();
             f.textSizePx = qBound(8, props.value(QStringLiteral("textSize")).toInt(16), 72);

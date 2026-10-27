@@ -46,6 +46,9 @@
 #include <QMenu>
 #include <QToolBar>
 #include <QToolTip>
+#include <QUndoStack>
+#include <QJsonArray>
+#include <QJsonObject>
 
 #include <QFileInfo>
 #include <QDir>
@@ -373,6 +376,127 @@ void runSelfTest(MainWindow *w)
                   .arg(rf2 ? rf2->fill.alpha() : -1).arg(tf2 ? int(tf2->textSizePx) : -1).arg(err));
     }
 
+    // ---- 撤销/重做、打断/裁剪、圆的往返（纯逻辑）----
+    {
+        // 大圆交点：东西向与南北向两段交于 (30,120)
+        const QVector<QPointF> x = geocalc::greatCircleIntersections(30, 119, 30, 121, 29, 120, 31, 120);
+        const double hx = x.isEmpty() ? 0.0 : x.first().x();
+        const double hy = x.isEmpty() ? 0.0 : x.first().y();
+        // 经度必须正好是 120；纬度比 30 略高（≈30.0038°）——因为东西向那段是大圆不是纬圈，
+        // 中点会向极地鼓出 tan30°/cos1°，这正好反证交点是按大圆算的，不是按经纬度直线算的
+        check(x.size() == 1 && std::fabs(hx - 120.0) < 1e-6
+              && hy > 30.0 && hy < 30.01,
+              QStringLiteral("大圆交点：%1 个，(%2, %3)（大圆向北鼓出）").arg(x.size())
+                  .arg(hx, 0, 'f', 4).arg(hy, 0, 'f', 4));
+        // 交点在端点上也必须认（T 形相接）
+        check(geocalc::greatCircleIntersections(30, 120, 30, 122, 29, 120, 31, 120).size() == 1,
+              QStringLiteral("大圆交点：T 形相接（交点在端点）"));
+        // 两条弧段范围外不相交
+        check(geocalc::greatCircleIntersections(30, 119, 30, 121, 32, 119, 32, 121).isEmpty(),
+              QStringLiteral("大圆交点：两段不相交时返回空"));
+
+        QUndoStack stack;
+        stack.setUndoLimit(200);
+        DrawingManager um;
+        um.setUndoStack(&stack);
+        const int u1 = um.addLine(30, 120, 31, 121, QColor("#00B0F0"));
+        check(um.count() == 1 && stack.canUndo(), QStringLiteral("撤销栈：画线后可以撤销"));
+        stack.undo();
+        check(um.count() == 0, QStringLiteral("撤销栈：撤销后剩 %1 个图形").arg(um.count()));
+        stack.redo();
+        check(um.count() == 1 && um.feature(u1) != nullptr && um.feature(u1)->id == u1,
+              QStringLiteral("撤销栈：重做后同一个 id 回来了"));
+
+        // 填充 -> 撤销 -> 重做
+        const int ur = um.addRect(28, 118, 32, 122, QColor("#00B050"));
+        um.setFill(ur, QColor(0, 176, 80, 90));
+        check(um.feature(ur) && um.feature(ur)->fill.isValid(), QStringLiteral("撤销栈：矩形已填充"));
+        stack.undo();
+        check(um.feature(ur) && !um.feature(ur)->fill.isValid(),
+              QStringLiteral("撤销栈：撤销填充后填充色消失"));
+        stack.redo();
+        check(um.feature(ur) && um.feature(ur)->fill.isValid(),
+              QStringLiteral("撤销栈：重做后填充色回来"));
+
+        // 改属性（颜色 + 线宽）也要能撤销
+        DrawingFeature styled = *um.feature(ur);
+        styled.color = QColor("#FF0000");
+        styled.widthPx = 7.0;
+        um.updateFeature(styled);
+        check(um.feature(ur)->color == QColor("#FF0000") && um.feature(ur)->widthPx == 7.0,
+              QStringLiteral("撤销栈：改颜色和线宽生效"));
+        stack.undo();
+        check(um.feature(ur)->widthPx != 7.0, QStringLiteral("撤销栈：撤销改属性"));
+
+        // 删除 -> 撤销：位置和 id 都要还原
+        um.removeFeature(ur);
+        check(um.count() == 1, QStringLiteral("撤销栈：删除后剩 %1 个").arg(um.count()));
+        stack.undo();
+        check(um.count() == 2 && um.feature(ur) != nullptr && um.indexOf(ur) == 1,
+              QStringLiteral("撤销栈：撤销删除后原位置还原"));
+
+        // 打断：一条直线在中间顶点处一分为二，撤销还原成一条
+        DrawingManager bm;
+        QUndoStack bstack;
+        bm.setUndoStack(&bstack);
+        const int bl = bm.addLine(30, 119, 30, 121, QColor("#FF4444"));
+        const int bv = bm.nearestVertex(bl, 30.0, 120.0);
+        const int btotal = bm.feature(bl) ? bm.feature(bl)->pts.size() : 0;
+        check(bv > 0 && bv < btotal - 1, QStringLiteral("打断：找到中间的断点（第 %1/%2 个顶点）")
+              .arg(bv).arg(btotal));
+        check(bm.breakFeature(bl, bv) && bm.count() == 2,
+              QStringLiteral("打断：一条线变成 %1 段").arg(bm.count()));
+        bstack.undo();
+        check(bm.count() == 1 && bm.feature(bl) != nullptr && bm.feature(bl)->pts.size() == btotal,
+              QStringLiteral("打断：撤销后还原成一条"));
+
+        // 裁剪：U 形折线被一条横线穿过两次，中间那段被删掉，剩下两个残段
+        DrawingManager tm;
+        QUndoStack tstack;
+        tm.setUndoStack(&tstack);
+        QVector<QPointF> u;
+        u << QPointF(119, 30) << QPointF(119, 32) << QPointF(121, 32) << QPointF(121, 30);
+        const int ul = tm.addPolyline(u, QColor("#FF4444"));
+        check(ul > 0, QStringLiteral("裁剪：建好 U 形折线"));
+        const int cut = tm.trimCrossing(31, 118, 31, 122);
+        check(cut == 1 && tm.count() == 2,
+              QStringLiteral("裁剪：切掉中间一段后剩 %1 段").arg(tm.count()));
+        if (tm.count() == 2) {
+            int total = 0;
+            for (const DrawingFeature &f : tm.features())
+                total += f.pts.size();
+            check(total <= 5, QStringLiteral("裁剪：中间的点被删掉了（剩 %1 个顶点）").arg(total));
+        }
+        tstack.undo();
+        check(tm.count() == 1 && tm.feature(ul) && tm.feature(ul)->pts.size() == 4,
+              QStringLiteral("裁剪：撤销后还原成原来的 U 形"));
+
+        // 圆的 GeoJSON 往返：写 shapeType/radius，导入后仍是圆心+半径，半径还能再调
+        DrawingManager cm;
+        const int cc = cm.addCircle(31.2, 121.5, 250.0, QColor("#0070C0"));
+        const QJsonObject cj = cm.toJson();
+        const QJsonObject cp = cj.value(QStringLiteral("features")).toArray().at(0)
+                                 .toObject().value(QStringLiteral("properties")).toObject();
+        check(cp.value(QStringLiteral("shapeType")).toString() == QLatin1String("circle")
+              && std::fabs(cp.value(QStringLiteral("radius")).toDouble() - 250.0) < 1e-9,
+              QStringLiteral("圆序列化：shapeType=circle、radius=%1")
+                  .arg(cp.value(QStringLiteral("radius")).toDouble()));
+        DrawingManager cm2;
+        QString cerr;
+        cm2.fromJson(cj, &cerr);
+        const DrawingFeature *cc2 = cm2.feature(cc);
+        check(cc2 && cc2->isCircle() && cc2->pts.size() == 181
+              && std::fabs(cc2->radiusKm - 250.0) < 1e-6,
+              QStringLiteral("圆导入：还原成圆心+半径，%1 个顶点 %2")
+                  .arg(cc2 ? cc2->pts.size() : -1).arg(cerr));
+        const bool grown = cm2.setCircleRadius(cc, 500.0);
+        const DrawingFeature *cc3 = cm2.feature(cc);
+        const double r = (cc3 && cc3->pts.size() > 10)
+            ? geocalc::vincentyKm(31.2, 121.5, cc3->pts.at(10).y(), cc3->pts.at(10).x()) : 0.0;
+        check(grown && cc3 && std::fabs(cc3->radiusKm - 500.0) < 1e-9 && std::fabs(r - 500.0) < 0.01,
+              QStringLiteral("圆导入：半径改成 500 km 后点环仍是等距圆（实测 %1 km）").arg(r, 0, 'f', 3));
+    }
+
     // ---- 空间套索几何自检（纯函数，不依赖 GL）----
     {
         QVector<LassoVertex> poly;
@@ -612,6 +736,11 @@ void runSelfTest(MainWindow *w)
                     // 清理测试多边形，避免写进用户设置
                     w->filterPanel()->clickSpatialClear();
                     lasso->clearAll();
+                    // 绘图工具栏默认收起：先记下状态，点开后再检查（两行按钮）
+                    QToolBar *bar0 = w->findChild<QToolBar *>(QStringLiteral("drawToolBar"));
+                    QToolBar *bar2 = w->findChild<QToolBar *>(QStringLiteral("drawToolBar2"));
+                    const bool drawBarCollapsed = bar0 && bar0->isHidden() && bar2 && bar2->isHidden();
+                    w->setDrawingBarVisible(true);
                     // 贴地圆：加到视野中心，叠加层必须画出来（背面顶点会被断开，这里整圈都可见）
                     const int cid = w->drawing()->addCircle(30.0, 110.0, 800.0, QColor("#FFC000"),
                                                             QStringLiteral("自检"));
@@ -619,11 +748,17 @@ void runSelfTest(MainWindow *w)
                     (*waitFrames)(2, [=]() {
                         check(g->featuresDrawn() == 1,
                               QStringLiteral("地图上画出距离圆 %1 个").arg(g->featuresDrawn()));
+                        // 绘图工具栏平时不显示，点开左上角「绘图」才出现，且分两行
                         QToolBar *bar = w->findChild<QToolBar *>(QStringLiteral("drawToolBar"));
-                        check(bar && bar->isVisible() && bar->height() > 10 && bar->actions().size() >= 12
+                        check(drawBarCollapsed && bar && bar->isVisible() && bar->height() > 10
+                              && bar->actions().size() >= 11
+                              && bar2 && bar2->isVisible() && bar2->actions().size() >= 5
+                              && w->undoStack() && w->undoStack()->undoLimit() == 200
                               && g->drawTool() == DrawTool::None,
-                              QStringLiteral("绘图工具栏 %1 项、高 %2 px，默认漫游")
-                                  .arg(bar ? bar->actions().size() : 0).arg(bar ? bar->height() : 0));
+                              QStringLiteral("绘图工具栏默认收起，点开后 %1 项 + %2 项，撤销上限 %3")
+                                  .arg(bar ? bar->actions().size() : 0)
+                                  .arg(bar2 ? bar2->actions().size() : 0)
+                                  .arg(w->undoStack() ? w->undoStack()->undoLimit() : -1));
 
                         auto send = [g](QEvent::Type type, const QPointF &p, Qt::MouseButton btn,
                                         Qt::MouseButtons buttons) {
@@ -672,6 +807,67 @@ void runSelfTest(MainWindow *w)
                              Qt::LeftButton, Qt::NoButton);
                         check(w->drawing()->count() == 0,
                               QStringLiteral("框选删除后剩 %1 个图形").arg(w->drawing()->count()));
+
+                        // 框选删除也要能撤销/重做
+                        w->undoStack()->undo();
+                        check(w->drawing()->count() == 2,
+                              QStringLiteral("撤销框选删除后回来 %1 个图形").arg(w->drawing()->count()));
+                        w->undoStack()->redo();
+                        check(w->drawing()->count() == 0,
+                              QStringLiteral("重做框选删除后剩 %1 个图形").arg(w->drawing()->count()));
+
+                        // 选择 + Delete + 撤销：画一条线，点中它，删掉，再撤销回来
+                        w->setDrawTool(DrawTool::Line);
+                        QPointF s1, s2;
+                        if (g->screenPos(108.0, 29.0, 0.0, &s1) && g->screenPos(112.0, 31.0, 0.0, &s2)) {
+                            send(QEvent::MouseButtonPress, s1, Qt::LeftButton, Qt::LeftButton);
+                            send(QEvent::MouseMove, s2, Qt::NoButton, Qt::LeftButton);
+                            send(QEvent::MouseButtonRelease, s2, Qt::LeftButton, Qt::NoButton);
+                        }
+                        const int lineId = w->drawing()->count() == 1
+                            ? w->drawing()->features().first().id : 0;
+                        w->setDrawTool(DrawTool::Select);
+                        QPointF mid2;
+                        bool midOk = false;
+                        if (const DrawingFeature *lf = w->drawing()->feature(lineId)) {
+                            const QPointF &mp = lf->pts.at(lf->pts.size() / 2);   // 正中那个顶点，点得准
+                            midOk = g->screenPos(mp.x(), mp.y(), 0.0, &mid2);
+                        }
+                        if (midOk) {
+                            send(QEvent::MouseButtonPress, mid2, Qt::LeftButton, Qt::LeftButton);
+                            send(QEvent::MouseButtonRelease, mid2, Qt::LeftButton, Qt::NoButton);
+                        }
+                        check(lineId > 0 && g->selectedFeature() == lineId,
+                              QStringLiteral("选择工具：选中图形 %1（当前 %2）")
+                                  .arg(lineId).arg(g->selectedFeature()));
+                        check(g->deleteSelected() && w->drawing()->count() == 0,
+                              QStringLiteral("Delete 删除选中的图形"));
+                        w->undoStack()->undo();
+                        check(w->drawing()->count() == 1 && g->selectedFeature() == 0,
+                              QStringLiteral("撤销删除后图形回来，选中状态已清空"));
+
+                        // 吸附：从已有端点旁边 6px 起笔，起点必须精确吸到那个端点
+                        const DrawingFeature *base = w->drawing()->count() == 1
+                            ? &w->drawing()->features().first() : nullptr;
+                        QPointF endPos, farPos;
+                        const bool canSnap = base && !base->pts.isEmpty()
+                            && g->screenPos(base->pts.last().x(), base->pts.last().y(), 0.0, &endPos)
+                            && g->screenPos(107.0, 28.0, 0.0, &farPos);
+                        if (canSnap) {
+                            const QPointF expect = base->pts.last();
+                            // 注意别用 near / far 当变量名：windows.h 里是宏
+                            const QPointF snapPress = endPos + QPointF(6.0, 4.0);   // 7.2px，在 10px 吸附圈内
+                            w->setDrawTool(DrawTool::Line);
+                            send(QEvent::MouseButtonPress, snapPress, Qt::LeftButton, Qt::LeftButton);
+                            send(QEvent::MouseMove, farPos, Qt::NoButton, Qt::LeftButton);
+                            send(QEvent::MouseButtonRelease, farPos, Qt::LeftButton, Qt::NoButton);
+                            const DrawingFeature &added = w->drawing()->features().last();
+                            check(w->drawing()->count() == 2 && added.pts.first() == expect,
+                                  QStringLiteral("吸附：新线起点吸到已有端点（%1 个顶点）")
+                                      .arg(added.pts.size()));
+                        } else {
+                            check(false, QStringLiteral("吸附：测试点不在屏幕上"));
+                        }
 
                         w->setDrawTool(DrawTool::None);
                         finish();
@@ -1564,6 +1760,7 @@ int main(int argc, char *argv[])
 
     // 绘图演示（回归截图用）：--draw-demo，往地图上放几个典型图形
     if (args.contains(QStringLiteral("--draw-demo"))) {
+        w.setDrawingBarVisible(true);          // 截图里要能看到工具栏
         DrawingManager *d = w.drawing();
         const int rid = d->addRect(30.0, 95.0, 40.0, 115.0, QColor("#00B0F0"));
         d->setFill(rid, QColor(0x00, 0xb0, 0xf0, 70));
