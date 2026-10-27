@@ -1160,6 +1160,18 @@ void MainWindow::buildMenuBar()
     m_srcAmapOffline = addSource(QStringLiteral("amap_offline"), tr("高德（离线 · 近岸 z1-z16）"));
     m_srcAmapOffline->setToolTip(tr("中国东部+东南沿海近岸走廊 z16 离线瓦片；\n"
                                    "需先运行 tools/download_tiles.py 生成 amap_coast_z1_z16.mbtiles"));
+    mSource->addSeparator();
+    m_strictOfflineAction = mSource->addAction(tr("离线瓦片：缺块留空"));
+    m_strictOfflineAction->setCheckable(true);
+    m_strictOfflineAction->setToolTip(tr("勾选：离线包没有瓦片的地方就是空的，方便看清覆盖范围；\n"
+                                         "取消：用低层级父瓦片放大铺满（连续但是糊）"));
+    const bool strictOffline = app::settings().value(QStringLiteral("map.offline_strict"), true).toBool();
+    m_strictOfflineAction->setChecked(strictOffline);
+    m_globe->setOfflineStrict(strictOffline);
+    connect(m_strictOfflineAction, &QAction::toggled, this, [this](bool on) {
+        m_globe->setOfflineStrict(on);
+        app::settings().setValue(QStringLiteral("map.offline_strict"), on);
+    });
     syncSourceActions();
     mFile->addSeparator();
     QAction *aExit = item(mFile, tr("退出"), QKeySequence(Qt::ALT + Qt::Key_F4), []() { qApp->quit(); });

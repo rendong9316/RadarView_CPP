@@ -44,6 +44,12 @@ public:
     bool openOnlineMap(const QString &token, bool useAmap = false, QString *error = nullptr);
     void closeOnlineMap();
     bool onlineMap() const { return m_online != nullptr; }
+    // 离线瓦片是否「缺块留空」。true（默认）：只画该层级真实存在的瓦片，
+    // 缺的地方就空着，方便看清离线包到底覆盖到哪；false：退回老行为，
+    // 用低层级父瓦片放大铺满（看起来连续但是糊的）。
+    // 只对离线源生效；在线源需要父级兜底来做渐进填充。
+    void setOfflineStrict(bool on) { m_offlineStrict = on; update(); }
+    bool offlineStrict() const { return m_offlineStrict; }
     bool onlineBusy() const;
     QString mapSourceName() const;
     QString tileName() const;
@@ -182,6 +188,7 @@ private:
 
     std::unique_ptr<TileSource> m_tiles;
     bool m_sceneCrs = false;        // 当前场景是否 GCJ-02（已生效的那个，不是配置值）
+    bool m_offlineStrict = true;    // 离线源缺块留空（不拿低层级父瓦片铺满）
     NetTileSource *m_online = nullptr;      // 在线底图（天地图），为空表示离线模式
     QHash<quint64, QImage> m_pendingTiles;  // 网络已到、等着在 GL 线程上传
     TrackLayer m_trackLayer;

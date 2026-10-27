@@ -306,12 +306,21 @@ bool GlobeWidget::openTiles(const QString &path, QString *error)
     if (!src->open(path, error))
         return false;
 
+    // 打开本地包 = 只要这份离线数据：把在线源整个关掉。
+    // 否则 m_online 还活着，loadTexture() 会走网络分支，屏幕上看到的是
+    // 在线瓦片或它的磁盘缓存，本地包反而没被用上。
+    if (m_online) {
+        delete m_online;
+        m_online = nullptr;
+    }
+
     if (m_glReady) {
         makeCurrent();
         clearTextures();
         doneCurrent();
     }
     m_missing.clear();
+    m_pendingTiles.clear();     // 上一个源还在路上的瓦片不能漏进新包
     m_tiles = std::move(src);
     applySceneCrs();
     updateCapColors();
@@ -1170,7 +1179,10 @@ GLuint GlobeWidget::textureFor(const TileId &t, QVector4D *xform)
 {
     const int maxZ = mapMaxZoom();
     const int minZ = mapMinZoom();
-    for (int az = qMin(t.z, maxZ); az >= minZ; --az) {
+    // 离线 + 严格模式：只画本层级真实存在的瓦片，缺块就空着。
+    // 在线源不这么做——它需要父级兜底来做"先糊后清"的渐进填充。
+    const int lowest = (m_tiles && !m_online && m_offlineStrict) ? t.z : minZ;
+    for (int az = qMin(t.z, maxZ); az >= lowest; --az) {
         const int dz = t.z - az;
         const int ax = t.x >> dz, ay = t.y >> dz;
         auto it = m_textures.find(tileKey(az, ax, ay));
