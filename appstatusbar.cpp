@@ -253,7 +253,6 @@ public:
     explicit SeekBar(QWidget *parent) : QWidget(parent)
     {
         ui::bindSize(this, ui::SizeKind::MinWidth, 60);
-        ui::bindSize(this, ui::SizeKind::MaxWidth, 300);
         ui::bindSize(this, ui::SizeKind::FixedHeight, kBarHeight - 1);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         setAttribute(Qt::WA_Hover);
