@@ -175,6 +175,24 @@ QString drawingPath()
 //  Settings
 // ---------------------------------------------------------------
 
+static void migrateSettingsSchema(QSqlDatabase &db, QSqlQuery &q)
+{
+    bool needMigrate = false;
+    QSqlQuery info(db);
+    if (info.exec(QStringLiteral("PRAGMA table_info(app_settings)"))) {
+        while (info.next()) {
+            if (info.value(1).toString() == QLatin1String("value") && info.value(3).toInt() == 1)
+                needMigrate = true;
+        }
+    }
+    if (needMigrate) {
+        q.exec(QStringLiteral("ALTER TABLE app_settings RENAME TO app_settings_old"));
+        q.exec(QStringLiteral("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT, type TEXT NOT NULL DEFAULT 'string')"));
+        q.exec(QStringLiteral("INSERT INTO app_settings(key, value, type) SELECT key, value, type FROM app_settings_old"));
+        q.exec(QStringLiteral("DROP TABLE app_settings_old"));
+    }
+}
+
 void Settings::ensureLoaded()
 {
     if (m_loaded)
@@ -192,7 +210,8 @@ void Settings::ensureLoaded()
     q.exec(QStringLiteral("PRAGMA busy_timeout=30000"));
     q.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
     q.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS app_settings ("
-                          " key TEXT PRIMARY KEY, value TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'string')"));
+                          " key TEXT PRIMARY KEY, value TEXT, type TEXT NOT NULL DEFAULT 'string')"));
+    migrateSettingsSchema(db, q);
     if (q.exec(QStringLiteral("SELECT key, value, type FROM app_settings"))) {
         while (q.next())
             m_cache.insert(q.value(0).toString(), decodeValue(q.value(1).toString(), q.value(2).toString()));
@@ -250,22 +269,26 @@ void Settings::sync()
     if (!db.isOpen())
         return;                                   // 库没打开：留着脏值，别丢
     db.transaction();
-    QSqlQuery del(db);
-    del.prepare(QStringLiteral("DELETE FROM app_settings WHERE key = ?"));
+    // 每条记录用独立的 QSqlQuery：复用同一查询对象并反复 addBindValue 会让绑定值累加，
+    // 导致第 1 次 exec 之后的写全部失败（静默丢失），持久化看起来“卡在旧状态”。
     for (const QString &key : m_removed) {
+        QSqlQuery del(db);
+        del.prepare(QStringLiteral("DELETE FROM app_settings WHERE key = ?"));
         del.addBindValue(key);
-        del.exec();
+        if (!del.exec())
+            qWarning("[settings] 删除设置失败 %s: %s", qPrintable(key), qPrintable(del.lastError().text()));
     }
-    QSqlQuery ins(db);
-    ins.prepare(QStringLiteral("INSERT OR REPLACE INTO app_settings (key, value, type) VALUES (?, ?, ?)"));
     for (const QString &key : m_dirty) {
         const auto it = m_cache.constFind(key);
         if (it == m_cache.constEnd())
             continue;
+        QSqlQuery ins(db);
+        ins.prepare(QStringLiteral("INSERT OR REPLACE INTO app_settings (key, value, type) VALUES (?, ?, ?)"));
         ins.addBindValue(key);
         ins.addBindValue(encodeValue(it.value()));
         ins.addBindValue(encodeType(it.value()));
-        ins.exec();
+        if (!ins.exec())
+            qWarning("[settings] 写入设置失败 %s: %s", qPrintable(key), qPrintable(ins.lastError().text()));
     }
     if (!db.commit()) {
         qWarning("[settings] 写设置失败: %s", qPrintable(db.lastError().text()));
