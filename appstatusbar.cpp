@@ -16,6 +16,10 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QWheelEvent>
 #include <QTimer>
 #include <cmath>
 #include <functional>
@@ -110,6 +114,28 @@ QString formatCoordinate(double v)
         s = QStringLiteral("0.0000");
     return s;
 }
+
+// formatBeijingTime 是 "YYYY MM DD HH:MM:SS"，这里只取需要的部分，省掉重复的日期
+QString clockOf(const QString &beijing) { return beijing.mid(11); }
+QString monthDayClockOf(const QString &beijing)
+{
+    QString md = beijing.mid(5, 5);                    // "MM DD"
+    md.replace(QLatin1Char(' '), QLatin1Char('-'));
+    return md + QLatin1Char(' ') + clockOf(beijing);
+}
+
+} // namespace
+
+QString formatReplayRange(qint64 currentMs, qint64 endMs)
+{
+    const QString cur = formatBeijingTime(currentMs);
+    const QString end = formatBeijingTime(endMs);
+    if (cur.left(10) == end.left(10))                  // 同一天：只显示时分秒
+        return clockOf(cur) + QStringLiteral(" / ") + clockOf(end);
+    return monthDayClockOf(cur) + QStringLiteral(" / ") + monthDayClockOf(end);
+}
+
+namespace {
 
 // lucide 图标（viewBox 24×24、线宽 2、圆角端点），用 QPainter 画，不依赖 QtSvg
 enum class Icon { Play, Pause, Moon, Sun, Contrast, Alert };
@@ -469,11 +495,10 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
-        if (underMouse()) {
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor(255, 255, 255, 26));
-            p.drawRoundedRect(rect(), 3, 3);
-        }
+        // 常驻的圆角底（chip），悬停时加深，一眼看出是可点的
+        p.setPen(Qt::NoPen);
+        p.setBrush(withAlpha(m_fg, underMouse() ? 0.20 : 0.08));
+        p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), ui::sz(3), ui::sz(3));
         p.setPen(Qt::NoPen);
         p.setBrush(withAlpha(m_item.color, m_item.visible ? 1.0 : 0.3));
         const double d = ui::sz(7);
@@ -567,10 +592,15 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
         l->setFont(monoFont(kFontPx()));
         right->addWidget(l);
     }
-    m_sourceLayout = new QHBoxLayout;
-    ui::bindSpacing(m_sourceLayout, kGap);
-    m_sourceLayout->setContentsMargins(0, 0, 0, 0);
-    right->addLayout(m_sourceLayout);
+    // 数据源：一个入口按钮，点开在上方横排展开（不再把每个文件都摆进状态栏）
+    m_sourceBtn = new QPushButton(m_right);
+    m_sourceBtn->setObjectName(QStringLiteral("sourceBtn"));
+    m_sourceBtn->setFont(uiFont(kFontPx()));
+    m_sourceBtn->setCursor(Qt::PointingHandCursor);
+    m_sourceBtn->setFocusPolicy(Qt::NoFocus);
+    m_sourceBtn->setText(QStringLiteral("数据源"));
+    right->addWidget(m_sourceBtn);
+    connect(m_sourceBtn, &QPushButton::clicked, this, &AppStatusBar::sourceStripToggleRequested);
     m_count = new QLabel(m_right);
     m_count->setFont(monoFont(kFontPx()));
     right->addWidget(m_count);
@@ -620,10 +650,8 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
             l->setFont(monoFont(kFontPx()));
         m_speed->setFont(monoFont(kSmallFontPx()));
         m_error->setFont(uiFont(kFontPx()));
-        for (SourceButton *b : qAsConst(m_sourceButtons)) {
-            b->setFont(uiFont(kFontPx()));
-            b->updateGeometry();
-        }
+        m_sourceBtn->setFont(uiFont(kFontPx()));
+        m_sourceBtn->updateGeometry();
         m_speed->updateGeometry();
         applyTheme();
         syncState();
@@ -678,8 +706,8 @@ void AppStatusBar::syncTime()
 {
     const bool hasData = m_ctrl->end() > m_ctrl->start();
     m_seek->setProgress(hasData ? m_ctrl->progress() : 0.0);
-    const QString text = formatBeijingTime(m_ctrl->current()) + QStringLiteral(" / ")
-                       + (hasData ? formatBeijingTime(m_ctrl->end()) : QStringLiteral("--"));
+    const QString text = hasData ? formatReplayRange(m_ctrl->current(), m_ctrl->end())
+                                 : QStringLiteral("-- / --");
     if (m_time->text() != text)
         m_time->setText(text);
 }
@@ -700,18 +728,21 @@ void AppStatusBar::setViewStatus(double heightKm, double lonDeg, double latDeg, 
     const QString h = formatHeightKm(qMax(0.0, heightKm));
     const QString lon = formatCoordinate(lonDeg), lat = formatCoordinate(latDeg);
     const QString f = fps > 0 ? QString::number(fps) : QStringLiteral("--");
-    const QString ht = QStringLiteral("高: %1 km").arg(h);
+    // 状态栏位置紧张：标签只留一个字，单位和坐标系说明放 tooltip
+    const QString ht = QStringLiteral("高 %1 km").arg(h);
     // 坐标一律 WGS84（GPS 原始，与航迹数据同源）。底图即使加了 GCJ 偏移，
     // 也只影响画出来的位置，不影响这里显示的值。
-    const QString lt = hasCoord ? QStringLiteral("经纬: %1, %2 (WGS84)").arg(lon, lat)
-                                : QStringLiteral("经纬: --");
-    const QString ft = QStringLiteral("FPS: %1").arg(f);
+    const QString lt = hasCoord ? QStringLiteral("经纬 %1, %2").arg(lon, lat)
+                                : QStringLiteral("经纬 --");
+    const QString ft = QStringLiteral("FPS %1").arg(f);
     if (m_height->text() != ht) {
         m_height->setText(ht);
-        m_height->setToolTip(QStringLiteral("相机高度 %1 km").arg(h));
+        m_height->setToolTip(QStringLiteral("相机离地高度 %1 km").arg(h));
     }
-    if (m_lonLat->text() != lt)
+    if (m_lonLat->text() != lt) {
         m_lonLat->setText(lt);
+        m_lonLat->setToolTip(QStringLiteral("鼠标所在位置（WGS84 原始坐标，与航迹数据同源）"));
+    }
     if (m_fps->text() != ft) {
         m_fps->setText(ft);
         m_fps->setToolTip(QStringLiteral("渲染帧率 %1 FPS").arg(f));
@@ -720,17 +751,40 @@ void AppStatusBar::setViewStatus(double heightKm, double lonDeg, double latDeg, 
 
 void AppStatusBar::setSources(const QVector<SourceItem> &items)
 {
-    while (m_sourceButtons.size() > items.size())
-        delete m_sourceButtons.takeLast();
-    while (m_sourceButtons.size() < items.size()) {
-        SourceButton *b = new SourceButton(m_right);
-        b->setTextColor(m_theme.fg);
-        connect(b, &QAbstractButton::clicked, this, [this, b]() { emit sourceToggled(b->item().key); });
-        m_sourceLayout->addWidget(b);
-        m_sourceButtons.append(b);
-    }
-    for (int i = 0; i < items.size(); ++i)
-        m_sourceButtons[i]->setItem(items[i]);
+    m_items = items;
+    int visible = 0;
+    for (const SourceItem &it : items)
+        if (it.visible)
+            ++visible;
+    // 全部可见时只报总数；有隐藏的才显示「可见/总数」，一眼看出状态
+    m_sourceBtn->setText(visible == items.size()
+                             ? QStringLiteral("数据源 %1").arg(items.size())
+                             : QStringLiteral("数据源 %1/%2").arg(visible).arg(items.size()));
+    m_sourceBtn->setToolTip(QStringLiteral("展开数据源条：%1 个数据源，点击切换显隐").arg(items.size()));
+    updateSourceBtnStyle();
+}
+
+void AppStatusBar::setSourceStripOpen(bool open)
+{
+    if (m_stripOpen == open)
+        return;
+    m_stripOpen = open;
+    updateSourceBtnStyle();
+}
+
+void AppStatusBar::updateSourceBtnStyle()
+{
+    if (!m_sourceBtn)
+        return;
+    const QString fg = m_theme.fg.name();
+    // 展开时用「半透明白底 + 描边」高亮：深色/浅色/高对比三套主题下都看得清
+    m_sourceBtn->setStyleSheet(
+        QStringLiteral("QPushButton { background: %1; color: %2; border: 1px solid %3;"
+                       " border-radius: 3px; padding: 0px 6px; }"
+                       "QPushButton:hover { background: rgba(255,255,255,0.28); }")
+            .arg(m_stripOpen ? QStringLiteral("rgba(255,255,255,0.24)") : QStringLiteral("transparent"),
+                 fg,
+                 m_stripOpen ? QStringLiteral("rgba(255,255,255,0.45)") : QStringLiteral("transparent")));
 }
 
 void AppStatusBar::setTrackCount(int count)
@@ -820,8 +874,7 @@ void AppStatusBar::applyTheme()
     m_loading->setPalette(pal);
     m_spinner->setColor(m_theme.accent);
     m_error->setColor(m_theme.error);
-    for (SourceButton *b : qAsConst(m_sourceButtons))
-        b->setTextColor(m_theme.fg);
+    updateSourceBtnStyle();
     update();
 }
 
@@ -881,8 +934,9 @@ QString AppStatusBar::errorText() const { return m_error->isVisible() ? m_error-
 QStringList AppStatusBar::sourceTexts() const
 {
     QStringList out;
-    for (const SourceButton *b : m_sourceButtons)
-        out << (b->item().visible ? QString() : QStringLiteral("off ")) + b->text();
+    for (const SourceItem &it : m_items)
+        out << (it.visible ? QString() : QStringLiteral("off "))
+                   + QStringLiteral("%1:%2").arg(it.label).arg(it.count);
     return out;
 }
 
@@ -920,8 +974,8 @@ double AppStatusBar::seekProgress() const { return m_seek->progress(); }
 
 void AppStatusBar::clickSource(int index)
 {
-    if (index >= 0 && index < m_sourceButtons.size())
-        m_sourceButtons[index]->click();
+    if (index >= 0 && index < m_items.size())
+        emit sourceToggled(m_items[index].key);
 }
 
 void AppStatusBar::clickTheme() { m_themeBtn->click(); }
@@ -932,9 +986,7 @@ bool AppStatusBar::checkLayout(QString *report) const
     QList<QWidget *> items;
     items << m_play << m_seek << m_time << m_speed << m_customSpeed;
     items << m_loadingBox << m_error << m_height << m_lonLat << m_fps;
-    for (SourceButton *b : m_sourceButtons)
-        items << b;
-    items << m_count << m_themeBtn;
+    items << m_sourceBtn << m_count << m_themeBtn;
 
     QStringList parts;
     bool ok = true;
@@ -965,4 +1017,107 @@ bool AppStatusBar::checkLayout(QString *report) const
     if (report)
         *report = parts.join(QLatin1Char(' '));
     return ok;
+}
+
+// ---------------------------------------------------------------
+//  数据源条：横向一排 chip，紧贴状态栏上方
+//  由主窗口放进底部竖排布局（状态栏正上方），展开时压缩地图高度而不是盖住地图
+// ---------------------------------------------------------------
+SourceStrip::SourceStrip(QWidget *parent) : QWidget(parent)
+{
+    setObjectName(QStringLiteral("sourceStrip"));
+    ui::bindSize(this, ui::SizeKind::FixedHeight, kBarHeight + 2);   // 高度随字号缩放，与状态栏一致
+
+    QHBoxLayout *outer = new QHBoxLayout(this);
+    outer->setContentsMargins(kPadX, 0, kPadX, 2);
+    outer->setSpacing(0);
+
+    m_scroll = new QScrollArea(this);
+    m_scroll->setObjectName(QStringLiteral("sourceStripScroll"));
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);   // 不显示滚动条，滚轮横向滚
+    m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setWidgetResizable(false);
+    m_scroll->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_scroll->setFocusPolicy(Qt::NoFocus);
+    // 高度由外框固定，避免 QScrollArea 把「行高」当成最小高度把整条撑高
+    ui::bindSize(m_scroll, ui::SizeKind::FixedHeight, kBarHeight - 2);
+    m_scroll->viewport()->setAutoFillBackground(false);
+    m_scroll->setStyleSheet(QStringLiteral("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }"));
+
+    m_row = new QWidget;
+    m_row->setObjectName(QStringLiteral("sourceStripRow"));
+    m_rowLayout = new QHBoxLayout(m_row);
+    m_rowLayout->setContentsMargins(0, 0, 0, 0);
+    ui::bindSpacing(m_rowLayout, kGap);
+    m_rowLayout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_scroll->setWidget(m_row);
+
+    outer->addWidget(m_scroll);
+
+    // 全局字号变化：按新字号重建 chip（字体、行宽都跟着变）
+    connect(UiScale::instance(), &UiScale::changed, this, [this]() { setItems(m_items); });
+}
+
+// 重建 chip 行：数据源一般只有几个到十几个，整体重建比逐个复用简单且不会错位
+void SourceStrip::setItems(const QVector<AppStatusBar::SourceItem> &items)
+{
+    m_items = items;
+    for (QAbstractButton *b : m_chips) {
+        m_rowLayout->removeWidget(b);
+        b->deleteLater();
+    }
+    m_chips.clear();
+
+    const int chipH = qMax(ui::sz(16), height() - ui::sz(9));
+    for (const AppStatusBar::SourceItem &it : items) {
+        SourceButton *chip = new SourceButton(m_row);
+        chip->setItem(it);
+        chip->setTextColor(m_theme.fg);
+        chip->setFixedHeight(chipH);
+        const QString key = it.key;
+        connect(chip, &QAbstractButton::clicked, this, [this, key]() { emit sourceToggled(key); });
+        m_rowLayout->addWidget(chip);
+        m_chips << chip;
+    }
+    // 行宽跟着内容走（QScrollArea 不负责缩放子控件），超出可视宽度时横向滚动
+    int rowW = 0;
+    for (QAbstractButton *b : m_chips)
+        rowW += b->sizeHint().width();
+    if (m_chips.size() > 1)
+        rowW += m_rowLayout->spacing() * (m_chips.size() - 1);
+    m_row->setFixedSize(rowW, chipH);
+    m_scroll->horizontalScrollBar()->setValue(0);
+    update();
+}
+
+void SourceStrip::applyTheme(const StatusTheme &theme)
+{
+    m_theme = theme;
+    for (QAbstractButton *b : m_chips) {
+        if (SourceButton *chip = static_cast<SourceButton *>(b))
+            chip->setTextColor(theme.fg);
+    }
+    update();
+}
+
+void SourceStrip::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), m_theme.bg);
+    p.setPen(m_theme.border);                     // 与地图之间的一条分隔线
+    p.drawLine(0, 0, width(), 0);
+}
+
+// 滚轮 / 触控板横向滚动（滚动条隐藏了，靠这个看到右边的数据源）
+void SourceStrip::wheelEvent(QWheelEvent *e)
+{
+    QScrollBar *bar = m_scroll->horizontalScrollBar();
+    if (!bar || bar->maximum() <= 0) {
+        QWidget::wheelEvent(e);
+        return;
+    }
+    const int delta = e->angleDelta().y() != 0 ? e->angleDelta().y() : e->angleDelta().x();
+    bar->setValue(bar->value() - delta);
+    e->accept();
 }

@@ -7,9 +7,13 @@
 #include <QVector>
 #include <QWidget>
 
+class QAbstractButton;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
+class QPushButton;
+class QScrollArea;
+class QWheelEvent;
 class ReplayController;
 
 namespace statusbar_detail {
@@ -32,9 +36,12 @@ struct StatusTheme {
     QColor error;    // --error
 };
 
+// 回放区间文字：同一天省略日期（"09:30:00 / 10:30:00"），跨天带月日（"04-27 09:30:00 / 04-28 10:30:00"）
+QString formatReplayRange(qint64 currentMs, qint64 endMs);
+
 // 底部状态栏，逐项对应 RadarView src/components/layout/StatusBar.vue：
 //   左：播放/暂停 | 进度条 | 当前时间 / 结束时间 | 倍速（有数据时才显示时间和倍速）
-//   右：导入进度 | 错误提示 | 高 | 经纬 | FPS | 各数据源（点击切换显隐）| 航迹数 | 主题切换
+//   右：导入进度 | 错误提示 | 高 | 经纬 | FPS | 数据源（展开上方数据源条）| 航迹数 | 主题切换
 // 自己绘制背景、作为普通控件放在主窗口底部，不用 QStatusBar（它的 showMessage 会把左侧控件盖住）
 class AppStatusBar : public QWidget
 {
@@ -62,6 +69,10 @@ public:
     void cycleTheme();                          // dark -> light -> hc -> dark
     const StatusTheme &theme() const { return m_theme; }
 
+    // 数据源条（横向一排，紧贴状态栏上方）的展开状态：按钮高亮 + 文案提示
+    void setSourceStripOpen(bool open);
+    bool sourceStripOpen() const { return m_stripOpen; }
+
     // ---- 自检用 ----
     QString timeText() const;
     QString speedText() const;
@@ -85,6 +96,7 @@ public:
 signals:
     void sourceToggled(const QString &key);
     void themeChanged(const QString &id);
+    void sourceStripToggleRequested();         // 点「数据源」：展开/收起上方数据源条
 
 protected:
     void paintEvent(QPaintEvent *e) override;
@@ -124,10 +136,39 @@ private:
     QLabel *m_height = nullptr;
     QLabel *m_lonLat = nullptr;
     QLabel *m_fps = nullptr;
-    QHBoxLayout *m_sourceLayout = nullptr;
-    QVector<statusbar_detail::SourceButton *> m_sourceButtons;
+    QPushButton *m_sourceBtn = nullptr;         // 「数据源」入口，替代原来一排按钮
+    QVector<SourceItem> m_items;                // 最近一次 setSources 的内容
+    bool m_stripOpen = false;
+    void updateSourceBtnStyle();
     QLabel *m_count = nullptr;
     statusbar_detail::IconButton *m_themeBtn = nullptr;
+};
+
+// 数据源条：横向一排 chip，紧贴状态栏上方；点 chip 切换该数据源/文件的显隐。
+// 由主窗口放进底部竖排布局（状态栏正上方），展开时压缩地图高度而不是盖住地图。
+class SourceStrip : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit SourceStrip(QWidget *parent = nullptr);
+
+    void setItems(const QVector<AppStatusBar::SourceItem> &items);
+    void applyTheme(const StatusTheme &theme);
+
+signals:
+    void sourceToggled(const QString &key);
+
+protected:
+    void paintEvent(QPaintEvent *e) override;
+    void wheelEvent(QWheelEvent *e) override;
+
+private:
+    QScrollArea *m_scroll = nullptr;
+    QWidget *m_row = nullptr;
+    QHBoxLayout *m_rowLayout = nullptr;
+    QVector<QAbstractButton *> m_chips;
+    QVector<AppStatusBar::SourceItem> m_items;   // 最近一次 setItems，字号变化时按它重建
+    StatusTheme m_theme;
 };
 
 #endif // APPSTATUSBAR_H

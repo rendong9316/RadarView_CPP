@@ -356,6 +356,11 @@ MainWindow::MainWindow(QWidget *parent)
     // 状态栏：常驻的自绘控件（不用 QStatusBar，它的 showMessage() 会把左侧控件整体隐藏）
     m_replay = new ReplayController(this);
     m_statusBar = new AppStatusBar(m_replay, central);
+    // 数据源条：横向一排 chip，放在状态栏正上方（展开时压缩地图高度，不盖住地图）
+    m_sourceStrip = new SourceStrip(central);
+    m_sourceStrip->applyTheme(m_statusBar->theme());
+    m_sourceStrip->hide();
+    v->addWidget(m_sourceStrip);
     v->addWidget(m_statusBar);
     Theme::instance()->setId(m_statusBar->theme().id);
     connect(m_statusBar, &AppStatusBar::themeChanged, Theme::instance(), &Theme::setId);
@@ -365,6 +370,13 @@ MainWindow::MainWindow(QWidget *parent)
                 m_statusBar->setViewStatus(h, lon, lat, fps, hasCoord);
             });
     connect(m_statusBar, &AppStatusBar::sourceToggled, this, &MainWindow::toggleSource);
+    connect(m_sourceStrip, &SourceStrip::sourceToggled, this, &MainWindow::toggleSource);
+    connect(m_statusBar, &AppStatusBar::sourceStripToggleRequested, this, [this]() {
+        setSourceStripOpen(m_sourceStrip->isHidden());
+    });
+    connect(m_statusBar, &AppStatusBar::themeChanged, this, [this](const QString &) {
+        m_sourceStrip->applyTheme(m_statusBar->theme());
+    });
     connect(m_replay, &ReplayController::timeChanged, this, &MainWindow::syncReplayToLayer);
     connect(m_replay, &ReplayController::stateChanged, this, &MainWindow::syncReplayToLayer);
 
@@ -635,6 +647,8 @@ void MainWindow::saveUiState()
     app::setValue(QStringLiteral("panel.widths"),
                   QString::fromUtf8(QJsonDocument(widths).toJson(QJsonDocument::Compact)));
     app::setValue(QStringLiteral("panel.drawbar_visible"), drawingBarVisible());
+    // 用 isHidden() 而不是 isVisible()：窗口还没显示（自检）时 isVisible() 恒为 false
+    app::setValue(QStringLiteral("statusbar.sources_open"), m_sourceStrip && !m_sourceStrip->isHidden());
     app::setValue(QStringLiteral("window.geometry"), saveGeometry());
 }
 
@@ -660,6 +674,8 @@ void MainWindow::restoreUiState()
     loadDrawingsAuto();
     // 绘图工具条是否展开
     setDrawingBarVisible(s.value(QStringLiteral("panel.drawbar_visible"), false).toBool());
+    // 数据源条是否展开
+    setSourceStripOpen(s.value(QStringLiteral("statusbar.sources_open"), false).toBool());
     // 侧栏：先恢复各面板宽度，再打开上次的面板
     const QJsonObject widths = QJsonDocument::fromJson(
         s.value(QStringLiteral("panel.widths")).toString().toUtf8()).object();
@@ -1203,7 +1219,20 @@ void MainWindow::refreshSources()
     }
     items << adsb << radar << raw;
     m_statusBar->setSources(items);
+    m_sourceStrip->setItems(items);
     m_statusBar->setTrackCount(m_store.size());
+}
+
+// 展开 / 收起状态栏上方的数据源条（展开时地图高度相应压缩，不遮挡地图）
+void MainWindow::setSourceStripOpen(bool open)
+{
+    if (!m_sourceStrip)
+        return;
+    m_sourceStrip->setVisible(open);
+    m_statusBar->setSourceStripOpen(open);
+    if (open)
+        refreshSources();          // 每次展开都按当前航迹重建 chip
+    scheduleSaveUiState();         // 折叠/展开状态写入数据库
 }
 
 void MainWindow::toggleSource(const QString &key)

@@ -1017,7 +1017,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
     auto statusConsistent = [=](const QString &when) {
         ReplayController *rp = w->replay();
         const bool hasData = rp->end() > rp->start();
-        const QString expectTime = hasData ? formatBeijingTime(rp->current()) + QStringLiteral(" / ") + formatBeijingTime(rp->end())
+        const QString expectTime = hasData ? formatReplayRange(rp->current(), rp->end())
                                            : QString();
         const double expectProg = hasData ? rp->progress() : 0.0;
         QString layout;
@@ -1031,8 +1031,8 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
     statusConsistent(QStringLiteral("无数据"));
     check(sb->trackCountText() == QStringLiteral("航迹: 0") && sb->sourceTexts() == QStringList(QStringLiteral("ADS-B:0")),
           QStringLiteral("无数据时：%1 | %2").arg(sb->trackCountText(), sb->sourceTexts().join(QLatin1Char(' '))));
-    check(sb->heightText().startsWith(QStringLiteral("高: ")) && sb->heightText().endsWith(QStringLiteral(" km"))
-              && sb->lonLatText().startsWith(QStringLiteral("经纬: ")) && sb->fpsText().startsWith(QStringLiteral("FPS: ")),
+    check(sb->heightText().startsWith(QStringLiteral("高 ")) && sb->heightText().endsWith(QStringLiteral(" km"))
+              && sb->lonLatText().startsWith(QStringLiteral("经纬 ")) && sb->fpsText().startsWith(QStringLiteral("FPS ")),
           QStringLiteral("视图项：%1 | %2 | %3").arg(sb->heightText(), sb->lonLatText(), sb->fpsText()));
 
     // 依次导入 ADS-B、雷达、雷达原始量测
@@ -1077,7 +1077,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             QTimer *sampler = new QTimer(w);
             QObject::connect(sampler, &QTimer::timeout, w, [=]() {
                 ++*samples;
-                const QString expect = formatBeijingTime(rp->current()) + QStringLiteral(" / ") + formatBeijingTime(rp->end());
+                const QString expect = formatReplayRange(rp->current(), rp->end());
                 if (!sb->areReplayControlsShown() || sb->timeText() != expect
                         || std::fabs(sb->seekProgress() - rp->progress()) > 1e-9)
                     ++*sampleFails;
@@ -1848,6 +1848,7 @@ static int runStateCheck()
         w.trackStore()->addTracks(QVector<Track>() << t);
         w.globe()->trackLayer()->setGroupVisible(QStringLiteral("Radar::StateTest"), false);
         w.activatePanel(PanelId::Settings);
+        w.setSourceStripOpen(true);      // 展开数据源条，第二遍应恢复成展开
         w.close();                       // closeEvent 里保存并落盘
     }
     // 关掉设置连接再重开，第二遍必须从数据库重新读，不能靠进程内缓存
@@ -1894,6 +1895,8 @@ static int runStateCheck()
         check(w.activePanel() == int(PanelId::Settings), QStringLiteral("侧栏面板恢复"));
         check(!w.globe()->trackLayer()->isGroupVisible(QStringLiteral("Radar::StateTest")),
               QStringLiteral("数据源文件显隐恢复"));
+        check(!w.sourceStrip()->isHidden() && w.appStatusBar()->sourceStripOpen(),
+              QStringLiteral("数据源条展开状态恢复"));
         w.close();
     }
 
@@ -1977,6 +1980,11 @@ int main(int argc, char *argv[])
             d->breakFeature(demoLine, dl->pts.size() / 2);
         d->addText(33.0, 101.0, QStringLiteral("重点区域"), QColor("#FFFF00"), 22);
     }
+
+    // 展开状态栏上方的数据源条（回归截图用）：--open-sources。
+    // 同 --look：延到事件循环开始后再设，等主窗口首次布局完成
+    if (args.contains(QStringLiteral("--open-sources")))
+        QTimer::singleShot(0, &w, [&w]() { w.setSourceStripOpen(true); });
 
     // 抓一帧后退出（回归验证用）：--shot <png> [--shot-delay 毫秒] [--shot-window]
     //   默认只抓 GL 帧（地球+航迹）；--shot-window 抓整窗，连旗标/标签/状态栏一起，

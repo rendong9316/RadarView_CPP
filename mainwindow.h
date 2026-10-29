@@ -23,6 +23,7 @@ class QStackedWidget;
 class TrackImporter;
 class ReplayController;
 class AppStatusBar;
+class SourceStrip;
 class QDialog;
 class QTimer;
 class QCloseEvent;
@@ -110,6 +111,8 @@ public:
     // 打开「查看点迹数据」窗口（非模态），返回窗口指针
     QDialog *showTrackPoints(int index);
     AppStatusBar *appStatusBar() const { return m_statusBar; }
+    SourceStrip *sourceStrip() const { return m_sourceStrip; }
+    void setSourceStripOpen(bool open);   // 展开/收起状态栏上方的数据源条
 
     // ---- 侧栏 / 功能入口（菜单、快捷键、自检共用）----
     void activatePanel(PanelId id);      // 已打开同一面板时关闭侧栏
@@ -192,6 +195,7 @@ private:
     QList<QAction *> m_importActions;
     ReplayController *m_replay = nullptr;
     AppStatusBar  *m_statusBar = nullptr;   // 底部状态栏（逐项对应 RadarView StatusBar.vue）
+    SourceStrip   *m_sourceStrip = nullptr; // 数据源条：横排 chip，紧贴状态栏上方
     bool           m_adsbVisible = true;    // ADS-B 整体显隐（雷达按文件单独控制）
     QPushButton   *m_backAllBtn = nullptr;   // 单独显示时地图顶部的「← 返回全部」
 
