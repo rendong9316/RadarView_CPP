@@ -25,7 +25,6 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QSettings>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -293,7 +292,7 @@ void TrackFilterState::save() const
 
 void TrackFilterState::load()
 {
-    QSettings &s = app::settings();
+    app::Settings &s = app::settings();
     bool ok1 = false, ok2 = false;
     const qint64 mn = s.value(QStringLiteral("filter.active_min")).toString().toLongLong(&ok1);
     const qint64 mx = s.value(QStringLiteral("filter.active_max")).toString().toLongLong(&ok2);

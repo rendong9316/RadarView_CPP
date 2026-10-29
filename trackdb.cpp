@@ -29,12 +29,36 @@ bool exec(QSqlQuery &q, const QString &sql, QString *error)
     return false;
 }
 
+// 库结构版本（PRAGMA user_version）。加列/加表时 +1，并在下面补一段迁移
+const int kSchemaVersion = 2;
+
+bool hasColumn(QSqlDatabase db, const QString &table, const QString &column)
+{
+    QSqlQuery q(db);
+    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table)))
+        return true;                     // 查不出来就当有，别乱加列
+    while (q.next())
+        if (q.value(1).toString() == column)
+            return true;
+    return false;
+}
+
+bool ensureColumn(QSqlDatabase db, const QString &table, const QString &column,
+                  const QString &decl, QString *error)
+{
+    if (hasColumn(db, table, column))
+        return true;
+    QSqlQuery q(db);
+    return exec(q, QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3").arg(table, column, decl), error);
+}
+
 bool createSchema(QSqlDatabase db, QString *error)
 {
     QSqlQuery q(db);
     const char *const stmts[] = {
         "PRAGMA journal_mode=WAL",
         "PRAGMA synchronous=NORMAL",
+        "PRAGMA busy_timeout=30000",
         "CREATE TABLE IF NOT EXISTS batches ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL, source TEXT NOT NULL,"
         " track_count INTEGER NOT NULL, imported_at TEXT NOT NULL)",
@@ -52,6 +76,40 @@ bool createSchema(QSqlDatabase db, QString *error)
     for (const char *s : stmts)
         if (!exec(q, QLatin1String(s), error))
             return false;
+
+    // ---- 迁移：老库只补差量，新库上面的建表语句已经建全 ----
+    int version = 0;
+    if (q.exec(QStringLiteral("PRAGMA user_version")) && q.next())
+        version = q.value(0).toInt();
+
+    if (version < 1) {
+        // 早期版本只有 icao_address / batch_id / points，其余元数据列都是后来加的
+        struct Col { const char *name; const char *decl; };
+        const Col cols[] = {
+            { "source", "TEXT" }, { "flight_no", "TEXT" }, { "icao_flight_no", "TEXT" },
+            { "registration", "TEXT" }, { "aircraft_type", "TEXT" }, { "airline", "TEXT" },
+            { "origin", "TEXT" }, { "destination", "TEXT" },
+            { "min_timestamp", "TEXT" }, { "max_timestamp", "TEXT" },
+            { "min_ms", "INTEGER" }, { "max_ms", "INTEGER" },
+            { "point_count", "INTEGER DEFAULT 0" }, { "deleted", "INTEGER DEFAULT 0" },
+        };
+        for (const Col &c : cols)
+            if (!ensureColumn(db, QStringLiteral("saved_tracks"), QLatin1String(c.name),
+                              QLatin1String(c.decl), error))
+                return false;
+    }
+    if (version < 2) {
+        // 设置从注册表/ini 搬进数据库（apppaths.cpp 的 Settings 也建这张表，语句一致）
+        if (!exec(q, QStringLiteral("CREATE TABLE IF NOT EXISTS app_settings ("
+                                    " key TEXT PRIMARY KEY, value TEXT NOT NULL,"
+                                    " type TEXT NOT NULL DEFAULT 'string')"), error))
+            return false;
+    }
+
+    if (version < kSchemaVersion) {
+        if (!exec(q, QStringLiteral("PRAGMA user_version=%1").arg(kSchemaVersion), error))
+            return false;
+    }
     return true;
 }
 

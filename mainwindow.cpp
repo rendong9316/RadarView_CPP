@@ -35,7 +35,6 @@
 #include <QJsonObject>
 #include <QPainter>
 #include <QSaveFile>
-#include <QSettings>
 #include <QTimer>
 #include <QtMath>
 #include <cmath>
@@ -487,7 +486,7 @@ MainWindow::~MainWindow()
 void MainWindow::loadPersisted()
 {
     m_restoringState = true;
-    QSettings &s = app::settings();
+    app::Settings &s = app::settings();
     // 文件颜色先恢复，加载后同一文件颜色不变，新文件继续轮换
     QHash<QString, QColor> colors;
     const QJsonObject co = QJsonDocument::fromJson(s.value(QStringLiteral("display.file_line_color")).toString().toUtf8()).object();
@@ -641,7 +640,7 @@ void MainWindow::saveUiState()
 
 void MainWindow::restoreUiState()
 {
-    QSettings &s = app::settings();
+    app::Settings &s = app::settings();
     // 相机视角
     const QJsonObject cam = QJsonDocument::fromJson(
         s.value(QStringLiteral("camera.state")).toString().toUtf8()).object();

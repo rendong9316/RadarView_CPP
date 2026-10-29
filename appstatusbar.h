@@ -58,7 +58,7 @@ public:
     QString loadingText() const;
     void setError(const QString &message);     // 空串表示清除
 
-    void setTheme(const QString &id);           // 会写入 QSettings
+    void setTheme(const QString &id);           // 会写入设置 theme
     void cycleTheme();                          // dark -> light -> hc -> dark
     const StatusTheme &theme() const { return m_theme; }
 

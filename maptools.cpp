@@ -8,7 +8,6 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
-#include <QSettings>
 #include <QUuid>
 
 // ---------------------------------------------------------------

@@ -6,7 +6,6 @@
 #include <QRegularExpression>
 #include <QWidget>
 #include <cmath>
-#include <QSettings>
 
 #include "apppaths.h"
 
@@ -241,7 +240,7 @@ namespace ui {
 int defaultFontPx()
 {
     // 启动时读一次持久化的根字号；后续运行时改走 UiScale::setBasePx
-    QSettings &s = app::settings();
+    app::Settings &s = app::settings();
     int px = s.value(QStringLiteral("display.font_size"), kFontDefaultPx).toInt();
     // 首次更新时升级旧的小字号；之后保留用户在设置面板里的选择。
     if (!s.value(QStringLiteral("display.readable_ui_v1"), false).toBool()) {

@@ -12,7 +12,7 @@ class TrackStore;
 class ManageState;
 
 // 设置面板（RadarView SettingsPanel.vue）：线条颜色 / 线宽 / 圆球直径 / 点迹大小 / 旗标大小 / 字号大小 / 工具。
-// 各项保存在 QSettings display.*，构造时读回并立即应用到地图。
+// 各项保存在设置 display.*（app_settings 表），构造时读回并立即应用到地图。
 class SettingsPanel : public QWidget
 {
     Q_OBJECT

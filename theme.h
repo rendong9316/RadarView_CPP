@@ -83,7 +83,7 @@ namespace ui {
 inline int px(double rem) { return UiScale::instance()->px(rem); }
 inline int sz(double basePx) { return UiScale::instance()->sz(basePx); }
 inline double fontScale() { return UiScale::instance()->scale(); }
-int defaultFontPx();      // 读 QSettings display.font_size，缺省 14
+int defaultFontPx();      // 读设置 display.font_size，缺省 22
 
 // 控件尺寸随字号缩放：立即按当前比例设置，之后字号每次变化自动重设（控件销毁后自动断开）
 enum class SizeKind { Fixed, FixedWidth, FixedHeight, MinWidth, MinHeight, MaxWidth };

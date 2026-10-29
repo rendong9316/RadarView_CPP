@@ -1,42 +1,31 @@
 #include "apppaths.h"
 
 #include <QCoreApplication>
+#include <QDataStream>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QSettings>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QDebug>
 #include <memory>
 
 namespace app {
 
 namespace {
+
+const char *const kSettingsConn = "radarview_settings";
 bool g_test = false;
-std::unique_ptr<QSettings> g_settings;
-QTimer *g_syncTimer = nullptr;
+QTimer *g_flushTimer = nullptr;
 
 QString testDir()
 {
     return QCoreApplication::applicationDirPath();
-}
-
-// 合并落盘：写操作只把 QSettings 标记为脏，300ms 内没有新的写入才真正 sync
-void ensureSyncTimer()
-{
-    if (g_syncTimer)
-        return;
-    g_syncTimer = new QTimer();
-    g_syncTimer->setSingleShot(true);
-    g_syncTimer->setInterval(300);
-    QObject::connect(g_syncTimer, &QTimer::timeout, []() {
-        if (g_settings)
-            g_settings->sync();
-    });
-    // 退出时兜底落盘（Linux 下 ini 后端不 sync 会丢掉最近改动）
-    if (QCoreApplication::instance()) {
-        QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
-                         []() { flushSettings(); });
-    }
 }
 
 QString dataDir()
@@ -46,14 +35,114 @@ QString dataDir()
     QDir().mkpath(dir);
     return dir;
 }
+
+// ---- 值编码：value 存明文，type 记住 QVariant 类型，SQL 里能直接读 ----
+QString encodeType(const QVariant &v)
+{
+    switch (v.type()) {
+    case QVariant::Bool: return QStringLiteral("bool");
+    case QVariant::Int:
+    case QVariant::UInt:
+    case QVariant::LongLong:
+    case QVariant::ULongLong: return QStringLiteral("int");
+    case QVariant::Double: return QStringLiteral("double");
+    case QVariant::String: return QStringLiteral("string");
+    case QVariant::StringList: return QStringLiteral("stringlist");
+    case QVariant::ByteArray: return QStringLiteral("bytes");
+    default: return QStringLiteral("variant");
+    }
+}
+
+QString encodeValue(const QVariant &v)
+{
+    switch (v.type()) {
+    case QVariant::Bool: return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    case QVariant::Int:
+    case QVariant::UInt:
+    case QVariant::LongLong:
+    case QVariant::ULongLong: return QString::number(v.toLongLong());
+    case QVariant::Double: return QString::number(v.toDouble(), 'g', 17);
+    case QVariant::String: return v.toString();
+    case QVariant::StringList:
+        return QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(v.toStringList()))
+                                     .toJson(QJsonDocument::Compact));
+    case QVariant::ByteArray: return QString::fromLatin1(v.toByteArray().toBase64());
+    default: {
+        QByteArray blob;
+        QDataStream ds(&blob, QIODevice::WriteOnly);
+        ds.setVersion(QDataStream::Qt_5_6);
+        ds << v;
+        return QString::fromLatin1(blob.toBase64());
+    }
+    }
+}
+
+QVariant decodeValue(const QString &value, const QString &type)
+{
+    if (type == QLatin1String("bool"))
+        return value == QLatin1String("true");
+    if (type == QLatin1String("int"))
+        return value.toLongLong();
+    if (type == QLatin1String("double"))
+        return value.toDouble();
+    if (type == QLatin1String("stringlist")) {
+        QStringList list;
+        for (const QJsonValue &v : QJsonDocument::fromJson(value.toUtf8()).array())
+            list << v.toString();
+        return list;
+    }
+    if (type == QLatin1String("bytes"))
+        return QByteArray::fromBase64(value.toLatin1());
+    if (type == QLatin1String("variant")) {
+        QByteArray blob = QByteArray::fromBase64(value.toLatin1());
+        QDataStream ds(&blob, QIODevice::ReadOnly);
+        ds.setVersion(QDataStream::Qt_5_6);
+        QVariant v;
+        ds >> v;
+        return v;
+    }
+    return value;
+}
+
+// 合并落库：写操作先落缓存，300ms 内没有新写入才真正写数据库
+void ensureFlushTimer()
+{
+    if (g_flushTimer)
+        return;
+    g_flushTimer = new QTimer();
+    g_flushTimer->setSingleShot(true);
+    g_flushTimer->setInterval(300);
+    QObject::connect(g_flushTimer, &QTimer::timeout, []() { settings().sync(); });
+    if (QCoreApplication::instance()) {
+        QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                         []() { flushSettings(); });
+    }
+}
+
+// 老版本把设置写在 QSettings（Windows 注册表 / Linux ini）里，第一次跑新版本时搬过来
+void migrateFromQSettings(Settings &st)
+{
+    std::unique_ptr<QSettings> legacy;
+    if (g_test)
+        legacy.reset(new QSettings(testDir() + QStringLiteral("/test_settings.ini"), QSettings::IniFormat));
+    else
+        legacy.reset(new QSettings(QStringLiteral("RadarView"), QStringLiteral("HelloVscode")));
+    const QStringList keys = legacy->allKeys();
+    if (keys.isEmpty())
+        return;
+    for (const QString &key : keys)
+        st.setValue(key, legacy->value(key));
+    st.setValue(QStringLiteral("app.migrated_from_qsettings"), true);
+    st.sync();
+    qInfo("[settings] 已从旧 QSettings 迁移 %d 项到数据库", keys.size());
+}
+
 } // namespace
 
 void setTestMode(bool on)
 {
-    if (g_settings)
-        g_settings->sync();
+    closeSettings();
     g_test = on;
-    g_settings.reset();
     if (on) {
         const QString db = testDir() + QStringLiteral("/test_radarview.db");
         for (const QString &suffix : { QString(), QStringLiteral("-wal"), QStringLiteral("-shm") })
@@ -82,40 +171,151 @@ QString drawingPath()
     return dataDir() + QStringLiteral("/drawings.json");
 }
 
-QSettings &settings()
+// ---------------------------------------------------------------
+//  Settings
+// ---------------------------------------------------------------
+
+void Settings::ensureLoaded()
 {
-    if (!g_settings) {
-        if (g_test) {
-            g_settings.reset(new QSettings(testDir() + QStringLiteral("/test_settings.ini"), QSettings::IniFormat));
-            g_settings->setIniCodec("UTF-8");
-        } else {
-            g_settings.reset(new QSettings(QStringLiteral("RadarView"), QStringLiteral("HelloVscode")));
-        }
-        ensureSyncTimer();
+    if (m_loaded)
+        return;
+    m_loaded = true;
+
+    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QLatin1String(kSettingsConn));
+    db.setDatabaseName(databasePath());
+    db.setConnectOptions(QStringLiteral("QSQLITE_BUSY_TIMEOUT=30000"));
+    if (!db.open()) {
+        qWarning("[settings] 打开设置库失败: %s", qPrintable(db.lastError().text()));
+        return;
     }
-    return *g_settings;
+    QSqlQuery q(db);
+    q.exec(QStringLiteral("PRAGMA busy_timeout=30000"));
+    q.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
+    q.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS app_settings ("
+                          " key TEXT PRIMARY KEY, value TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'string')"));
+    if (q.exec(QStringLiteral("SELECT key, value, type FROM app_settings"))) {
+        while (q.next())
+            m_cache.insert(q.value(0).toString(), decodeValue(q.value(1).toString(), q.value(2).toString()));
+    }
+    if (m_cache.isEmpty())
+        migrateFromQSettings(*this);
+}
+
+QVariant Settings::value(const QString &key, const QVariant &defaultValue)
+{
+    ensureLoaded();
+    const auto it = m_cache.constFind(key);
+    return it == m_cache.constEnd() ? defaultValue : it.value();
+}
+
+void Settings::setValue(const QString &key, const QVariant &v)
+{
+    ensureLoaded();
+    m_cache.insert(key, v);
+    m_removed.remove(key);
+    m_dirty.insert(key);
+    ensureFlushTimer();
+    if (g_flushTimer)
+        g_flushTimer->start();
+}
+
+void Settings::remove(const QString &key)
+{
+    ensureLoaded();
+    m_cache.remove(key);
+    m_dirty.remove(key);
+    m_removed.insert(key);
+    ensureFlushTimer();
+    if (g_flushTimer)
+        g_flushTimer->start();
+}
+
+bool Settings::contains(const QString &key)
+{
+    ensureLoaded();
+    return m_cache.contains(key);
+}
+
+QStringList Settings::keys()
+{
+    ensureLoaded();
+    return m_cache.keys();
+}
+
+void Settings::sync()
+{
+    if (m_dirty.isEmpty() && m_removed.isEmpty())
+        return;
+    QSqlDatabase db = QSqlDatabase::database(QLatin1String(kSettingsConn), false);
+    if (!db.isOpen())
+        return;                                   // 库没打开：留着脏值，别丢
+    db.transaction();
+    QSqlQuery del(db);
+    del.prepare(QStringLiteral("DELETE FROM app_settings WHERE key = ?"));
+    for (const QString &key : m_removed) {
+        del.addBindValue(key);
+        del.exec();
+    }
+    QSqlQuery ins(db);
+    ins.prepare(QStringLiteral("INSERT OR REPLACE INTO app_settings (key, value, type) VALUES (?, ?, ?)"));
+    for (const QString &key : m_dirty) {
+        const auto it = m_cache.constFind(key);
+        if (it == m_cache.constEnd())
+            continue;
+        ins.addBindValue(key);
+        ins.addBindValue(encodeValue(it.value()));
+        ins.addBindValue(encodeType(it.value()));
+        ins.exec();
+    }
+    if (!db.commit()) {
+        qWarning("[settings] 写设置失败: %s", qPrintable(db.lastError().text()));
+        db.rollback();
+        return;
+    }
+    m_dirty.clear();
+    m_removed.clear();
+}
+
+Settings &settings()
+{
+    static Settings s;
+    return s;
 }
 
 void setValue(const QString &key, const QVariant &value)
 {
     settings().setValue(key, value);
-    if (g_syncTimer)
-        g_syncTimer->start();
 }
 
 void removeValue(const QString &key)
 {
     settings().remove(key);
-    if (g_syncTimer)
-        g_syncTimer->start();
 }
 
 void flushSettings()
 {
-    if (g_syncTimer)
-        g_syncTimer->stop();
-    if (g_settings)
-        g_settings->sync();
+    if (g_flushTimer)
+        g_flushTimer->stop();
+    settings().sync();
+}
+
+void closeSettings()
+{
+    if (g_flushTimer)
+        g_flushTimer->stop();
+    {
+        Settings &s = settings();
+        s.sync();
+        // 让缓存跟着连接一起作废：下次 ensureLoaded 重新读库
+        s = Settings();
+    }
+    {
+        QSqlDatabase db = QSqlDatabase::database(QLatin1String(kSettingsConn), false);
+        if (db.isOpen())
+            db.close();
+    }
+    if (QSqlDatabase::contains(QLatin1String(kSettingsConn)))
+        QSqlDatabase::removeDatabase(QLatin1String(kSettingsConn));
 }
 
 } // namespace app

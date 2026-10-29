@@ -18,7 +18,6 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QSettings>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <cmath>
@@ -113,7 +112,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     scroll->setWidget(content);
     outer->addWidget(scroll);
 
-    QSettings &s = app::settings();
+    app::Settings &s = app::settings();
     TrackLayer *layer = m_host.globe ? m_host.globe->trackLayer() : nullptr;
 
     // ---- 线条颜色（按数据源覆盖文件色）----

@@ -16,7 +16,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QSettings>
 #include <QTimer>
 #include <cmath>
 #include <functional>
@@ -633,7 +632,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     connect(m_ctrl, &ReplayController::stateChanged, this, &AppStatusBar::syncState);
     connect(m_ctrl, &ReplayController::timeChanged, this, &AppStatusBar::syncTime);
 
-    QSettings &settings = app::settings();
+    app::Settings &settings = app::settings();
     m_theme = themeById(settings.value(QStringLiteral("theme"), QStringLiteral("dark")).toString());
     m_showCustom = false;
     setViewStatus(0.0, 0.0, 0.0, 0);

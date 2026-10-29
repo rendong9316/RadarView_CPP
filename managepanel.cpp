@@ -25,7 +25,6 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
-#include <QSettings>
 #include <QTableView>
 
 namespace {
@@ -282,7 +281,7 @@ void ManageState::saveSettings()
 
 void ManageState::loadSettings()
 {
-    QSettings &s = app::settings();
+    app::Settings &s = app::settings();
     filter.loadJson(QJsonDocument::fromJson(s.value(QStringLiteral("manage.filter")).toString().toUtf8()).object(),
                     QJsonDocument::fromJson(s.value(QStringLiteral("manage.sort")).toString().toUtf8()).object());
     const int ps = s.value(QStringLiteral("manage.page_size"), 100).toInt();

@@ -1,7 +1,6 @@
 #include "replaycontroller.h"
 #include "apppaths.h"
 
-#include <QSettings>
 #include <cmath>
 
 ReplayController::ReplayController(QObject *parent)
