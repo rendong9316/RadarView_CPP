@@ -21,7 +21,8 @@
 
 class QUndoStack;
 
-enum class DrawKind { Circle, Line, Polyline, Polygon, Rect, Fill, Text };
+// Dot：站点标记用的固定屏幕大小圆点（半径与航迹端点圆球一致，不随缩放变化）
+enum class DrawKind { Circle, Line, Polyline, Polygon, Rect, Fill, Text, Dot };
 
 // 绘图工具（GlobeWidget 的状态机；None = 漫游，左键拖拽旋转）
 enum class DrawTool { None, Line, Polyline, Polygon, Rect, Text, Fill, Eraser, BoxSelect, Select, Break };

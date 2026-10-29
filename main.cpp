@@ -317,6 +317,45 @@ void runSelfTest(MainWindow *w)
               QStringLiteral("GeoJSON 往返：%1 个要素 %2").arg(dm2.count()).arg(err));
         check(dm2.removeFeature(cid) && dm2.count() == 0, QStringLiteral("删除绘图要素"));
 
+        // 站点圆点（kind=dot）：单个锚点，屏幕尺寸固定，导入导出都要认
+        QJsonObject dotRoot;
+        {
+            QJsonArray coords;
+            coords.append(92.5);
+            coords.append(31.45);
+            QJsonObject geom;
+            geom.insert(QStringLiteral("type"), QStringLiteral("Point"));
+            geom.insert(QStringLiteral("coordinates"), coords);
+            QJsonObject props;
+            props.insert(QStringLiteral("id"), 9);
+            props.insert(QStringLiteral("kind"), QStringLiteral("dot"));
+            props.insert(QStringLiteral("color"), QStringLiteral("#FF3B30"));
+            props.insert(QStringLiteral("width"), 1.5);
+            props.insert(QStringLiteral("fill"), QStringLiteral("#FF3B30"));
+            QJsonObject feat;
+            feat.insert(QStringLiteral("type"), QStringLiteral("Feature"));
+            feat.insert(QStringLiteral("geometry"), geom);
+            feat.insert(QStringLiteral("properties"), props);
+            QJsonArray feats;
+            feats.append(feat);
+            dotRoot.insert(QStringLiteral("type"), QStringLiteral("FeatureCollection"));
+            dotRoot.insert(QStringLiteral("features"), feats);
+        }
+        DrawingManager dm3;
+        QString dotErr;
+        const bool dotLoaded = dm3.fromJson(dotRoot, &dotErr);
+        const DrawingFeature *dot = dotLoaded && dm3.count() == 1 ? &dm3.features().first() : nullptr;
+        check(dot && dot->kind == DrawKind::Dot && dot->pts.size() == 1
+              && std::fabs(dot->pts.first().x() - 92.5) < 1e-6
+              && std::fabs(dot->pts.first().y() - 31.45) < 1e-6,
+              QStringLiteral("站点圆点导入：%1").arg(dotErr));
+        const QJsonObject dotBack = dm3.toJson().value(QStringLiteral("features")).toArray().first().toObject();
+        check(dotBack.value(QStringLiteral("geometry")).toObject().value(QStringLiteral("type")).toString()
+                  == QLatin1String("Point")
+              && dotBack.value(QStringLiteral("properties")).toObject().value(QStringLiteral("kind")).toString()
+                  == QLatin1String("dot"),
+              QStringLiteral("站点圆点导出为 Point + kind=dot"));
+
         // 距离圆弹窗：版式与导入弹窗一致，复用同一套标准色盘
         ui::DistanceCircleDialog dlg(QStringLiteral("旗标 1"), 31.2, 121.5, QColor("#FFC000"), w);
         QDoubleSpinBox *radius = dlg.findChild<QDoubleSpinBox *>(QStringLiteral("circleRadius"));
@@ -1879,6 +1918,12 @@ int main(int argc, char *argv[])
         return runStateCheck();
     }
 
+    // 只用临时数据目录跑一遍（截图/回归用，不碰真实数据库和设置）
+    if (args.contains(QStringLiteral("--testmode"))) {
+        app::setTestMode(true);
+        ui::setAutoConfirm(true);
+    }
+
     // 自检：数据库和设置用 exe 旁的临时文件（启动时清空），确认框自动通过
     const bool testRun = args.contains(QStringLiteral("--selftest")) || args.contains(QStringLiteral("--tracktest"));
     if (testRun) {
@@ -1909,6 +1954,14 @@ int main(int argc, char *argv[])
             const double lon = p[0].toDouble(), lat = p[1].toDouble(), alt = p[2].toDouble();
             QTimer::singleShot(0, &w, [&w, lon, lat, alt]() { w.globe()->lookAt(lon, lat, alt); });
         }
+    }
+
+    // 启动时加载一份绘图 GeoJSON（回归截图用）：--drawings <file>
+    const int drIdx = args.indexOf(QStringLiteral("--drawings"));
+    if (drIdx >= 0 && drIdx + 1 < args.size()) {
+        QString drawErr;
+        if (!w.drawing()->loadFromFile(args.at(drIdx + 1), &drawErr))
+            qWarning("加载绘图失败：%s", qPrintable(drawErr));
     }
 
     // 绘图演示（回归截图用）：--draw-demo，往地图上放几个典型图形

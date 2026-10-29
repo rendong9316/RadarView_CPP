@@ -67,6 +67,7 @@ QString drawKindName(DrawKind k)
     case DrawKind::Rect:     return QStringLiteral("rect");
     case DrawKind::Fill:     return QStringLiteral("fill");
     case DrawKind::Text:     return QStringLiteral("text");
+    case DrawKind::Dot:      return QStringLiteral("dot");
     case DrawKind::Polyline: break;
     }
     return QStringLiteral("polyline");
@@ -81,6 +82,7 @@ bool drawKindFromName(const QString &name, DrawKind *out)
     if (name == QLatin1String("rect"))     { *out = DrawKind::Rect;     return true; }
     if (name == QLatin1String("fill"))     { *out = DrawKind::Fill;     return true; }
     if (name == QLatin1String("text"))     { *out = DrawKind::Text;     return true; }
+    if (name == QLatin1String("dot"))      { *out = DrawKind::Dot;      return true; }
     return false;
 }
 
@@ -552,7 +554,7 @@ QJsonObject DrawingManager::toJson() const
             coords.append(pointJson(p));
 
         QJsonObject geom;
-        if (f.kind == DrawKind::Text) {
+        if (f.kind == DrawKind::Text || f.kind == DrawKind::Dot) {
             geom.insert(QStringLiteral("type"), QStringLiteral("Point"));
             geom.insert(QStringLiteral("coordinates"), coords.first());
         } else if (f.isClosed()) {
@@ -671,7 +673,14 @@ bool DrawingManager::fromJson(const QJsonObject &root, QString *error)
         if (geomType == QLatin1String("Point"))
             f.kind = DrawKind::Text;
         drawKindFromName(props.value(QStringLiteral("kind")).toString(), &f.kind);   // 声明优先
-        if (f.kind != DrawKind::Text && f.pts.size() < 2) {
+        if (f.kind == DrawKind::Dot) {
+            // 站点圆点：单个锚点，屏幕大小固定
+            if (geomType != QLatin1String("Point") || f.pts.isEmpty()) {
+                ++skipped;
+                continue;
+            }
+            f.pts = QVector<QPointF>() << f.pts.first();
+        } else if (f.kind != DrawKind::Text && f.pts.size() < 2) {
             ++skipped;
             continue;
         }

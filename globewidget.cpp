@@ -46,6 +46,7 @@ const double kFlagScale = 1.2;                     // RadarView 旗标缩放默�
 const QColor kRulerColor(0xf5, 0x9e, 0x0b);        // #f59e0b
 const QColor kLassoColor(0x10, 0xb9, 0x81);        // #10b981（RadarView 套索绿）
 const QColor kSelectColor(0x3b, 0x82, 0xf6);       // #3b82f6（选中高亮蓝，和绘图橙区分开）
+const double kSiteDotPx = 6.0;                      // 站点圆点半径：与 TrackLayer 端点圆球基准 6px 一致
 const double kSnapPx = 10.0;                       // 吸附半径（屏幕像素）
 
 // 点到线段的屏幕距离（橡皮擦命中测试）
@@ -944,6 +945,24 @@ void GlobeWidget::drawFeatures(QPainter &p)
             ++m_featuresDrawn;
             continue;
         }
+        // 站点圆点：屏幕尺寸固定的实心圆，不随缩放变化（大小同航迹端点圆球）
+        if (f.kind == DrawKind::Dot) {
+            if (f.pts.isEmpty())
+                continue;
+            QPointF sp;
+            if (!visiblePos(f.pts.first().x(), f.pts.first().y(), 0.0, &sp))
+                continue;
+            p.setPen(QPen(QColor(255, 255, 255, 210), qMax(1.0, f.widthPx * 0.5)));
+            p.setBrush(sel ? kSelectColor : (f.fill.isValid() ? f.fill : f.color));
+            p.drawEllipse(sp, kSiteDotPx, kSiteDotPx);
+            if (sel) {
+                p.setBrush(Qt::NoBrush);
+                p.setPen(QPen(kSelectColor, 1.0, Qt::DashLine));
+                p.drawEllipse(sp, kSiteDotPx + 4.0, kSiteDotPx + 4.0);
+            }
+            ++m_featuresDrawn;
+            continue;
+        }
         if (f.pts.size() < 2)
             continue;
 
@@ -1272,6 +1291,17 @@ int GlobeWidget::featureAtScreen(const QPointF &pos, double tolPx)
             if (!f.pts.isEmpty() && visiblePos(f.pts.first().x(), f.pts.first().y(), 0.0, &sp)) {
                 const double d = QLineF(sp, pos).length();
                 if (d <= 14.0 && d <= bestD + 8.0) {   // 文字锚点允许宽松一点
+                    best = f.id;
+                    bestD = qMin(bestD, d);
+                }
+            }
+            continue;
+        }
+        if (f.kind == DrawKind::Dot) {
+            QPointF sp;
+            if (!f.pts.isEmpty() && visiblePos(f.pts.first().x(), f.pts.first().y(), 0.0, &sp)) {
+                const double d = QLineF(sp, pos).length();
+                if (d <= kSiteDotPx + 3.0 && d <= bestD + 8.0) {
                     best = f.id;
                     bestD = qMin(bestD, d);
                 }
