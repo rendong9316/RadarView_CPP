@@ -776,8 +776,7 @@ void AppStatusBar::setError(const QString &message)
 void AppStatusBar::setTheme(const QString &id)
 {
     m_theme = themeById(id);
-    QSettings &settings = app::settings();
-    settings.setValue(QStringLiteral("theme"), m_theme.id);
+    app::setValue(QStringLiteral("theme"), m_theme.id);
     applyTheme();
     emit themeChanged(m_theme.id);
 }

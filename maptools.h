@@ -77,11 +77,13 @@ public:
     void deactivate();
     void toggle();
 
+    void load();                               // 从设置 ruler.state 恢复航点与激活态
 signals:
     void changed();
     void mouseMoved();
 
 private:
+    void save();
     bool m_active = false;
     QVector<Waypoint> m_points;
     int m_nextId = 0;

@@ -122,7 +122,7 @@ void FlagStore::save()
     QJsonObject root;
     root.insert(QStringLiteral("flags"), arr);
     root.insert(QStringLiteral("selectedFlagIds"), QJsonArray::fromStringList(m_selected));
-    app::settings().setValue(QStringLiteral("flags.data"),
+    app::setValue(QStringLiteral("flags.data"),
                              QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact)));
     emit changed();
 }
@@ -197,6 +197,49 @@ void RulerState::addWaypoint(double lat, double lon)
     w.lat = lat;
     w.lon = lon;
     m_points.append(w);
+    save();
+    emit changed();
+}
+
+void RulerState::save()
+{
+    QJsonArray arr;
+    for (const Waypoint &w : m_points) {
+        QJsonObject o;
+        o.insert(QStringLiteral("id"), w.id);
+        o.insert(QStringLiteral("lat"), w.lat);
+        o.insert(QStringLiteral("lon"), w.lon);
+        arr.append(o);
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("active"), m_active);
+    root.insert(QStringLiteral("waypoints"), arr);
+    app::setValue(QStringLiteral("ruler.state"),
+                  QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact)));
+}
+
+void RulerState::load()
+{
+    const QJsonObject root = QJsonDocument::fromJson(
+        app::settings().value(QStringLiteral("ruler.state")).toString().toUtf8()).object();
+    m_points.clear();
+    int maxId = 0;
+    for (const QJsonValue &v : root.value(QStringLiteral("waypoints")).toArray()) {
+        const QJsonObject o = v.toObject();
+        Waypoint w;
+        w.id = o.value(QStringLiteral("id")).toInt();
+        w.lat = o.value(QStringLiteral("lat")).toDouble();
+        w.lon = o.value(QStringLiteral("lon")).toDouble();
+        if (w.lat < -90.0 || w.lat > 90.0 || w.lon < -180.0 || w.lon > 180.0)
+            continue;
+        if (w.id <= 0)
+            w.id = maxId + 1;
+        maxId = qMax(maxId, w.id);
+        m_points.append(w);
+    }
+    m_nextId = maxId + 1;
+    m_active = root.value(QStringLiteral("active")).toBool() && !m_points.isEmpty();
+    m_hasMouse = false;
     emit changed();
 }
 
@@ -205,6 +248,7 @@ void RulerState::removeWaypoint(int id)
     for (int i = 0; i < m_points.size(); ++i)
         if (m_points[i].id == id) {
             m_points.remove(i);
+            save();
             emit changed();
             return;
         }
@@ -214,6 +258,7 @@ void RulerState::undo()
 {
     if (!m_points.isEmpty()) {
         m_points.removeLast();
+        save();
         emit changed();
     }
 }
@@ -221,6 +266,7 @@ void RulerState::undo()
 void RulerState::clearAll()
 {
     m_points.clear();
+    save();
     emit changed();
 }
 
@@ -236,6 +282,7 @@ void RulerState::activate()
 {
     m_active = true;
     m_points.clear();
+    save();
     emit changed();
 }
 
@@ -244,6 +291,7 @@ void RulerState::deactivate()
     m_active = false;
     m_points.clear();
     m_hasMouse = false;
+    save();
     emit changed();
 }
 

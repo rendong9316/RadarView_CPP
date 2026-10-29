@@ -2,6 +2,7 @@
 #define APPPATHS_H
 
 #include <QString>
+#include <QVariant>
 
 class QSettings;
 
@@ -14,6 +15,17 @@ bool testMode();
 QString databasePath();
 // 用户设置（正常运行用 QSettings("RadarView", "HelloVscode")，自检用 exe 旁的 ini）
 QSettings &settings();
+
+// 写设置：立即写进 QSettings 的内存缓存（后续 value() 马上能读到），
+// 真正落盘合并到 300ms 后一次 sync（拖动滑块/拖拽分栏时不会每像素写一次盘）。
+// 读设置仍直接用 settings().value()。
+void setValue(const QString &key, const QVariant &value);
+void removeValue(const QString &key);
+// 立即同步到磁盘（关闭窗口、退出前调用）
+void flushSettings();
+
+// 绘图内容（DrawingManager 的 GeoJSON）自动保存文件，与数据库同目录
+QString drawingPath();
 
 } // namespace app
 

@@ -246,8 +246,8 @@ int defaultFontPx()
     // 首次更新时升级旧的小字号；之后保留用户在设置面板里的选择。
     if (!s.value(QStringLiteral("display.readable_ui_v1"), false).toBool()) {
         px = qMax(px, kFontDefaultPx);
-        s.setValue(QStringLiteral("display.font_size"), px);
-        s.setValue(QStringLiteral("display.readable_ui_v1"), true);
+        app::setValue(QStringLiteral("display.font_size"), px);
+        app::setValue(QStringLiteral("display.readable_ui_v1"), true);
     }
     return px;
 }

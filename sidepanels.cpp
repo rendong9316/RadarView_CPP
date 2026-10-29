@@ -266,16 +266,15 @@ bool TrackFilterState::accepts(const Track &t) const
 
 void TrackFilterState::save() const
 {
-    QSettings &s = app::settings();
-    s.setValue(QStringLiteral("filter.active_min"), timeActive ? QString::number(timeMin) : QStringLiteral("null"));
-    s.setValue(QStringLiteral("filter.active_max"), timeActive ? QString::number(timeMax) : QStringLiteral("null"));
+    app::setValue(QStringLiteral("filter.active_min"), timeActive ? QString::number(timeMin) : QStringLiteral("null"));
+    app::setValue(QStringLiteral("filter.active_max"), timeActive ? QString::number(timeMax) : QStringLiteral("null"));
     for (int i = 0; i < 3; ++i) {
         QJsonObject o;
         o.insert(QStringLiteral("enabled"), pc[i].enabled);
         o.insert(QStringLiteral("min"), pc[i].min >= 0 ? QJsonValue(pc[i].min) : QJsonValue());
         o.insert(QStringLiteral("max"), pc[i].max >= 0 ? QJsonValue(pc[i].max) : QJsonValue());
-        s.setValue(QStringLiteral("filter.point_count.") + trackSourceKey(kSources[i]),
-                   QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+        app::setValue(QStringLiteral("filter.point_count.") + trackSourceKey(kSources[i]),
+                      QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
     }
     // 空间套索：保存多边形与是否启用（下次启动可直接恢复筛选）
     QJsonArray poly;
@@ -288,8 +287,8 @@ void TrackFilterState::save() const
     QJsonObject sp;
     sp.insert(QStringLiteral("active"), spatialActive);
     sp.insert(QStringLiteral("polygon"), poly);
-    s.setValue(QStringLiteral("filter.spatial"),
-               QString::fromUtf8(QJsonDocument(sp).toJson(QJsonDocument::Compact)));
+    app::setValue(QStringLiteral("filter.spatial"),
+                  QString::fromUtf8(QJsonDocument(sp).toJson(QJsonDocument::Compact)));
 }
 
 void TrackFilterState::load()

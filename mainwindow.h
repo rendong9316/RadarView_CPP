@@ -24,6 +24,8 @@ class TrackImporter;
 class ReplayController;
 class AppStatusBar;
 class QDialog;
+class QTimer;
+class QCloseEvent;
 class QToolBar;
 class QToolButton;
 class QActionGroup;
@@ -137,6 +139,9 @@ public:
     // 当前地图显示集合（RadarView displayTracks）的航迹数
     int displayedTrackCount() const;
     void applyDisplay();                 // 显示集合 / 筛选 / 点迹变化后同步到图层和回放范围
+    void saveUiState();                  // 把界面状态（显隐/面板/相机/绘图）写进设置
+    void restoreUiState();               // 启动时恢复上面这些状态
+    void scheduleSaveUiState();          // 合并写入：连续改动只写一次
 
 signals:
     void importFinished(bool ok, const QString &message);
@@ -149,6 +154,9 @@ private slots:
     void onTrackContextMenu(int index, const QPoint &globalPos);
     void onFlagContextMenu(const QString &flagId, const QPoint &globalPos);
 
+protected:
+    void closeEvent(QCloseEvent *e) override;
+
 private:
     void buildMenuBar();
     void buildDrawToolBar();
@@ -158,6 +166,9 @@ private:
     void onDrawFeatureEdit(int featureId);   // 选择工具双击：改颜色/线宽/填充/半径/文本
     void saveDrawings();
     void importDrawings();
+    void saveDrawingsAuto();             // 绘图内容自动落盘（app::drawingPath）
+    void loadDrawingsAuto();             // 启动时恢复绘图内容
+    void saveCamera();                   // 相机视角写设置
     void drawDistanceCircle(const QString &flagId);   // 旗标右键「绘制距离圆」
     QStackedWidget *buildEditorArea();
     void loadPersisted();
@@ -218,6 +229,9 @@ private:
     QList<DbSaveJob *> m_saveQueue;
 
     bool eventFilter(QObject *obj, QEvent *e) override;
+    QTimer *m_uiSaveTimer = nullptr;     // UI 状态合并保存
+    QTimer *m_drawSaveTimer = nullptr;   // 绘图内容合并保存
+    bool m_restoringState = false;       // 恢复过程中不要回写
     void placeBackAllButton();
     void resetReplayRange();
     void refreshSources();                  // 状态栏数据源项与航迹数

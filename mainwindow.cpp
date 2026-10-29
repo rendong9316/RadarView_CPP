@@ -29,9 +29,12 @@
 #include <QUndoStack>
 #include <QWidgetAction>
 #include <QLocale>
+#include <QCloseEvent>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPainter>
+#include <QSaveFile>
 #include <QSettings>
 #include <QTimer>
 #include <QtMath>
@@ -302,6 +305,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_globe->setDrawingManager(m_draw);
     m_globe->setDrawColor(m_drawColor);
     connect(m_draw, &DrawingManager::changed, m_globe, [this]() { m_globe->update(); });
+    // 绘图内容自动落盘（用户手动「保存绘图」是导出 GeoJSON，这里是不丢内容的自动保存）
+    connect(m_draw, &DrawingManager::changed, this, [this]() {
+        if (!m_restoringState && m_drawSaveTimer)
+            m_drawSaveTimer->start();
+    });
     connect(m_globe, &GlobeWidget::drawTextRequested, this, &MainWindow::onDrawText);
     connect(m_globe, &GlobeWidget::drawFillRequested, this, &MainWindow::onDrawFill);
     connect(m_globe, &GlobeWidget::drawFeatureEditRequested, this, &MainWindow::onDrawFeatureEdit);
@@ -343,6 +351,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_splitter, &QSplitter::splitterMoved, this, [this]() {
         if (m_panel >= 0)
             m_panelWidth[m_panel] = m_splitter->sizes().value(0);
+        scheduleSaveUiState();
     });
 
     // 状态栏：常驻的自绘控件（不用 QStatusBar，它的 showMessage() 会把左侧控件整体隐藏）
@@ -351,6 +360,7 @@ MainWindow::MainWindow(QWidget *parent)
     v->addWidget(m_statusBar);
     Theme::instance()->setId(m_statusBar->theme().id);
     connect(m_statusBar, &AppStatusBar::themeChanged, Theme::instance(), &Theme::setId);
+    connect(m_globe, &GlobeWidget::cameraChanged, this, &MainWindow::saveCamera);
     connect(m_globe, &GlobeWidget::viewStatusChanged, m_statusBar,
             [this](double h, double lon, double lat, int fps, bool hasCoord) {
                 m_statusBar->setViewStatus(h, lon, lat, fps, hasCoord);
@@ -440,8 +450,27 @@ MainWindow::MainWindow(QWidget *parent)
         placeBackAllButton();
     });
 
+    // UI 状态合并保存：拖分栏、连续切显隐时不会每次都写盘
+    m_uiSaveTimer = new QTimer(this);
+    m_uiSaveTimer->setSingleShot(true);
+    m_uiSaveTimer->setInterval(400);
+    connect(m_uiSaveTimer, &QTimer::timeout, this, &MainWindow::saveUiState);
+    m_drawSaveTimer = new QTimer(this);
+    m_drawSaveTimer->setSingleShot(true);
+    m_drawSaveTimer->setInterval(800);
+    connect(m_drawSaveTimer, &QTimer::timeout, this, &MainWindow::saveDrawingsAuto);
+    // 兜底：不经过 closeEvent 的退出（QApplication::quit 等）也要把状态写完
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
+        saveUiState();
+        saveDrawingsAuto();
+        app::flushSettings();
+    });
+
+    // 先恢复窗口几何，侧栏宽度换算才有正确的总宽度
+    const QByteArray geo = app::settings().value(QStringLiteral("window.geometry")).toByteArray();
+    if (geo.isEmpty() || !restoreGeometry(geo))
+        resize(1280, 800);
     loadPersisted();
-    resize(1280, 800);
 }
 
 MainWindow::~MainWindow()
@@ -457,6 +486,7 @@ MainWindow::~MainWindow()
 // 启动：打开数据库并加载已保存的航迹（RadarView load_persisted_tracks），恢复各项设置
 void MainWindow::loadPersisted()
 {
+    m_restoringState = true;
     QSettings &s = app::settings();
     // 文件颜色先恢复，加载后同一文件颜色不变，新文件继续轮换
     QHash<QString, QColor> colors;
@@ -486,6 +516,7 @@ void MainWindow::loadPersisted()
     m_manage->loadSettings();
     m_filter.load();
     m_flags->load();
+    m_ruler->load();
     m_globe->setShowLabels(s.value(QStringLiteral("display.show_labels"), false).toBool());
     if (m_labelAction)
         m_labelAction->setChecked(m_globe->showLabels());
@@ -497,6 +528,29 @@ void MainWindow::loadPersisted()
     m_filterPanel = fresh;
     m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
     m_managePanel->refresh();
+
+    // ---- 显示/隐藏状态：数据源整体显隐、状态栏里点掉的雷达文件、点迹、单独显示 ----
+    m_adsbVisible = s.value(QStringLiteral("display.adsb_visible"), true).toBool();
+    {
+        TrackLayer *layer = m_globe->trackLayer();
+        for (const QJsonValue &v : QJsonDocument::fromJson(
+                 s.value(QStringLiteral("display.hidden_groups")).toString().toUtf8()).array()) {
+            const QString key = v.toString();
+            if (!key.isEmpty())
+                layer->setGroupVisible(key, false);
+        }
+        for (const QJsonValue &v : QJsonDocument::fromJson(
+                 s.value(QStringLiteral("display.dot_keys")).toString().toUtf8()).array()) {
+            const QString key = v.toString();
+            if (!key.isEmpty() && m_store.indexOf(key) >= 0)
+                m_dotKeys.insert(key);
+        }
+    }
+    {
+        const QString isoKey = s.value(QStringLiteral("track.isolated_key")).toString();
+        if (!isoKey.isEmpty() && m_store.indexOf(isoKey) >= 0)
+            m_isoKey = isoKey;
+    }
 
     applyAdsbVisibility();
     refreshSources();
@@ -513,6 +567,9 @@ void MainWindow::loadPersisted()
         m_globe->lookAt(qRadiansToDegrees(std::atan2(sy, sx)),
                         qRadiansToDegrees(std::atan2(sz, std::sqrt(sx * sx + sy * sy))), 6000.0);
     }
+    // 上次退出时的视角优先于「自动定位到数据中心」
+    restoreUiState();
+    m_restoringState = false;
 }
 
 void MainWindow::saveFileColors()
@@ -521,13 +578,152 @@ void MainWindow::saveFileColors()
     const QHash<QString, QColor> colors = m_store.fileColors();
     for (auto it = colors.constBegin(); it != colors.constEnd(); ++it)
         o.insert(it.key(), it.value().name());
-    app::settings().setValue(QStringLiteral("display.file_line_color"),
+    app::setValue(QStringLiteral("display.file_line_color"),
                              QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
     QJsonObject custom;
     for (auto it = m_customFileColors.constBegin(); it != m_customFileColors.constEnd(); ++it)
         custom.insert(it.key(), it.value().name());
-    app::settings().setValue(QStringLiteral("display.custom_file_color"),
+    app::setValue(QStringLiteral("display.custom_file_color"),
                              QString::fromUtf8(QJsonDocument(custom).toJson(QJsonDocument::Compact)));
+}
+
+// ---------------------------------------------------------------
+//  界面状态持久化：显隐 / 点迹 / 单独显示 / 侧栏 / 绘图栏 / 相机 / 绘图内容
+// ---------------------------------------------------------------
+
+void MainWindow::scheduleSaveUiState()
+{
+    if (m_restoringState || !m_uiSaveTimer)
+        return;
+    m_uiSaveTimer->start();
+}
+
+void MainWindow::saveUiState()
+{
+    if (m_restoringState)
+        return;
+    app::setValue(QStringLiteral("display.adsb_visible"), m_adsbVisible);
+    app::setValue(QStringLiteral("display.show_labels"), m_globe->showLabels());
+
+    // 状态栏里被点掉的雷达文件（ADS-B 是整体开关，单独存在上面的键里）
+    TrackLayer *layer = m_globe->trackLayer();
+    QSet<QString> groups;
+    for (const Track &t : m_store.tracks())
+        groups.insert(trackSourceName(t.source) + QStringLiteral("::") + t.fileName);
+    QStringList sorted = groups.values();
+    sorted.sort();
+    QJsonArray hidden;
+    for (const QString &key : sorted) {
+        if (key.startsWith(QLatin1String("ADS-B::")))
+            continue;
+        if (!layer->isGroupVisible(key))
+            hidden.append(key);
+    }
+    app::setValue(QStringLiteral("display.hidden_groups"),
+                  QString::fromUtf8(QJsonDocument(hidden).toJson(QJsonDocument::Compact)));
+
+    QStringList dots = m_dotKeys.values();
+    dots.sort();
+    app::setValue(QStringLiteral("display.dot_keys"),
+                  QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(dots)).toJson(QJsonDocument::Compact)));
+
+    app::setValue(QStringLiteral("track.isolated_key"), m_isoKey);
+
+    app::setValue(QStringLiteral("panel.active"), m_panel);
+    QJsonObject widths;
+    for (auto it = m_panelWidth.constBegin(); it != m_panelWidth.constEnd(); ++it)
+        widths.insert(QString::number(it.key()), it.value());
+    app::setValue(QStringLiteral("panel.widths"),
+                  QString::fromUtf8(QJsonDocument(widths).toJson(QJsonDocument::Compact)));
+    app::setValue(QStringLiteral("panel.drawbar_visible"), drawingBarVisible());
+    app::setValue(QStringLiteral("window.geometry"), saveGeometry());
+}
+
+void MainWindow::restoreUiState()
+{
+    QSettings &s = app::settings();
+    // 相机视角
+    const QJsonObject cam = QJsonDocument::fromJson(
+        s.value(QStringLiteral("camera.state")).toString().toUtf8()).object();
+    if (cam.contains(QStringLiteral("lon")) && cam.contains(QStringLiteral("lat"))) {
+        const double alt = cam.value(QStringLiteral("alt")).toDouble(6000.0);
+        m_globe->setCameraView(cam.value(QStringLiteral("lon")).toDouble(),
+                               cam.value(QStringLiteral("lat")).toDouble(),
+                               alt > 0.0 ? alt : 6000.0);
+    }
+    // 绘图颜色 + 绘图内容
+    const QColor dc(s.value(QStringLiteral("drawing.color")).toString());
+    if (dc.isValid()) {
+        m_drawColor = dc;
+        m_globe->setDrawColor(dc);
+        updateDrawColorIcon();
+    }
+    loadDrawingsAuto();
+    // 绘图工具条是否展开
+    setDrawingBarVisible(s.value(QStringLiteral("panel.drawbar_visible"), false).toBool());
+    // 侧栏：先恢复各面板宽度，再打开上次的面板
+    const QJsonObject widths = QJsonDocument::fromJson(
+        s.value(QStringLiteral("panel.widths")).toString().toUtf8()).object();
+    for (auto it = widths.begin(); it != widths.end(); ++it) {
+        const int id = it.key().toInt();
+        if (id >= 0 && id < int(PanelId::Count) && it.value().toInt() > 0)
+            m_panelWidth[id] = it.value().toInt();
+    }
+    const int panel = s.value(QStringLiteral("panel.active"), -1).toInt();
+    if (panel >= 0 && panel < int(PanelId::Count))
+        activatePanel(PanelId(panel));
+}
+
+void MainWindow::saveCamera()
+{
+    if (m_restoringState)
+        return;
+    double lon = 0.0, lat = 0.0, alt = 0.0;
+    m_globe->cameraView(&lon, &lat, &alt);
+    QJsonObject o;
+    o.insert(QStringLiteral("lon"), lon);
+    o.insert(QStringLiteral("lat"), lat);
+    o.insert(QStringLiteral("alt"), alt);
+    app::setValue(QStringLiteral("camera.state"),
+                  QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+}
+
+// 绘图内容自动保存：与数据库同目录的 drawings.json，原子写入（QSaveFile）
+void MainWindow::saveDrawingsAuto()
+{
+    if (m_restoringState)
+        return;
+    QSaveFile file(app::drawingPath());
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(QJsonDocument(m_draw->toJson()).toJson(QJsonDocument::Compact));
+    file.commit();
+}
+
+void MainWindow::loadDrawingsAuto()
+{
+    QFile file(app::drawingPath());
+    if (!file.exists() || !file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    if (root.isEmpty())
+        return;
+    const bool wasRestoring = m_restoringState;
+    m_restoringState = true;          // fromJson 会发 changed()，别让它反过来再存一次
+    QString err;
+    m_draw->fromJson(root, &err);
+    m_restoringState = wasRestoring;
+    if (m_undo)
+        m_undo->clear();              // 恢复出来的内容不进撤销栈
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    saveUiState();
+    saveDrawingsAuto();
+    app::flushSettings();
+    QMainWindow::closeEvent(e);
 }
 
 bool MainWindow::openTiles(const QString &path)
@@ -588,7 +784,7 @@ void MainWindow::loadDefaultTiles()
         if (token.trimmed().isEmpty())
             token = QString::fromLatin1(kTdtToken);
         if (!openOnlineMap(token, src == QLatin1String("amap")))
-            app::settings().setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
+            app::setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
     } else if (src == QLatin1String("amap_offline")) {
         m_globe->closeOnlineMap();
         const QString appDir = QCoreApplication::applicationDirPath();
@@ -600,7 +796,7 @@ void MainWindow::loadDefaultTiles()
         if (!found.isEmpty())
             openTiles(found);
         else
-            app::settings().setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
+            app::setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
     }
     syncSourceActions();
 }
@@ -627,7 +823,7 @@ bool MainWindow::openOnlineMap(const QString &token, bool useAmap)
         QMessageBox::warning(this, tr("在线底图"), err);
         return false;
     }
-    app::settings().setValue(QStringLiteral("map.tdt_token"), token.trimmed());
+    app::setValue(QStringLiteral("map.tdt_token"), token.trimmed());
     return true;
 }
 
@@ -650,7 +846,7 @@ void MainWindow::setMapSource(const QString &id)
             return;
         }
         openTiles(found);
-        app::settings().setValue(QStringLiteral("map.source"), id);
+        app::setValue(QStringLiteral("map.source"), id);
         syncSourceActions();
         return;
     }
@@ -659,7 +855,7 @@ void MainWindow::setMapSource(const QString &id)
         m_globe->closeOnlineMap();
         // 先把用户意图记成 offline 再加载默认瓦片：loadDefaultTiles() 末尾会按
         // map.source 恢复在线源，只有先置成 offline 才不会被拉回天地图/高德。
-        app::settings().setValue(QStringLiteral("map.source"), id);
+        app::setValue(QStringLiteral("map.source"), id);
         loadDefaultTiles();               // 始终切回目录里的默认离线瓦片
         if (m_globe->tileName().isEmpty())
             QMessageBox::warning(this, tr("离线瓦片"),
@@ -678,7 +874,7 @@ void MainWindow::setMapSource(const QString &id)
         syncSourceActions();                  // 失败则勾选状态回到原来的源
         return;
     }
-    app::settings().setValue(QStringLiteral("map.source"), id);
+    app::setValue(QStringLiteral("map.source"), id);
     syncSourceActions();
 }
 
@@ -689,7 +885,7 @@ void MainWindow::openTileFile()
         tr("MBTiles 瓦片 (*.mbtiles);;所有文件 (*)"));
     if (!path.isEmpty()) {
         openTiles(path);
-        app::settings().setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
+        app::setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
         syncSourceActions();
     }
 }
@@ -972,6 +1168,7 @@ void MainWindow::isolateTrack(int index)
     }
     m_isoKey = index >= 0 ? m_store.tracks()[index].key() : QString();
     applyDisplay();
+    scheduleSaveUiState();
 }
 
 // 与 RadarView statusSources 相同：ADS-B 一项（整体），雷达 / 原始量测按导入文件各一项（按首次出现顺序）
@@ -1021,6 +1218,7 @@ void MainWindow::toggleSource(const QString &key)
     }
     refreshSources();
     m_globe->update();
+    scheduleSaveUiState();
 }
 
 // ADS-B 是整体开关：每个 ADS-B 文件组都跟随它（新导入的文件也一样）
@@ -1066,6 +1264,7 @@ void MainWindow::togglePointDots(int index)
     if (!m_dotKeys.remove(key))
         m_dotKeys.insert(key);
     applyDisplay();
+    scheduleSaveUiState();
 }
 
 // 「详细信息」：高亮该航迹并打开管理面板，按来源 + ICAO 搜索（App.vue onShowTrackDetail）
@@ -1244,6 +1443,7 @@ void MainWindow::buildDrawToolBar()
         if (!c.isValid())
             return;
         m_drawColor = c;
+        app::setValue(QStringLiteral("drawing.color"), c.name());
         m_globe->setDrawColor(c);
         updateDrawColorIcon();
     });
@@ -1279,6 +1479,7 @@ void MainWindow::setDrawingBarVisible(bool on)
     }
     if (!on)
         setDrawTool(DrawTool::None);      // 收起工具条就回到漫游，鼠标不会还停在画图状态
+    scheduleSaveUiState();
 }
 
 bool MainWindow::drawingBarVisible() const
@@ -1445,7 +1646,7 @@ void MainWindow::syncReplayToLayer()
 void MainWindow::toggleLabels()
 {
     m_globe->setShowLabels(!m_globe->showLabels());
-    app::settings().setValue(QStringLiteral("display.show_labels"), m_globe->showLabels());
+    app::setValue(QStringLiteral("display.show_labels"), m_globe->showLabels());
     if (m_labelAction)
         m_labelAction->setChecked(m_globe->showLabels());
 }
@@ -1684,6 +1885,7 @@ void MainWindow::activatePanel(PanelId id)
     m_activityBar->highlight(i);
     if (id == PanelId::Manage)
         m_managePanel->refresh();
+    scheduleSaveUiState();
 }
 
 void MainWindow::closeSidebar()
@@ -1693,4 +1895,5 @@ void MainWindow::closeSidebar()
     m_sidePanel->hide();
     m_panel = -1;
     m_activityBar->highlight(-1);
+    scheduleSaveUiState();
 }

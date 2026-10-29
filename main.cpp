@@ -1752,6 +1752,76 @@ void loadBundledFonts()
 
 } // namespace
 
+// ---------------------------------------------------------------
+//  状态持久化自检：HelloVscode.exe --statecheck
+//  第一遍造状态并关闭窗口（走 closeEvent 保存），第二遍新窗口应完整恢复。
+//  结果写到 exe 旁 statecheck.log
+// ---------------------------------------------------------------
+static int runStateCheck()
+{
+    QFile log(QCoreApplication::applicationDirPath() + QStringLiteral("/statecheck.log"));
+    log.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
+    QTextStream out(&log);
+    out.setCodec("UTF-8");
+    int failures = 0;
+    auto check = [&out, &failures](bool ok, const QString &what) {
+        out << (ok ? "PASS " : "FAIL ") << what << "\n";
+        out.flush();
+        if (!ok)
+            ++failures;
+    };
+
+    const double kLon = 118.5, kLat = 31.2, kAlt = 4200.0;
+    {
+        MainWindow w;
+        w.globe()->lookAt(kLon, kLat, kAlt);
+        w.globe()->setShowLabels(true);
+        w.setDrawingBarVisible(true);
+        w.replay()->setSpeed(1234.0);
+        w.ruler()->activate();
+        w.ruler()->addWaypoint(31.0, 118.0);
+        w.ruler()->addWaypoint(32.0, 119.0);
+        w.drawing()->addCircle(31.5, 118.5, 300.0, QColor(QStringLiteral("#FF0000")));
+        w.drawing()->addLine(30.0, 117.0, 33.0, 120.0, QColor(QStringLiteral("#00FF00")));
+        // 数据源文件显隐：造一条雷达航迹再把它的分组关掉
+        Track t;
+        t.id = QStringLiteral("STATETEST");
+        t.source = TrackSource::Radar;
+        t.fileName = QStringLiteral("StateTest");
+        TrackPoint p;
+        p.t = 1000;
+        p.lat = 31.0;
+        p.lon = 118.0;
+        t.points.append(p);
+        w.trackStore()->addTracks(QVector<Track>() << t);
+        w.globe()->trackLayer()->setGroupVisible(QStringLiteral("Radar::StateTest"), false);
+        w.activatePanel(PanelId::Settings);
+        w.close();                       // closeEvent 里保存并落盘
+    }
+
+    {
+        MainWindow w;
+        double lon = 0.0, lat = 0.0, alt = 0.0;
+        w.globe()->cameraView(&lon, &lat, &alt);
+        check(qAbs(lon - kLon) < 0.05 && qAbs(lat - kLat) < 0.05 && qAbs(alt - kAlt) < 60.0,
+              QStringLiteral("相机视角恢复"));
+        check(w.globe()->showLabels(), QStringLiteral("航迹标签开关恢复"));
+        check(w.drawingBarVisible(), QStringLiteral("绘图工具栏展开状态恢复"));
+        check(qAbs(w.replay()->speed() - 1234.0) < 0.001, QStringLiteral("回放倍速恢复"));
+        check(w.ruler()->isActive() && w.ruler()->waypoints().size() == 2, QStringLiteral("标尺航点恢复"));
+        check(w.drawing()->count() == 2, QStringLiteral("绘图内容恢复"));
+        check(w.activePanel() == int(PanelId::Settings), QStringLiteral("侧栏面板恢复"));
+        check(!w.globe()->trackLayer()->isGroupVisible(QStringLiteral("Radar::StateTest")),
+              QStringLiteral("数据源文件显隐恢复"));
+        w.close();
+    }
+
+    out << (failures == 0 ? QStringLiteral("RESULT OK")
+                          : QStringLiteral("RESULT FAIL (%1)").arg(failures)) << "\n";
+    out.flush();
+    return failures == 0 ? 0 : 1;
+}
+
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
@@ -1760,6 +1830,12 @@ int main(int argc, char *argv[])
     const int pt = args.indexOf(QStringLiteral("--parsetest"));
     if (pt >= 0 && pt + 2 < args.size())
         return runParseTest(args.at(pt + 1), args.at(pt + 2));
+
+    if (args.contains(QStringLiteral("--statecheck"))) {
+        app::setTestMode(true);
+        ui::setAutoConfirm(true);
+        return runStateCheck();
+    }
 
     // 自检：数据库和设置用 exe 旁的临时文件（启动时清空），确认框自动通过
     const bool testRun = args.contains(QStringLiteral("--selftest")) || args.contains(QStringLiteral("--tracktest"));

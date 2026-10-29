@@ -63,6 +63,9 @@ public:
     QString debugInfo() const;
     // 相机对准某经纬度（度），altKm 为离地高度
     void lookAt(double lonDeg, double latDeg, double altKm);
+    // 当前相机（WGS84 经纬度 + 离地高度 km），用于退出前保存 / 启动时恢复视角
+    void cameraView(double *lonDeg, double *latDeg, double *altKm) const;
+    void setCameraView(double lonDeg, double latDeg, double altKm);
 
     // 航迹图层：数据由外部 TrackStore 持有，变化后调用 update() 即可
     void setTrackStore(const TrackStore *store);
@@ -136,6 +139,8 @@ signals:
     // 状态栏：相机离地高度（km）、鼠标经纬度（度，不在地球上时为 0）、帧率（0 表示暂无）
     // hasCoord=false 表示鼠标没落在地球上（此时经纬度无意义）
     void viewStatusChanged(double heightKm, double lonDeg, double latDeg, int fps, bool hasCoord);
+    // 相机被用户改动（拖动结束 / 滚轮 / 复位 / 定位）：主窗口据此持久化视角
+    void cameraChanged();
     void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
     void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
     void flagContextMenuRequested(const QString &flagId, const QPoint &globalPos);

@@ -1,5 +1,7 @@
 #include "replaycontroller.h"
+#include "apppaths.h"
 
+#include <QSettings>
 #include <cmath>
 
 ReplayController::ReplayController(QObject *parent)
@@ -8,6 +10,11 @@ ReplayController::ReplayController(QObject *parent)
     m_timer.setInterval(16);
     m_timer.setTimerType(Qt::PreciseTimer);
     connect(&m_timer, &QTimer::timeout, this, &ReplayController::onTick);
+
+    // 倍速跨会话保留（RadarView replay.speed）
+    const double saved = app::settings().value(QStringLiteral("replay.speed"), m_speed).toDouble();
+    if (saved > 0.0 && std::isfinite(saved))
+        m_speed = saved;
 }
 
 void ReplayController::setRange(qint64 startMs, qint64 endMs)
@@ -30,6 +37,7 @@ void ReplayController::setSpeed(double speed)
 {
     if (speed > 0.0 && std::isfinite(speed) && speed != m_speed) {
         m_speed = speed;
+        app::setValue(QStringLiteral("replay.speed"), m_speed);
         emit stateChanged();
     }
 }

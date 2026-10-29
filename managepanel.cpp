@@ -272,13 +272,12 @@ void ManageState::clearHighlights()
 }
 void ManageState::saveSettings()
 {
-    QSettings &s = app::settings();
-    s.setValue(QStringLiteral("manage.filter"), QString::fromUtf8(QJsonDocument(filter.filterJson()).toJson(QJsonDocument::Compact)));
-    s.setValue(QStringLiteral("manage.sort"), QString::fromUtf8(QJsonDocument(filter.sortJson()).toJson(QJsonDocument::Compact)));
-    s.setValue(QStringLiteral("manage.page_size"), pageSize);
+    app::setValue(QStringLiteral("manage.filter"), QString::fromUtf8(QJsonDocument(filter.filterJson()).toJson(QJsonDocument::Compact)));
+    app::setValue(QStringLiteral("manage.sort"), QString::fromUtf8(QJsonDocument(filter.sortJson()).toJson(QJsonDocument::Compact)));
+    app::setValue(QStringLiteral("manage.page_size"), pageSize);
     QStringList vis = m_visible.values();
     vis.sort();
-    s.setValue(QStringLiteral("manage.visible_keys"), QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(vis)).toJson(QJsonDocument::Compact)));
+    app::setValue(QStringLiteral("manage.visible_keys"), QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(vis)).toJson(QJsonDocument::Compact)));
 }
 
 void ManageState::loadSettings()

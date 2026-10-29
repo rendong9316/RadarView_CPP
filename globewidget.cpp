@@ -459,12 +459,31 @@ void GlobeWidget::resetView()
     m_camLat = qDegreesToRadians(35.0);
     m_alt = 2.5;
     update();
+    emit cameraChanged();
+}
+
+void GlobeWidget::cameraView(double *lonDeg, double *latDeg, double *altKm) const
+{
+    double lonW = 0.0, latW = 0.0;
+    fromScene(qRadiansToDegrees(m_camLon), qRadiansToDegrees(m_camLat), &lonW, &latW);
+    if (lonDeg)
+        *lonDeg = lonW;
+    if (latDeg)
+        *latDeg = latW;
+    if (altKm)
+        *altKm = m_alt * kEarthRadiusKm;
+}
+
+void GlobeWidget::setCameraView(double lonDeg, double latDeg, double altKm)
+{
+    lookAt(lonDeg, latDeg, altKm);
 }
 
 void GlobeWidget::zoomBy(double steps)
 {
     m_alt = qBound(kMinAlt, m_alt * std::pow(0.8, steps), kMaxAlt);
     update();
+    emit cameraChanged();
 }
 
 void GlobeWidget::panPixels(const QPoint &from, const QPoint &to)
@@ -533,6 +552,7 @@ void GlobeWidget::lookAt(double lonDeg, double latDeg, double altKm)
     m_camLat = qBound(-qDegreesToRadians(89.9), qDegreesToRadians(slat), qDegreesToRadians(89.9));
     m_alt = qBound(kMinAlt, altKm / kEarthRadiusKm, kMaxAlt);
     update();
+    emit cameraChanged();
 }
 
 void GlobeWidget::setTrackStore(const TrackStore *store)
@@ -2296,6 +2316,7 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
     if (e->button() != Qt::LeftButton)
         return;
     const bool click = m_clickCandidate;
+    const bool wasDragging = m_dragging;
     m_dragging = false;
     m_clickCandidate = false;
     unsetCursor();
@@ -2310,6 +2331,8 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
         }
     }
     updateHover(e->pos(), e->globalPos());
+    if (wasDragging)
+        emit cameraChanged();       // 拖动结束才存视角，拖动过程中不写设置
 }
 
 // 双击：在旗标上删除，否则在该处放旗标（RadarView LEFT_DOUBLE_CLICK）

@@ -11,6 +11,9 @@
 #include <QEvent>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QSet>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -34,16 +37,46 @@ QString srcLabel(TrackSource s)   // SettingsPanel.vue sourceLabel
     return QString();
 }
 
-// 组头点击折叠 / 展开（.group-header @click toggleSection）
+// 折叠状态持久化：settings.collapsed 里是被折叠分组的标题（JSON 数组）
+QSet<QString> collapsedGroups()
+{
+    QSet<QString> out;
+    const QJsonArray arr = QJsonDocument::fromJson(
+        app::settings().value(QStringLiteral("settings.collapsed")).toString().toUtf8()).array();
+    for (const QJsonValue &v : arr)
+        out.insert(v.toString());
+    return out;
+}
+
+void setGroupCollapsed(const QString &title, bool collapsed)
+{
+    QSet<QString> set = collapsedGroups();
+    if (collapsed)
+        set.insert(title);
+    else
+        set.remove(title);
+    QStringList sorted = set.values();
+    sorted.sort();
+    QJsonArray arr;
+    for (const QString &s : sorted)
+        arr.append(s);
+    app::setValue(QStringLiteral("settings.collapsed"),
+                  QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+}
+
+// 组头点击折叠 / 展开（.group-header @click toggleSection），状态跨会话保留
 class HeaderClick : public QObject
 {
 public:
-    HeaderClick(QWidget *body, QLabel *chevron, QObject *parent) : QObject(parent), m_body(body), m_chev(chevron) {}
+    HeaderClick(QWidget *body, QLabel *chevron, const QString &title, QObject *parent)
+        : QObject(parent), m_body(body), m_chev(chevron), m_title(title) {}
     bool eventFilter(QObject *, QEvent *e) override
     {
         if (e->type() == QEvent::MouseButtonRelease && static_cast<QMouseEvent *>(e)->button() == Qt::LeftButton) {
-            m_body->setVisible(!m_body->isVisible());
-            m_chev->setText(m_body->isVisible() ? QStringLiteral("▾") : QStringLiteral("▸"));
+            const bool show = !m_body->isVisible();
+            m_body->setVisible(show);
+            m_chev->setText(show ? QStringLiteral("▾") : QStringLiteral("▸"));
+            setGroupCollapsed(m_title, !show);
             return true;
         }
         return false;
@@ -52,6 +85,7 @@ public:
 private:
     QWidget *m_body;
     QLabel *m_chev;
+    QString m_title;
 };
 
 void setSwatch(QPushButton *b, const QColor &c)
@@ -133,13 +167,13 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
             const QColor c = QColorDialog::getColor(cur, this, QStringLiteral("选择线条颜色"));
             if (!c.isValid())
                 return;
-            app::settings().setValue(key, c.name());
+            app::setValue(key, c.name());
             apply(c, true);
             if (m_host.globe)
                 m_host.globe->update();
         });
         connect(reset, &QPushButton::clicked, this, [this, key, apply, src]() {
-            app::settings().remove(key);
+            app::removeValue(key);
             apply(trackSourceColor(src), false);
             if (m_host.globe)
                 m_host.globe->update();
@@ -149,8 +183,8 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     // 只升级一次旧默认值，之后保留用户自己选择的线宽。
     if (!s.value(QStringLiteral("display.thicker_lines_v1"), false).toBool()) {
         const double width = s.value(QStringLiteral("display.line_width"), 3.0).toDouble();
-        s.setValue(QStringLiteral("display.line_width"), qMax(3.0, width));
-        s.setValue(QStringLiteral("display.thicker_lines_v1"), true);
+        app::setValue(QStringLiteral("display.line_width"), qMax(3.0, width));
+        app::setValue(QStringLiteral("display.thicker_lines_v1"), true);
     }
     // ---- 线宽调节（0.5–8，默认 3）----
     g = addGroup(main, int(LucideIcon::GripHorizontal), QStringLiteral("线宽调节"),
@@ -158,7 +192,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     m_lineWidth = addSlider(g, QStringLiteral("线宽"), themeColor("text-primary"), 0.5, 8.0, 0.5,
               s.value(QStringLiteral("display.line_width"), 3.0).toDouble(), QStringLiteral("px"),
               [this, layer](double v) {
-                  app::settings().setValue(QStringLiteral("display.line_width"), v);
+                  app::setValue(QStringLiteral("display.line_width"), v);
                   if (layer)
                       layer->setLineWidthPx(float(v));
                   emit lineWidthValueChanged(v);
@@ -173,7 +207,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
         const QString key = QStringLiteral("display.dot_scale.%1").arg(trackSourceKey(src));
         addSlider(g, srcLabel(src), trackSourceColor(src), 0.2, 3.0, 0.1, s.value(key, 1.0).toDouble(), QString(),
                   [this, layer, key, src](double v) {
-                      app::settings().setValue(key, v);
+                      app::setValue(key, v);
                       if (layer)
                           layer->setDotScale(src, v);
                       if (m_host.globe)
@@ -187,7 +221,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     m_pointScale = addSlider(g, QStringLiteral("圆球大小"), themeColor("accent-primary"), 0.2, 5.0, 0.1,
               s.value(QStringLiteral("display.track_point_dot_scale"), 1.0).toDouble(), QString(),
               [this, layer](double v) {
-                  app::settings().setValue(QStringLiteral("display.track_point_dot_scale"), v);
+                  app::setValue(QStringLiteral("display.track_point_dot_scale"), v);
                   if (layer)
                       layer->setPointDotPx(float(7.0 * v));
                   emit pointScaleValueChanged(v);
@@ -201,7 +235,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     addSlider(g, QStringLiteral("图标&文字"), themeColor("accent-primary"), 0.5, 3.0, 0.1,
               s.value(QStringLiteral("display.flag_scale"), 1.2).toDouble(), QString(),
               [this](double v) {
-                  app::settings().setValue(QStringLiteral("display.flag_scale"), v);
+                  app::setValue(QStringLiteral("display.flag_scale"), v);
                   if (m_host.globe)
                       m_host.globe->setFlagScale(v);
               });
@@ -213,7 +247,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
                        UiScale::instance()->basePx(), QStringLiteral("px"),
                        [this](double v) {
                            UiScale::instance()->setBasePx(int(v));
-                           app::settings().setValue(QStringLiteral("display.font_size"), int(v));
+                           app::setValue(QStringLiteral("display.font_size"), int(v));
                            emit fontValueChanged(int(v));
                        });
 
@@ -309,7 +343,11 @@ QVBoxLayout *SettingsPanel::addGroup(QVBoxLayout *main, int icon, const QString 
     ui::bindMargins(bv, 12, 2, 12, 8);
     ui::bindSpacing(bv, 3);
     gv->addWidget(body);
-    hdr->installEventFilter(new HeaderClick(body, chev, hdr));
+    if (collapsedGroups().contains(title)) {       // 上次关掉的分组保持折叠
+        body->setVisible(false);
+        chev->setText(QStringLiteral("▸"));
+    }
+    hdr->installEventFilter(new HeaderClick(body, chev, title, hdr));
     main->addWidget(group);
     return bv;
 }
