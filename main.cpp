@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "globewidget.h"
+#include "splashscreen.h"
 
 #include <QApplication>
 #include <QDateTime>
@@ -1933,6 +1934,14 @@ int main(int argc, char *argv[])
         app::setTestMode(true);
         ui::setAutoConfirm(true);
     }
+    // 启动页：双击后立刻给反馈。自检 / 截图模式不显示，免得干扰断言与截图
+    SplashScreen *splash = nullptr;
+    if (!testRun && !args.contains(QStringLiteral("--testmode"))
+            && !args.contains(QStringLiteral("--nosplash"))) {
+        splash = new SplashScreen;
+        splash->showNow();
+    }
+
     UiScale::instance()->applyAppFont();   // 按保存的根字号缩放默认字体（自检时读的是临时设置）
 
     MainWindow w;
@@ -1942,6 +1951,10 @@ int main(int argc, char *argv[])
     else
         w.showMaximized();
     w.loadDefaultTiles();
+
+    // 主窗口已经上屏：启动页过了最短展示时间后淡出
+    if (splash)
+        splash->finish();
 
     // 命令行直接指定在线底图 key（也方便自动化验证）：--online-key <天地图 key>
     const int ok = args.indexOf(QStringLiteral("--online-key"));
