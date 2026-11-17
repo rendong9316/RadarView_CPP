@@ -64,6 +64,13 @@ public:
     void setHighlightedBatch(int batchNo);
     int highlightedBatch() const;
 
+    // 区域筛选：每个三轴视图各存一套（切换视图时原样恢复）
+    Point3dRegion regionForView(Point3dViewMode mode) const;
+    bool regionAppliedForView(Point3dViewMode mode) const;
+    // 自检/脚本用：设置当前视图的区域并按需应用
+    bool setRegionForCurrentView(const Point3dRegion &r, bool apply);
+    void setViewMode(Point3dViewMode mode);   // 同步工具栏下拉（会触发视图切换逻辑）
+
     // 地图联动：地图单独显示 / 管理面板筛选出的航迹 → 本窗口里有对应叠加航迹就单独显示它们；
     // 一条都对不上时本窗口保持原样（refs 为空则恢复显示全部叠加航迹）
     void setLinkedSelection(const QVector<LinkedTrackRef> &refs);
@@ -82,6 +89,12 @@ protected:
     void closeEvent(QCloseEvent *e) override;
 
 private:
+    // 区域筛选的三行 = 当前视图的三个轴；每个视图各存一套
+    struct ViewRegion {
+        Point3dRegion region;
+        bool applied = false;
+    };
+
     void buildUi();
     void importDetections();
     void onImportDone();
@@ -102,11 +115,19 @@ private:
     void reloadOverlaysFromKeys();
     void applyLinkedSelection();
     void applySnrRange();          // 按设置把色标 SNR 映射范围推给画布
+    void loadRegionForCurrentView();   // 三行标签/数值 + 画布框/筛选
+    void onRegionSpinEdited();
+    void applyRegion();
+    void resetRegion();
+    void persistRegion(int mode);
+    void revalidateRegions();      // 数据变化后按新量程夹紧各视图的区间
+    void updateRegionButtons();
     void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
     QWidget *m_toolbar = nullptr;
     QWidget *m_settingsBar = nullptr;
+    QWidget *m_regionBar = nullptr;
     QWidget *m_statusBar = nullptr;
     QComboBox *m_viewCombo = nullptr;
     QComboBox *m_windowCombo = nullptr;
@@ -121,6 +142,15 @@ private:
     QDoubleSpinBox *m_lineWidthSpin = nullptr;
     QDoubleSpinBox *m_labelSizeSpin = nullptr;
     QDoubleSpinBox *m_hoverSizeSpin = nullptr;
+    // 区域筛选栏
+    QPushButton *m_regionBtn = nullptr;
+    QLabel *m_regionAxisLabel[3] = { nullptr, nullptr, nullptr };
+    QDoubleSpinBox *m_regionMinSpin[3] = { nullptr, nullptr, nullptr };
+    QDoubleSpinBox *m_regionMaxSpin[3] = { nullptr, nullptr, nullptr };
+    QPushButton *m_regionApplyBtn = nullptr;
+    QPushButton *m_regionResetBtn = nullptr;
+    ViewRegion m_viewRegions[3];
+    bool m_regionLoading = false;
     QLabel *m_status = nullptr;
     QProgressBar *m_progress = nullptr;
 

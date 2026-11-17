@@ -102,6 +102,21 @@ struct Point3dDataset {
     bool isEmpty() const { return frames.isEmpty(); }
 };
 
+// 区域筛选框：坐标就是"当前视图坐标"（X/Y 随视图模式变化）+ 帧值 Z。
+// valid=false 表示不筛选（全量）。
+struct Point3dRegion {
+    bool valid = false;
+    double x0 = 0.0, x1 = 0.0;
+    double y0 = 0.0, y1 = 0.0;
+    double z0 = 0.0, z1 = 0.0;
+    bool inside(double x, double y, double z) const
+    {
+        return !valid || (x >= x0 - 1e-9 && x <= x1 + 1e-9
+                          && y >= y0 - 1e-9 && y <= y1 + 1e-9
+                          && z >= z0 - 1e-9 && z <= z1 + 1e-9);
+    }
+};
+
 // 视图坐标：仅做三选一映射，与 MATLAB viewCoordinates 一致
 inline void point3dViewCoordinates(Point3dViewMode mode, double range, double vr, double az,
                                    double *x, double *y)
@@ -111,6 +126,41 @@ inline void point3dViewCoordinates(Point3dViewMode mode, double range, double vr
     case Point3dViewMode::RAF: *x = range; *y = az; break;
     case Point3dViewMode::VAF: *x = vr; *y = az; break;
     }
+}
+
+// 某一视图模式下三个轴的数据量程（区域筛选三行的初值/满量程）
+inline Point3dRegion point3dRegionExtent(const Point3dDataset &data, Point3dViewMode mode)
+{
+    Point3dRegion r;
+    bool any = false;
+    auto add = [&](double range, double vr, double az, double z) {
+        double x = 0, y = 0;
+        point3dViewCoordinates(mode, range, vr, az, &x, &y);
+        if (!any) {
+            r.x0 = r.x1 = x;
+            r.y0 = r.y1 = y;
+            r.z0 = r.z1 = z;
+            any = true;
+        } else {
+            r.x0 = qMin(r.x0, x);
+            r.x1 = qMax(r.x1, x);
+            r.y0 = qMin(r.y0, y);
+            r.y1 = qMax(r.y1, y);
+            r.z0 = qMin(r.z0, z);
+            r.z1 = qMax(r.z1, z);
+        }
+    };
+    for (const DetPointFrame &f : data.frames)
+        for (const DetPointItem &p : f.points)
+            add(p.range, p.vr, p.az, f.zValue);
+    for (const TrackOverlay &t : data.tracks)
+        for (const TrackOverlayPoint &op : t.points)
+            add(op.prange, op.pvr, op.paz, op.zValue);
+    for (const TrackOverlay &t : data.tracks)
+        for (const TrackOverlayPoint &op : t.rawPoints)
+            add(op.prange, op.pvr, op.paz, op.zValue);
+    r.valid = any && r.x1 >= r.x0 && r.y1 >= r.y0 && r.z1 >= r.z0;
+    return r;
 }
 
 // 从航迹 id 解析批次号（"RADAR-0001" / "RAW-0001" -> 1）；解析失败返回 0

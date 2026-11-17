@@ -511,6 +511,36 @@ int runPointTest(const QString &input, const QString &trackFile)
             canvas.setHoverTextScale(1.0);
         }
 
+        // 区域筛选：未应用只画候选框；应用后只显示框内数据；清除后恢复
+        {
+            const Point3dRegion ext = canvas.regionExtent();
+            check(ext.valid && ext.x1 > ext.x0 && ext.y1 > ext.y0 && ext.z1 > ext.z0,
+                  QStringLiteral("区域筛选三轴量程有效"));
+            const int before = canvas.visiblePointCount();
+            Point3dRegion r = ext;
+            r.x0 = ext.x0 + (ext.x1 - ext.x0) * 0.25;
+            r.x1 = ext.x0 + (ext.x1 - ext.x0) * 0.75;
+            r.y0 = ext.y0 + (ext.y1 - ext.y0) * 0.25;
+            r.y1 = ext.y0 + (ext.y1 - ext.y0) * 0.75;
+            r.valid = true;
+            canvas.setRegionBox(r);
+            canvas.grab().save(QCoreApplication::applicationDirPath()
+                               + QStringLiteral("/pointtest_region_box.png"));
+            check(canvas.visiblePointCount() == before,
+                  QStringLiteral("只画候选框时不裁剪数据（%1）").arg(canvas.visiblePointCount()));
+            canvas.setRegionFilter(r);
+            canvas.grab().save(QCoreApplication::applicationDirPath()
+                               + QStringLiteral("/pointtest_region_applied.png"));
+            check(canvas.visiblePointCount() > 0 && canvas.visiblePointCount() < before,
+                  QStringLiteral("应用区域筛选后只显示框内点（%1 -> %2）")
+                      .arg(before).arg(canvas.visiblePointCount()));
+            canvas.setRegionFilter(Point3dRegion());
+            canvas.setRegionBox(Point3dRegion());
+            canvas.grab();
+            check(canvas.visiblePointCount() == before,
+                  QStringLiteral("清除区域筛选后恢复全部点（%1）").arg(canvas.visiblePointCount()));
+        }
+
         bool viewOk = true;
         const char *const modeNames[] = { "rvf", "raf", "vaf" };
         int modeIndex = 0;
@@ -572,6 +602,18 @@ int runPointTest(const QString &input, const QString &trackFile)
         check(settingsFound, QStringLiteral("工具栏有「显示设置」开关"));
         w1->grab().save(QCoreApplication::applicationDirPath()
                         + QStringLiteral("/pointtest_settings.png"));
+        // 区域筛选栏可展开（三行 = 当前视图的三个轴）
+        bool regionFound = false;
+        for (QPushButton *btn : w1->findChildren<QPushButton *>())
+            if (btn->text().startsWith(QStringLiteral("区域筛选"))) {
+                btn->setChecked(true);
+                regionFound = true;
+                break;
+            }
+        QApplication::processEvents();
+        check(regionFound, QStringLiteral("工具栏有「区域筛选」开关"));
+        w1->grab().save(QCoreApplication::applicationDirPath()
+                        + QStringLiteral("/pointtest_region_bar.png"));
         w1->close();
         w2->close();
         QApplication::processEvents();
@@ -590,6 +632,33 @@ int runPointTest(const QString &input, const QString &trackFile)
         check(!w->isLoading() && got == qMin(3, files.size()),
               QStringLiteral("窗口后台导入 %1 个文件（实际 %2 帧）")
                   .arg(qMin(3, files.size())).arg(got));
+
+        // 区域筛选：应用后只显示框内，三个视图各存一套
+        {
+            w->canvas()->repaint();
+            const int fullPoints = w->canvas()->visiblePointCount();
+            const Point3dRegion ext = w->canvas()->regionExtent();
+            Point3dRegion r = ext;
+            r.x0 = ext.x0 + (ext.x1 - ext.x0) * 0.2;
+            r.x1 = ext.x1 - (ext.x1 - ext.x0) * 0.2;
+            r.y0 = ext.y0 + (ext.y1 - ext.y0) * 0.2;
+            r.y1 = ext.y1 - (ext.y1 - ext.y0) * 0.2;
+            check(w->setRegionForCurrentView(r, true),
+                  QStringLiteral("窗口应用区域筛选"));
+            check(w->regionAppliedForView(w->canvas()->viewMode()),
+                  QStringLiteral("区域筛选状态为已应用"));
+            w->canvas()->repaint();
+            check(w->canvas()->visiblePointCount() < fullPoints,
+                  QStringLiteral("应用后只显示框内点（%1 -> %2）")
+                      .arg(fullPoints).arg(w->canvas()->visiblePointCount()));
+            w->setViewMode(Point3dViewMode::RAF);
+            check(!w->regionAppliedForView(Point3dViewMode::RAF),
+                  QStringLiteral("切换视图后另一套区域参数独立"));
+            w->setViewMode(Point3dViewMode::RVF);
+            check(w->regionAppliedForView(Point3dViewMode::RVF),
+                  QStringLiteral("切回原视图后区域筛选状态恢复"));
+        }
+
         w->close();
         QApplication::processEvents();
     }

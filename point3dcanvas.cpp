@@ -288,6 +288,32 @@ double Point3dCanvas::effectiveSnrMax() const
     return hi > effectiveSnrMin() ? hi : effectiveSnrMin() + 1.0;
 }
 
+void Point3dCanvas::setRegionFilter(const Point3dRegion &r)
+{
+    m_region = r;
+    if (m_region.valid && !(m_region.x1 > m_region.x0 && m_region.y1 > m_region.y0
+                            && m_region.z1 > m_region.z0))
+        m_region.valid = false;      // 空区间当作不筛选
+    update();
+}
+
+void Point3dCanvas::setRegionBox(const Point3dRegion &r)
+{
+    if (r.valid != m_regionBox.valid || r.x0 != m_regionBox.x0 || r.x1 != m_regionBox.x1
+            || r.y0 != m_regionBox.y0 || r.y1 != m_regionBox.y1
+            || r.z0 != m_regionBox.z0 || r.z1 != m_regionBox.z1) {
+        m_regionBox = r;
+        update();
+    }
+}
+
+Point3dRegion Point3dCanvas::regionExtent() const
+{
+    if (!m_data)
+        return Point3dRegion();
+    return point3dRegionExtent(*m_data, m_viewMode);
+}
+
 void Point3dCanvas::setIsolatedBatches(const QSet<int> &batches)
 {
     if (batches != m_isolatedBatches) {
@@ -414,6 +440,12 @@ void Point3dCanvas::zRange(double *lo, double *hi) const
 {
     *lo = 0.0;
     *hi = 1.0;
+    // 区域筛选应用后，Z 轴范围就是框的 Z 区间（框 = 绘图区边界）
+    if (m_region.valid && m_region.z1 > m_region.z0) {
+        *lo = m_region.z0;
+        *hi = m_region.z1;
+        return;
+    }
     if (!m_data || m_data->frames.isEmpty())
         return;
     const int n = m_data->frames.size();
@@ -433,6 +465,10 @@ void Point3dCanvas::zRange(double *lo, double *hi) const
 
 double Point3dCanvas::normalizedX(double x) const
 {
+    if (m_region.valid) {
+        const double span = m_region.x1 - m_region.x0;
+        return span > 0.0 ? 2.0 * (x - m_region.x0) / span - 1.0 : 0.0;
+    }
     const Limits &l = m_limits[int(m_viewMode)];
     const double span = l.xmax - l.xmin;
     return span > 0.0 ? 2.0 * (x - l.xmin) / span - 1.0 : 0.0;
@@ -440,6 +476,10 @@ double Point3dCanvas::normalizedX(double x) const
 
 double Point3dCanvas::normalizedY(double y) const
 {
+    if (m_region.valid) {
+        const double span = m_region.y1 - m_region.y0;
+        return span > 0.0 ? 2.0 * (y - m_region.y0) / span - 1.0 : 0.0;
+    }
     const Limits &l = m_limits[int(m_viewMode)];
     const double span = l.ymax - l.ymin;
     return span > 0.0 ? 2.0 * (y - l.ymin) / span - 1.0 : 0.0;
@@ -521,6 +561,7 @@ void Point3dCanvas::paintEvent(QPaintEvent *)
     drawGridAndAxes(p, plot, zlo, zhi);
     drawDetections(p, zlo, zhi);
     drawTracks(p, zlo, zhi);
+    drawRegionBox(p, zlo, zhi);
     drawHover(p);
     drawTitle(p, plot, zlo, zhi);
     drawColorBar(p, plot);
@@ -537,7 +578,15 @@ void Point3dCanvas::drawGridAndAxes(QPainter &p, const QRectF &plot, double zlo,
 {
     Q_UNUSED(zlo);
     Q_UNUSED(zhi);
-    const Limits &lim = m_limits[int(m_viewMode)];
+    const Limits &dataLim = m_limits[int(m_viewMode)];
+    // 区域筛选应用后刻度按框的区间生成（与放大后的视图一致）
+    Limits lim = dataLim;
+    if (m_region.valid) {
+        lim.xmin = m_region.x0;
+        lim.xmax = m_region.x1;
+        lim.ymin = m_region.y0;
+        lim.ymax = m_region.y1;
+    }
 
     auto P = [this](double nx, double ny, double nz, double *depth = nullptr) {
         return project(nx, ny, nz, depth);
@@ -654,6 +703,8 @@ void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
             const DetPointItem &item = frame.points.at(pi);
             double x = 0, y = 0;
             point3dViewCoordinates(m_viewMode, item.range, item.vr, item.az, &x, &y);
+            if (m_region.valid && !m_region.inside(x, y, frame.zValue))
+                continue;                       // 区域筛选：框外不画
             double depth = 0.0;
             const QPointF screen = project(normalizedX(x), normalizedY(y), nz, &depth);
 
@@ -754,6 +805,8 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
                 continue;
             double x = 0, y = 0;
             point3dViewCoordinates(m_viewMode, op.prange, op.pvr, op.paz, &x, &y);
+            if (m_region.valid && !m_region.inside(x, y, op.zValue))
+                continue;                       // 区域筛选：框外航迹点不画
             const QPointF screen = project(normalizedX(x), normalizedY(y),
                                            normalizedZ(op.zValue, zlo, zhi));
             out.polyline.append(screen);
@@ -809,6 +862,36 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
         }
         m_tracks.append(out);
     }
+}
+
+// 区域筛选框：已应用时它正好是绘图区的边界（放大到框内），未应用时是全量立方体里的候选框
+void Point3dCanvas::drawRegionBox(QPainter &p, double zlo, double zhi)
+{
+    const Point3dRegion r = m_region.valid ? m_region : m_regionBox;
+    if (!r.valid)
+        return;
+    if (!(r.x1 > r.x0) || !(r.y1 > r.y0) || !(r.z1 > r.z0))
+        return;
+
+    QPointF c[8];
+    for (int i = 0; i < 8; ++i) {
+        const double x = (i & 1) ? r.x1 : r.x0;
+        const double y = (i & 2) ? r.y1 : r.y0;
+        const double z = (i & 4) ? r.z1 : r.z0;
+        c[i] = project(normalizedX(x), normalizedY(y), normalizedZ(z, zlo, zhi));
+    }
+    static const int E[12][2] = {
+        { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 },
+        { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 },
+        { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+    };
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(255, 156, 48, 235), 1.8));
+    for (const auto &e : E)
+        p.drawLine(c[e[0]], c[e[1]]);
+    p.restore();
 }
 
 int Point3dCanvas::hitTrack(const QPointF &pos) const

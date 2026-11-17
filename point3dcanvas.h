@@ -66,6 +66,14 @@ public:
     double effectiveSnrMin() const;
     double effectiveSnrMax() const;
 
+    // 区域筛选：valid 时按该长方体裁剪数据，并把它当作视图范围（放大到框内）
+    void setRegionFilter(const Point3dRegion &r);
+    Point3dRegion regionFilter() const { return m_region; }
+    // 待应用的候选框：只画线框，不裁剪数据
+    void setRegionBox(const Point3dRegion &r);
+    Point3dRegion regionBox() const { return m_regionBox; }
+    Point3dRegion regionExtent() const;       // 当前视图三个轴的数据量程
+
     void setCamera(double yaw, double pitch, double zoom,
                    double panX = 0.0, double panY = 0.0);
     void camera(double *yaw, double *pitch, double *zoom,
@@ -138,6 +146,7 @@ private:
     void drawDetections(QPainter &p, double zlo, double zhi);
     void drawTracks(QPainter &p, double zlo, double zhi);
     void drawHover(QPainter &p);
+    void drawRegionBox(QPainter &p, double zlo, double zhi);
     void drawColorBar(QPainter &p, const QRectF &plot);
     void drawTitle(QPainter &p, const QRectF &plot, double zlo, double zhi);
     int hitTrack(const QPointF &pos) const;
@@ -158,6 +167,8 @@ private:
     double m_hoverTextScale = 1.0;
     double m_snrLo = std::numeric_limits<double>::quiet_NaN();
     double m_snrHi = std::numeric_limits<double>::quiet_NaN();
+    Point3dRegion m_region;       // 已应用的区域筛选（裁剪 + 当作视图范围）
+    Point3dRegion m_regionBox;    // 待应用的候选框（只画）
 
     Camera m_cam;
     double m_panX = 0.0, m_panY = 0.0;   // 平移偏移（屏幕像素，叠加到投影中心）
