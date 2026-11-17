@@ -634,6 +634,15 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
     const double curZ = m_data->frames.isEmpty() ? 0.0 : m_data->frames.at(cur).zValue;
     const double lineScale = qBound(0.7, UiScale::instance()->scale(), 1.4);
 
+    // 当前高亮批次是否存在于本窗口：不存在时不要把其它航迹全部压暗
+    bool hasHighlighted = false;
+    if (m_highlightedBatch >= 0)
+        for (const TrackOverlay &t : qAsConst(m_data->tracks))
+            if (t.batchNo == m_highlightedBatch) {
+                hasHighlighted = true;
+                break;
+            }
+
     p.setRenderHint(QPainter::Antialiasing, true);
     for (int ti = 0; ti < m_data->tracks.size(); ++ti) {
         const TrackOverlay &tr = m_data->tracks.at(ti);
@@ -679,7 +688,7 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
         ++m_lastVisibleFrames;
 
         const bool highlighted = m_highlightedBatch >= 0 && tr.batchNo == m_highlightedBatch;
-        const bool dimmed = m_highlightedBatch >= 0 && !highlighted;
+        const bool dimmed = hasHighlighted && !highlighted;
         QColor col = tr.color.isValid() ? tr.color : distinctTrackColor(ti);
         if (dimmed)
             col.setAlphaF(0.30);

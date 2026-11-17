@@ -167,6 +167,12 @@ protected:
 private:
     void buildMenuBar();
     void buildDrawToolBar();
+    Point3dWindow *createPoint3dWindow();
+    void savePoint3dSessions();
+    void restorePoint3dSessions();
+    void onPoint3dFocus(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    void onPoint3dActivate(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    int trackIndexForBatch(int batchNo, TrackSource source, qint64 t0, qint64 t1) const;
     void updateDrawColorIcon();
     void onDrawText(double lat, double lon, const QPoint &globalPos);
     void onDrawFill(int featureId);
@@ -190,6 +196,7 @@ private:
     GlobeWidget   *m_globe = nullptr;
     QList<QPointer<Point3dWindow>> m_point3dWindows;   // 已打开的点云窗口（可多开）
     int m_point3dCounter = 0;
+    bool m_closingAllPoint3d = false;                  // 批量关闭时抑制重复写会话
     int m_panel = -1;
     QHash<int, int> m_panelWidth;         // 每个面板各自记住宽度（默认 280，随字号缩放）
     double m_uiScale = 1.0;               // 上次应用的字号缩放比例

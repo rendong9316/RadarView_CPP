@@ -59,6 +59,18 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - **frameID 不能作为跨数据源的对齐键**：DetPoint 的 frameID 为整型，宽度由 MATLAB 按文件自动选（同一批数据里 uint8 与 uint16 都出现过，取决于该帧数值是否超过 255）；航迹的 frameID 是 int32 且每次运行编号不同（实测一次 221–270、另一次从 1527 起）。跨源对齐、排序一律用时间（datenum / epoch ms）。
 - 导入后必须打印/显示数据时间范围（北京时间）；多源时间窗完全不重叠时要提示，用于兜住 8 小时级别的时区错误。
 
+### 点迹三维可视化（point3d）
+
+复刻 MATLAB `track_debuger_suite/tool_Track visualization`，对应文件 `point3dtypes.h` / `point3dparsers.*` / `point3dimportjob.*` / `point3dcanvas.*` / `point3dwindow.*` / `trackpicker.*`。
+
+- 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。
+- **所有点迹窗口与主窗口共用同一个 `ReplayController` 时钟**：窗口内的播放/暂停/倍速/进度条直接驱动它，主窗口回放范围取「可见航迹 ∪ 所有点迹窗口」的并集。不要再给点迹窗口做本地计时器。
+- 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
+- 航迹点源下拉的语义：平滑=Radar 批次（smooth/output 点列）、关联=RadarRaw 批次（assc 点列）、预测=库中未存（不显示）、自动=全部。
+- 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
+- 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
+- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/全局时间轴/会话恢复）与 `--dbtest`（v2→v3 迁移）都必须 `RESULT OK`。
+
 ### OpenGL 约束
 
 Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）；RHEL 涉密机常见 Mesa llvmpipe 软件渲染、VNC/远程桌面或国产显卡。所以只用 **OpenGL ES 2.0 / GLSL ES 1.00 子集**：
@@ -85,9 +97,10 @@ Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）�
 1. `bash build_win7.sh`：用 7.3 重编、部署到 `build/win7/release` 并跑 `--selftest`，必须 `RESULT OK`。
 2. 在 `build/win7/release` 下分别用默认、`QT_OPENGL=angle`、`QT_OPENGL=software`、`QT_OPENGL=angle QT_ANGLE_PLATFORM=d3d9` 跑 `./HelloVscode.exe --selftest`，都要 `RESULT OK` 且 GL 错误数为 0。
 3. 航迹/回放自检（同样四种渲染模式）：`./HelloVscode.exe --tracktest "D:/Desktop/RadarView_BiuldByTauri/2026-04-27 09-30-00.csv" "D:/Desktop/RadarView_BiuldByTauri/track_20251210175946.mat"`，看 `tracktest.log`。纯解析自检用 `--parsetest <csv> <mat>`，看 `parsetest.log`。
-4. `powershell -NoProfile -ExecutionPolicy Bypass -File check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
-5. Linux（有 CentOS/RHEL 7 环境时）：`bash build_linux.sh`，会编译、部署、跑 `--selftest`，并检查产物不依赖高于 GLIBC_2.17 / GLIBCXX_3.4.19 的符号。软件渲染用 `LIBGL_ALWAYS_SOFTWARE=1` 再跑一遍。
-6. 最终确认需在 Win7 SP1 x64 虚拟机和 CentOS/RHEL 7.6 虚拟机里分别运行整包。
+4. 点迹可视化自检：`./HelloVscode.exe --pointtest "<detPoint 目录或文件>" --track "<track_*.mat>"` 与 `./HelloVscode.exe --dbtest`（数据库 v2→v3 迁移），均须 `RESULT OK`，分别看 `pointtest.log` / `dbtest.log`。
+5. `powershell -NoProfile -ExecutionPolicy Bypass -File check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
+6. Linux（有 CentOS/RHEL 7 环境时）：`bash build_linux.sh`，会编译、部署、跑 `--selftest`，并检查产物不依赖高于 GLIBC_2.17 / GLIBCXX_3.4.19 的符号。软件渲染用 `LIBGL_ALWAYS_SOFTWARE=1` 再跑一遍。
+7. 最终确认需在 Win7 SP1 x64 虚拟机和 CentOS/RHEL 7.6 虚拟机里分别运行整包。
 
 ### Git 提交与推送（已获用户长期授权）
 

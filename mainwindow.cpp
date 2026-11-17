@@ -56,6 +56,7 @@
 #include "uiwidgets.h"
 #include "settingspanel.h"
 #include "point3dwindow.h"
+#include "point3dtypes.h"
 
 namespace {
 
@@ -474,6 +475,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_drawSaveTimer, &QTimer::timeout, this, &MainWindow::saveDrawingsAuto);
     // 兜底：不经过 closeEvent 的退出（QApplication::quit 等）也要把状态写完
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
+        m_closingAllPoint3d = true;
+        savePoint3dSessions();               // 先存现场，再关窗口
         const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
         for (const QPointer<Point3dWindow> &win : wins)
             if (win)
@@ -586,6 +589,9 @@ void MainWindow::loadPersisted()
     }
     // 上次退出时的视角优先于「自动定位到数据中心」
     restoreUiState();
+
+    // 恢复上次打开的点迹窗口（延到事件循环开始后，避免构造期弹窗/读文件）
+    QTimer::singleShot(0, this, [this]() { restorePoint3dSessions(); });
     m_restoringState = false;
 }
 
@@ -741,6 +747,8 @@ void MainWindow::loadDrawingsAuto()
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
+    m_closingAllPoint3d = true;
+    savePoint3dSessions();               // 先存现场，再关窗口
     const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
     for (const QPointer<Point3dWindow> &win : wins)
         if (win)
@@ -1175,6 +1183,13 @@ void MainWindow::applyDisplay()
     }
     std::sort(dots.begin(), dots.end());
     layer->setPointDotTracks(dots);
+    // 地图上单独显示的航迹 -> 所有点迹窗口同步高亮（全链路联动）
+    int hlBatch = -1;
+    if (iso >= 0)
+        hlBatch = point3dBatchNo(m_store.tracks().at(iso));
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
+        if (win)
+            win->setHighlightedBatch(hlBatch);
     resetReplayRange();
     m_globe->update();
 }
@@ -1301,7 +1316,7 @@ QDialog *MainWindow::showTrackPoints(int index)
 }
 
 // 新建一个点迹三维窗口。可多开；每个窗口独立数据集，时间轴与主窗口共用
-void MainWindow::showPoint3dWindow()
+Point3dWindow *MainWindow::createPoint3dWindow()
 {
     Point3dWindow *win = new Point3dWindow(nullptr);
     win->setNumber(++m_point3dCounter);
@@ -1313,13 +1328,100 @@ void MainWindow::showPoint3dWindow()
     m_point3dWindows.append(QPointer<Point3dWindow>(win));
     connect(win, &Point3dWindow::closed, this, [this, win]() {
         m_point3dWindows.removeAll(QPointer<Point3dWindow>(win));
-        resetReplayRange();
+        if (!m_closingAllPoint3d) {
+            savePoint3dSessions();
+            resetReplayRange();
+        }
     });
-    // 点迹数据变化后重算全局时间范围（航迹 + 所有点迹窗口取并集）
-    connect(win, &Point3dWindow::dataChanged, this, [this]() { resetReplayRange(); });
+    // 点迹数据变化后重算全局时间范围（航迹 + 所有点迹窗口取并集）并保存现场
+    connect(win, &Point3dWindow::dataChanged, this, [this]() {
+        resetReplayRange();
+        if (!m_closingAllPoint3d)
+            savePoint3dSessions();
+    });
+    // 点云 <-> 地图全链路联动
+    connect(win, &Point3dWindow::trackFocusChanged, this, &MainWindow::onPoint3dFocus);
+    connect(win, &Point3dWindow::trackActivated, this, &MainWindow::onPoint3dActivate);
+    return win;
+}
+
+void MainWindow::showPoint3dWindow()
+{
+    Point3dWindow *win = createPoint3dWindow();
     win->show();
     win->raise();
     win->activateWindow();
+}
+
+void MainWindow::savePoint3dSessions()
+{
+    QJsonArray arr;
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
+        if (win)
+            arr.append(win->sessionJson());
+    app::setValue(QStringLiteral("point3d.windows"),
+                  QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+}
+
+// 启动时按上次的会话恢复点迹窗口（可在高级参数里关闭 auto_reload）
+void MainWindow::restorePoint3dSessions()
+{
+    if (app::testMode())
+        return;
+    if (!app::settings().value(QStringLiteral("point3d.auto_reload"), true).toBool())
+        return;
+    const QByteArray json = app::settings().value(QStringLiteral("point3d.windows")).toString().toUtf8();
+    const QJsonArray arr = QJsonDocument::fromJson(json).array();
+    if (arr.isEmpty())
+        return;
+    for (const QJsonValue &v : arr) {
+        Point3dWindow *win = createPoint3dWindow();
+        win->restoreSession(v.toObject());
+        win->show();
+    }
+    resetReplayRange();
+}
+
+int MainWindow::trackIndexForBatch(int batchNo, TrackSource source, qint64 t0, qint64 t1) const
+{
+    if (batchNo <= 0)
+        return -1;
+    int best = -1;
+    qint64 bestOverlap = -1;
+    for (int pass = 0; pass < 2 && best < 0; ++pass) {
+        for (int i = 0; i < m_store.size(); ++i) {
+            const Track &t = m_store.tracks().at(i);
+            if (point3dBatchNo(t) != batchNo)
+                continue;
+            if (pass == 0 && t.source != source)
+                continue;
+            const qint64 overlap = qMax<qint64>(
+                0, qMin(t.maxTime(), t1) - qMax(t.minTime(), t0));
+            if (best < 0 || overlap > bestOverlap) {
+                best = i;
+                bestOverlap = overlap;
+            }
+        }
+    }
+    return best;
+}
+
+void MainWindow::onPoint3dFocus(int batchNo, TrackSource source, qint64 t0, qint64 t1)
+{
+    const int idx = batchNo < 0 ? -1 : trackIndexForBatch(batchNo, source, t0, t1);
+    m_globe->trackLayer()->setHoveredTrack(idx);
+    m_globe->update();
+    // 所有点迹窗口保持同一高亮批次（外部入口不再发信号，不会形成回路）
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
+        if (win)
+            win->setHighlightedBatch(batchNo);
+}
+
+void MainWindow::onPoint3dActivate(int batchNo, TrackSource source, qint64 t0, qint64 t1)
+{
+    const int idx = trackIndexForBatch(batchNo, source, t0, t1);
+    if (idx >= 0)
+        isolateTrack(idx);
 }
 
 bool MainWindow::pointDotsShown(int index) const

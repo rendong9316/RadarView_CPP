@@ -3,6 +3,7 @@
 
 #include <QStringList>
 #include <QWidget>
+#include <QJsonObject>
 
 #include <functional>
 
@@ -38,6 +39,10 @@ public:
     void setTrackColorProvider(const std::function<QColor(TrackSource, const QString &)> &provider);
     // 从数据库选择航迹（按 BatchNo 与主窗口联动）
     void chooseTracksFromDb();
+
+    // 多窗口现场：保存 / 恢复本窗口的数据、航迹选择与几何
+    QJsonObject sessionJson() const;
+    void restoreSession(const QJsonObject &obj);
 
     Point3dCanvas *canvas() const { return m_canvas; }
     const Point3dDataset *dataset() const { return &m_data; }
@@ -79,6 +84,7 @@ private:
     void updatePlaybackUi();
     int nearestFrame(qint64 ms) const;
     void reloadOverlaysFromKeys();
+    void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
     QWidget *m_toolbar = nullptr;

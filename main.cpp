@@ -414,6 +414,32 @@ int runPointTest(const QString &input, const QString &trackFile)
         QApplication::processEvents();
     }
 
+    // ---- 多窗口会话往返 ----
+    if (files.size() >= 2) {
+        Point3dWindow *wa = new Point3dWindow(nullptr);
+        wa->loadDetectionFiles(files.mid(0, 2));
+        QElapsedTimer wait3;
+        wait3.start();
+        while (wa->isLoading() && wait3.elapsed() < 60000)
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        const QJsonObject session = wa->sessionJson();
+        check(session.value(QStringLiteral("files")).toArray().size() == 2,
+              QStringLiteral("会话 JSON 保存文件清单"));
+        Point3dWindow *wb = new Point3dWindow(nullptr);
+        wb->restoreSession(session);
+        QElapsedTimer wait4;
+        wait4.start();
+        while (wb->isLoading() && wait4.elapsed() < 60000)
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        check(wb->dataset()->frames.size() == wa->dataset()->frames.size()
+                  && wb->dataset()->frames.size() == 2,
+              QStringLiteral("会话恢复后自动重载数据（%1 帧）")
+                  .arg(wb->dataset()->frames.size()));
+        wa->close();
+        wb->close();
+        QApplication::processEvents();
+    }
+
     out << (failures == 0 ? QStringLiteral("RESULT OK")
                           : QStringLiteral("RESULT FAILED (%1)").arg(failures)) << "\n";
     out.flush();

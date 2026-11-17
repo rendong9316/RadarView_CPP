@@ -10,6 +10,7 @@
 #include "trackpicker.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
@@ -32,6 +33,7 @@
 #include <QShortcut>
 #include <QSlider>
 #include <QSpinBox>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -234,6 +236,102 @@ void Point3dWindow::chooseTracksFromDb()
 
     reloadOverlaysFromKeys();
     updateStatus();
+}
+
+QJsonObject Point3dWindow::sessionJson() const
+{
+    QJsonObject o;
+    QJsonArray files;
+    for (const QString &f : m_files)
+        files.append(f);
+    o.insert(QStringLiteral("files"), files);
+
+    QJsonArray tracks;
+    for (const QString &k : m_trackKeys)
+        tracks.append(k);
+    o.insert(QStringLiteral("tracks"), tracks);
+
+    double yaw = 42.0, pitch = 23.0, zoom = 1.0;
+    m_canvas->camera(&yaw, &pitch, &zoom);
+    QJsonObject cam;
+    cam.insert(QStringLiteral("yaw"), yaw);
+    cam.insert(QStringLiteral("pitch"), pitch);
+    cam.insert(QStringLiteral("zoom"), zoom);
+    o.insert(QStringLiteral("camera"), cam);
+
+    o.insert(QStringLiteral("view_mode"), m_viewCombo->currentData().toInt());
+    o.insert(QStringLiteral("window_length"), m_canvas->windowLength());
+    o.insert(QStringLiteral("geometry"),
+             QString::fromLatin1(saveGeometry().toBase64()));
+    o.insert(QStringLiteral("number"), m_number);
+    return o;
+}
+
+void Point3dWindow::restoreSession(const QJsonObject &obj)
+{
+    m_restoring = true;
+    if (obj.contains(QStringLiteral("number")))
+        setNumber(obj.value(QStringLiteral("number")).toInt(m_number));
+
+    const QByteArray geo = QByteArray::fromBase64(
+        obj.value(QStringLiteral("geometry")).toString().toLatin1());
+    if (!geo.isEmpty())
+        restoreGeometry(geo);
+
+    const int mode = obj.value(QStringLiteral("view_mode")).toInt(
+        int(Point3dViewMode::RVF));
+    const int viewIdx = m_viewCombo->findData(mode);
+    if (viewIdx >= 0)
+        m_viewCombo->setCurrentIndex(viewIdx);
+    m_canvas->setViewMode(Point3dViewMode(m_viewCombo->currentData().toInt()));
+
+    const int len = obj.value(QStringLiteral("window_length")).toInt(0);
+    int presetIdx = -1;
+    for (int i = 0; i < m_windowCombo->count(); ++i)
+        if (m_windowCombo->itemData(i).toInt() == len && len > 0) {
+            presetIdx = i;
+            break;
+        }
+    if (len == 0) {
+        presetIdx = m_windowCombo->count() - 2;
+    } else if (presetIdx < 0) {
+        presetIdx = m_windowCombo->count() - 1;
+        m_windowSpin->setValue(len);
+        m_windowSpin->setVisible(true);
+    }
+    m_windowCombo->setCurrentIndex(presetIdx);
+    m_canvas->setWindowLength(len);
+
+    const QJsonObject cam = obj.value(QStringLiteral("camera")).toObject();
+    if (!cam.isEmpty())
+        m_canvas->setCamera(cam.value(QStringLiteral("yaw")).toDouble(42.0),
+                            cam.value(QStringLiteral("pitch")).toDouble(23.0),
+                            cam.value(QStringLiteral("zoom")).toDouble(1.0));
+
+    m_files.clear();
+    for (const QJsonValue &v : obj.value(QStringLiteral("files")).toArray())
+        m_files << v.toString();
+    m_trackKeys.clear();
+    for (const QJsonValue &v : obj.value(QStringLiteral("tracks")).toArray())
+        m_trackKeys << v.toString();
+
+    m_restoring = false;
+    if (!m_files.isEmpty())
+        startPendingLoad();
+}
+
+void Point3dWindow::startPendingLoad()
+{
+    QStringList existing;
+    for (const QString &f : qAsConst(m_files))
+        if (QFileInfo::exists(f))
+            existing << f;
+    if (existing.isEmpty()) {
+        m_status->setText(QStringLiteral("上次打开的点迹文件已不存在"));
+        m_files.clear();
+        return;
+    }
+    loadDetectionFiles(existing);
 }
 
 void Point3dWindow::buildUi()
@@ -761,6 +859,8 @@ void Point3dWindow::openAdvancedSettings()
                                      setting("point3d.continuity_azimuth_scale", 6.0).toDouble(), 0.5);
     QDoubleSpinBox *threshold = dspin(0.0, 1.0, 2,
                                       setting("point3d.strong_threshold", 0.70).toDouble(), 0.05);
+    QCheckBox *autoReload = new QCheckBox(QStringLiteral("启动时恢复上次的点迹窗口与数据"), &dlg);
+    autoReload->setChecked(setting("point3d.auto_reload", true).toBool());
 
     form->addRow(QStringLiteral("DetPoint 变量名"), detVar);
     form->addRow(QStringLiteral("sysPara 变量名"), sysVar);
@@ -776,10 +876,12 @@ void Point3dWindow::openAdvancedSettings()
     form->addRow(QStringLiteral("连续性：速度尺度"), dopplerC);
     form->addRow(QStringLiteral("连续性：方位尺度"), azimuthC);
     form->addRow(QStringLiteral("强连续阈值"), threshold);
+    form->addRow(autoReload);
 
     QLabel *note = new QLabel(QStringLiteral(
         "说明：播放间隔 PauseTime 由工具栏「倍速」统一控制（与主窗口共用全局时间轴）；\n"
-        "变量名 / 方位字段 / 文件匹配模式在下次导入时生效，其余参数立即生效。"), &dlg);
+        "变量名 / 方位字段 / 文件匹配模式在下次导入时生效，其余参数立即生效；\n"
+        "航迹变量名仅用于 MAT 解析（当前航迹来自数据库，按批次叠加）。"), &dlg);
     note->setWordWrap(true);
     form->addRow(note);
 
@@ -816,6 +918,7 @@ void Point3dWindow::openAdvancedSettings()
     app::setValue(QStringLiteral("point3d.continuity_doppler_scale"), dopplerC->value());
     app::setValue(QStringLiteral("point3d.continuity_azimuth_scale"), azimuthC->value());
     app::setValue(QStringLiteral("point3d.strong_threshold"), threshold->value());
+    app::setValue(QStringLiteral("point3d.auto_reload"), autoReload->isChecked());
 
     m_canvas->setTrackLineWidth(lineWidth->value());
     if (!m_data.frames.isEmpty()) {
