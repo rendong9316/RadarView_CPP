@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QList>
 #include <QMainWindow>
+#include <QPointer>
 #include <QPushButton>
 #include <QSet>
 #include <QWidget>
@@ -38,6 +39,7 @@ class RulerState;
 class SpatialLasso;
 class DrawingManager;
 class DbSaveJob;
+class Point3dWindow;
 namespace ui { class UndoToast; }
 
 // 侧栏面板（RadarView useActivityBar.ts PanelId）：轨迹面板 / 图层控制已移除
@@ -110,6 +112,8 @@ public:
     int isolatedTrack() const;
     // 打开「查看点迹数据」窗口（非模态），返回窗口指针
     QDialog *showTrackPoints(int index);
+    // 新建一个「点迹三维可视化」独立窗口（可多开）
+    void showPoint3dWindow();
     AppStatusBar *appStatusBar() const { return m_statusBar; }
     SourceStrip *sourceStrip() const { return m_sourceStrip; }
     void setSourceStripOpen(bool open);   // 展开/收起状态栏上方的数据源条
@@ -184,6 +188,8 @@ private:
     QSplitter     *m_splitter = nullptr;
     QStackedWidget *m_editor = nullptr;
     GlobeWidget   *m_globe = nullptr;
+    QList<QPointer<Point3dWindow>> m_point3dWindows;   // 已打开的点云窗口（可多开）
+    int m_point3dCounter = 0;
     int m_panel = -1;
     QHash<int, int> m_panelWidth;         // 每个面板各自记住宽度（默认 280，随字号缩放）
     double m_uiScale = 1.0;               // 上次应用的字号缩放比例

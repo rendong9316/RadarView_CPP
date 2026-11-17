@@ -34,6 +34,8 @@
 #include "settingspanel.h"
 #include "trackimporter.h"
 #include "point3dparsers.h"
+#include "point3dcanvas.h"
+#include "point3dwindow.h"
 
 #include <QMouseEvent>
 #include <QDialog>
@@ -57,6 +59,7 @@
 
 #include <QFileInfo>
 #include <QDir>
+#include <QEventLoop>
 #include <QFontDatabase>
 #include <QtEndian>
 #include <cstring>
@@ -283,12 +286,95 @@ int runPointTest(const QString &input, const QString &trackFile)
                 if (overlayFromTrack(t, data.frames, &ov)) {
                     ++overlayTracks;
                     overlayPoints += ov.points.size();
+                    data.tracks.append(ov);      // 供画布自检绘制叠加航迹
                 }
             }
             out << "overlay tracks=" << overlayTracks << " points=" << overlayPoints << "\n";
             check(overlayTracks > 0 && overlayPoints > 0,
                   QStringLiteral("航迹可转换为点云叠加数据"));
         }
+    }
+
+    // ---- 画布渲染 ----
+    {
+        Point3dCanvas canvas;
+        canvas.setDataset(&data);
+        canvas.resize(1200, 800);
+        canvas.show();
+        QApplication::processEvents();
+        check(canvas.visiblePointCount() > 0,
+              QStringLiteral("画布可见点数 > 0（%1）").arg(canvas.visiblePointCount()));
+        const QPixmap shot = canvas.grab();
+        check(!shot.isNull() && shot.width() == 1200 && shot.height() == 800,
+              QStringLiteral("画布抓图非空且尺寸正确"));
+        check(!canvas.inherits("QOpenGLWidget"), QStringLiteral("画布不使用 OpenGL"));
+
+        bool viewOk = true;
+        const char *const modeNames[] = { "rvf", "raf", "vaf" };
+        int modeIndex = 0;
+        for (Point3dViewMode mode : { Point3dViewMode::RVF, Point3dViewMode::RAF,
+                                      Point3dViewMode::VAF }) {
+            canvas.setViewMode(mode);
+            QApplication::processEvents();
+            const QPixmap pm = canvas.grab();
+            if (pm.isNull())
+                viewOk = false;
+            else
+                pm.save(QCoreApplication::applicationDirPath()
+                        + QStringLiteral("/pointtest_%1.png").arg(QLatin1String(modeNames[modeIndex])));
+            ++modeIndex;
+        }
+        check(viewOk, QStringLiteral("三种视图切换并重绘"));
+
+        canvas.setWindowLength(20);
+        QApplication::processEvents();
+        check(canvas.visibleFrameCount() <= 20,
+              QStringLiteral("滑动窗口 20 帧（实际 %1）").arg(canvas.visibleFrameCount()));
+        canvas.setWindowLength(0);
+        QApplication::processEvents();
+        check(canvas.visibleFrameCount() == data.frames.size(),
+              QStringLiteral("滑动窗口「全部」显示所有帧"));
+        canvas.close();
+    }
+
+    // ---- 独立窗口（多开）----
+    {
+        Point3dWindow *w1 = new Point3dWindow(nullptr);
+        Point3dWindow *w2 = new Point3dWindow(nullptr);
+        w1->setNumber(1);
+        w2->setNumber(2);
+        w1->resize(1000, 700);
+        w2->resize(1000, 700);
+        w1->show();
+        w2->show();
+        QApplication::processEvents();
+        check(w1->isWindow() && w2->isWindow(), QStringLiteral("点迹窗口是独立顶层窗口"));
+        check(w1->windowTitle() != w2->windowTitle(),
+              QStringLiteral("多窗口标题带序号（%1 / %2）").arg(w1->windowTitle(), w2->windowTitle()));
+        check(!w1->inherits("QOpenGLWidget") && !w1->canvas()->inherits("QOpenGLWidget"),
+              QStringLiteral("窗口与画布均不使用 OpenGL"));
+        const QPixmap pm1 = w1->grab();
+        check(!pm1.isNull(), QStringLiteral("窗口抓图非空"));
+        w1->close();
+        w2->close();
+        QApplication::processEvents();
+    }
+
+    // ---- 窗口后台导入（走真实导入线程）----
+    if (files.size() >= 1) {
+        Point3dWindow *w = new Point3dWindow(nullptr);
+        w->show();
+        w->loadDetectionFiles(files.mid(0, qMin(3, files.size())));
+        QElapsedTimer wait;
+        wait.start();
+        while (w->isLoading() && wait.elapsed() < 60000)
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        const int got = w->dataset()->frames.size();
+        check(!w->isLoading() && got == qMin(3, files.size()),
+              QStringLiteral("窗口后台导入 %1 个文件（实际 %2 帧）")
+                  .arg(qMin(3, files.size())).arg(got));
+        w->close();
+        QApplication::processEvents();
     }
 
     out << (failures == 0 ? QStringLiteral("RESULT OK")
@@ -2196,6 +2282,8 @@ int main(int argc, char *argv[])
         const int tk = args.indexOf(QStringLiteral("--track"));
         if (tk >= 0 && tk + 1 < args.size())
             trackFile = args.at(tk + 1);
+        app::setTestMode(true);          // 窗口设置写临时库，不碰真实配置
+        ui::setAutoConfirm(true);
         return runPointTest(args.at(p3t + 1), trackFile);
     }
 

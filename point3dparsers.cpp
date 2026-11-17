@@ -345,7 +345,7 @@ bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
     out->batchNo = point3dBatchNo(track);
     out->fileName = track.fileName;
     out->source = track.source;
-    out->color = color.isValid() ? color : trackSourceColor(track.source);
+    out->color = color;      // 由调用方（数据库航迹选择器）决定颜色；无效时画布按序号生成
     out->points.clear();
     out->points.reserve(track.points.size());
 

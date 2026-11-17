@@ -37,6 +37,7 @@
 #include <QSaveFile>
 #include <QTimer>
 #include <QtMath>
+#include <algorithm>
 #include <cmath>
 
 #include "apppaths.h"
@@ -54,6 +55,7 @@
 #include "trackpointdialog.h"
 #include "uiwidgets.h"
 #include "settingspanel.h"
+#include "point3dwindow.h"
 
 namespace {
 
@@ -472,6 +474,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_drawSaveTimer, &QTimer::timeout, this, &MainWindow::saveDrawingsAuto);
     // 兜底：不经过 closeEvent 的退出（QApplication::quit 等）也要把状态写完
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
+        const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
+        for (const QPointer<Point3dWindow> &win : wins)
+            if (win)
+                win->close();
         saveUiState();
         saveDrawingsAuto();
         app::flushSettings();
@@ -735,6 +741,11 @@ void MainWindow::loadDrawingsAuto()
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
+    const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
+    for (const QPointer<Point3dWindow> &win : wins)
+        if (win)
+            win->close();
+    m_point3dWindows.clear();
     saveUiState();
     saveDrawingsAuto();
     app::flushSettings();
@@ -1277,6 +1288,20 @@ QDialog *MainWindow::showTrackPoints(int index)
     TrackPointDialog *dlg = new TrackPointDialog(m_store.tracks()[index], this);
     dlg->show();
     return dlg;
+}
+
+// 新建一个点迹三维窗口。可多开；每个窗口独立数据集，时间轴与主窗口共用
+void MainWindow::showPoint3dWindow()
+{
+    Point3dWindow *win = new Point3dWindow(nullptr);
+    win->setNumber(++m_point3dCounter);
+    m_point3dWindows.append(QPointer<Point3dWindow>(win));
+    connect(win, &Point3dWindow::closed, this, [this, win]() {
+        m_point3dWindows.removeAll(QPointer<Point3dWindow>(win));
+    });
+    win->show();
+    win->raise();
+    win->activateWindow();
 }
 
 bool MainWindow::pointDotsShown(int index) const
@@ -1852,6 +1877,42 @@ void MainWindow::buildMenuBar()
     m_labelAction->setCheckable(true);
     item(mView, tr("放大"), QKeySequence::ZoomIn, [this]() { m_globe->zoomBy(1.0); });
     item(mView, tr("缩小"), QKeySequence::ZoomOut, [this]() { m_globe->zoomBy(-1.0); });
+    mView->addSeparator();
+    item(mView, tr("新建点迹三维窗口"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_P),
+         [this]() { showPoint3dWindow(); });
+
+    // 「窗口」菜单：列出已打开的点迹窗口，可激活或全部关闭
+    QMenu *mWindows = mb->addMenu(tr("窗口"));
+    connect(mWindows, &QMenu::aboutToShow, this, [this, mWindows]() {
+        mWindows->clear();
+        m_point3dWindows.erase(std::remove_if(m_point3dWindows.begin(), m_point3dWindows.end(),
+                                              [](const QPointer<Point3dWindow> &p) { return p.isNull(); }),
+                               m_point3dWindows.end());
+        if (m_point3dWindows.isEmpty()) {
+            QAction *empty = mWindows->addAction(tr("（没有打开的点迹窗口）"));
+            empty->setEnabled(false);
+            return;
+        }
+        for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows)) {
+            if (!win)
+                continue;
+            const QString title = win->windowTitle();
+            mWindows->addAction(title, this, [win]() {
+                if (win) {
+                    win->showNormal();
+                    win->raise();
+                    win->activateWindow();
+                }
+            });
+        }
+        mWindows->addSeparator();
+        mWindows->addAction(tr("关闭全部点迹窗口"), this, [this]() {
+            const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
+            for (const QPointer<Point3dWindow> &win : wins)
+                if (win)
+                    win->close();
+        });
+    });
 
     QMenu *mTools = mb->addMenu(tr("工具"));
     item(mTools, tr("旗标管理"), QKeySequence(), [this]() { activatePanel(PanelId::Flags); });
