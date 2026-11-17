@@ -42,6 +42,23 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 字体不写死单个字体名，用带备选的列表，如等宽 `Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace`，界面 `"Microsoft YaHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", sans-serif`。RHEL 7.6 默认可能没有中文字体，中文字体需随程序部署（见下）。
 - 快捷键用 `Qt::CTRL` 等跨平台写法；文件对话框用 Qt 的 `QFileDialog`。
 
+### 时间基准（强制统一）
+
+**三路数据的时间都是北京时间墙钟；内部统一换算成 Unix epoch 毫秒（UTC 数轴），全工程只保留这一种时间表示。**
+
+| 数据源 | 原始时间 | 换算入口 | 规则 |
+|---|---|---|---|
+| 雷达航迹 MAT | `time` / `sysPara.datenum`（MATLAB datenum） | `datenumToMs`（`trackparsers.cpp`） | `(dn - 719529) * 86400 * 1000 - 8h` |
+| 点迹 MAT（DetPoint） | `DetPoint/sysPara.datenum`（同为 datenum） | 同上 | 与航迹 `time` 同值，可直接逐帧对齐 |
+| ADS-B CSV（批量历史位置） | 第 10 列文本时间 | `parseBeijingTime`（`track.cpp`） | 按 UTC+8 解析后 -8h |
+| 显示 | — | `formatBeijingTime`（`track.cpp`） | +8h 还原北京时间 |
+
+- 已实测：`detPoint_20251210175946.mat` 的 datenum `739961.74983796` = 北京时间 `2025-12-10 17:59:46`（与文件名一致），与 `track_20251210175946.mat` 的 `smoothPointList.time` 完全相等，frameID 221–270 逐帧对应。
+- ADS-B 批量历史 CSV 的时间列实测是**本地时间（UTC+8）**，不是 UTC：按各机场地面点（alt≤100）统计，17 点（若为 UTC 即本地凌晨 1 点）仍有大量滑行/起降活动，符合本地白天模式。FR24 官方「单趟导出」是 UTC 口径，但本项目处理的批量文件是本地时间，不要混用。
+- 修改任何导入/回放代码时不得引入第二套时间换算；新数据源必须接入上表同一套入口。
+- **frameID 不能作为跨数据源的对齐键**：DetPoint 的 frameID 是 uint8（0–255 会回绕），航迹的 frameID 是 int32 且每次运行编号不同（实测一次 221–270、另一次从 1527 起）。跨源对齐、排序一律用时间（datenum / epoch ms）。
+- 导入后必须打印/显示数据时间范围（北京时间）；多源时间窗完全不重叠时要提示，用于兜住 8 小时级别的时区错误。
+
 ### OpenGL 约束
 
 Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）；RHEL 涉密机常见 Mesa llvmpipe 软件渲染、VNC/远程桌面或国产显卡。所以只用 **OpenGL ES 2.0 / GLSL ES 1.00 子集**：
