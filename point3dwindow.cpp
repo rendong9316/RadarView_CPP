@@ -39,6 +39,7 @@
 
 #include <cmath>
 #include <functional>
+#include <limits>
 
 namespace {
 
@@ -303,6 +304,21 @@ QSet<int> Point3dWindow::isolatedBatches() const
     return m_canvas->isolatedBatches();
 }
 
+// 色标（SNR→颜色）映射范围：默认自动取本窗口数据的 min/max，也可在高级参数里手动指定
+void Point3dWindow::applySnrRange()
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (setting("point3d.snr_auto", true).toBool()) {
+        m_canvas->setSnrRange(nan, nan);
+        return;
+    }
+    double lo = setting("point3d.snr_min", 0.0).toDouble();
+    double hi = setting("point3d.snr_max", 30.0).toDouble();
+    if (!(hi > lo))
+        hi = lo + 1.0;
+    m_canvas->setSnrRange(lo, hi);
+}
+
 void Point3dWindow::chooseTracksFromDb()
 {
     if (!trackdb::isOpen()) {
@@ -487,16 +503,6 @@ void Point3dWindow::buildUi()
     m_viewCombo->setToolTip(QStringLiteral("三维视图的 X/Y 轴组合，Z 轴恒为帧号"));
     bar->addWidget(m_viewCombo);
 
-    // 拖拽方式：旋转视角 / 平移视图（平移时鼠标变手爪）
-    QLabel *dragLabel = new QLabel(QStringLiteral("拖拽"), m_toolbar);
-    bar->addWidget(dragLabel);
-    m_panBtn = new QPushButton(QStringLiteral("平移 [H]"), m_toolbar);
-    m_panBtn->setCheckable(true);              // 弹起 = 旋转视角，按下 = 平移视图
-    m_panBtn->setToolTip(QStringLiteral(
-        "左键拖拽方式：弹起=旋转视角；按下=平移视图（鼠标变手爪，按住左键拖动图表）\n"
-        "空白处双击恢复默认视角"));
-    bar->addWidget(m_panBtn);
-
     QLabel *windowLabel = new QLabel(QStringLiteral("窗口"), m_toolbar);
     bar->addWidget(windowLabel);
     m_windowCombo = new QComboBox(m_toolbar);
@@ -630,6 +636,10 @@ void Point3dWindow::buildUi()
     m_labelSizeSpin = dspin(0.5, 3.0, 1.0);
     m_labelSizeSpin->setToolTip(QStringLiteral("航迹编号（T20xxx）文字大小倍数（0.5–3）"));
     sbar->addWidget(m_labelSizeSpin);
+    sbar->addWidget(new QLabel(QStringLiteral("提示字号"), m_settingsBar));
+    m_hoverSizeSpin = dspin(0.5, 4.0, 1.0);
+    m_hoverSizeSpin->setToolTip(QStringLiteral("鼠标悬停/点击信息浮窗的字号倍数（0.5–4）"));
+    sbar->addWidget(m_hoverSizeSpin);
     sbar->addStretch(1);
     m_settingsBar->setVisible(false);
     root->addWidget(m_settingsBar);
@@ -665,14 +675,7 @@ void Point3dWindow::buildUi()
                           associated ? QStringLiteral("associated") : QStringLiteral("smooth"));
         updateStatus();
     });
-    connect(m_panBtn, &QPushButton::toggled, this, [this](bool pan) {
-        m_canvas->setDragMode(pan ? Point3dCanvas::DragMode::Pan
-                                  : Point3dCanvas::DragMode::Rotate);
-        if (!m_restoring)
-            app::setValue(QStringLiteral("point3d.drag_mode"),
-                          pan ? QStringLiteral("pan") : QStringLiteral("rotate"));
-    });
-    // 显示设置栏：点迹尺寸 / 航迹线宽 / 标签大小
+    // 显示设置栏：点迹尺寸 / 航迹线宽 / 标签大小 / 提示字号
     connect(m_settingsBtn, &QPushButton::toggled, this, [this](bool open) {
         m_settingsBar->setVisible(open);
         if (!m_restoring)
@@ -695,6 +698,12 @@ void Point3dWindow::buildUi()
                 m_canvas->setLabelScale(v);
                 if (!m_restoring)
                     app::setValue(QStringLiteral("point3d.label_scale"), v);
+            });
+    connect(m_hoverSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                m_canvas->setHoverTextScale(v);
+                if (!m_restoring)
+                    app::setValue(QStringLiteral("point3d.hover_text_scale"), v);
             });
     connect(m_viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &Point3dWindow::onViewModeChanged);
@@ -732,6 +741,17 @@ void Point3dWindow::buildUi()
             this, &Point3dWindow::trackFocusChanged);
     connect(m_canvas, &Point3dCanvas::trackActivated,
             this, &Point3dWindow::trackActivated);
+    // 左键单击某条航迹：本窗口单独显示这一条，并通知主窗口让地图也单独显示它（双向联动）
+    connect(m_canvas, &Point3dCanvas::trackClicked, this,
+            [this](int batchNo, TrackSource source, qint64 t0, qint64 t1) {
+                if (batchNo <= 0)
+                    return;
+                QSet<int> only;
+                only.insert(batchNo);
+                m_canvas->setIsolatedBatches(only);
+                updateStatus();
+                emit trackActivated(batchNo, source, t0, t1);
+            });
 
     // 播放控制：全部驱动主窗口的 ReplayController（全局共用时间轴）
     connect(m_playBtn, &QPushButton::clicked, this, &Point3dWindow::togglePlay);
@@ -773,7 +793,6 @@ void Point3dWindow::buildUi()
     bindKey(Qt::Key_P, [this]() { m_pointBtn->toggle(); });
     bindKey(Qt::Key_T, [this]() { m_trackBtn->toggle(); });
     bindKey(Qt::Key_L, [this]() { m_labelBtn->toggle(); });
-    bindKey(Qt::Key_H, [this]() { m_panBtn->toggle(); });   // 手爪（平移）/ 旋转
     bindKey(Qt::Key_Space, [this]() { togglePlay(); });
 
     // 没有点迹数据前先禁用播放控制（导入完成后 syncPlaybackUi 打开）
@@ -793,15 +812,17 @@ void Point3dWindow::buildUi()
     m_canvas->setShowDetections(m_pointBtn->isChecked());
     m_canvas->setShowTracks(m_trackBtn->isChecked());
     m_canvas->setShowLabels(m_labelBtn->isChecked());
-    // 点源（平滑/关联）与拖拽方式（旋转/平移）：按钮状态即设置值，按下时自动写回
+    // 点源（平滑/关联）：按钮状态即设置值，按下时自动写回
     m_sourceBtn->setChecked(setting("point3d.track_source", QStringLiteral("smooth")).toString()
                             == QLatin1String("associated"));
-    m_panBtn->setChecked(setting("point3d.drag_mode", QStringLiteral("rotate")).toString()
-                         == QLatin1String("pan"));
     m_pointSizeSpin->setValue(setting("point3d.point_scale", 1.0).toDouble());
     m_lineWidthSpin->setValue(setting("point3d.track_line_width", 2.0).toDouble());
     m_labelSizeSpin->setValue(setting("point3d.label_scale", 1.0).toDouble());
+    m_hoverSizeSpin->setValue(setting("point3d.hover_text_scale", 1.0).toDouble());
     m_settingsBtn->setChecked(setting("point3d.settings_open", false).toBool());
+
+    // 色标 SNR 映射（高级参数里可改；默认按数据自动）
+    applySnrRange();
 
     // 本窗口回放的倍速（只影响本窗口）
     m_speed = qBound(0.01, setting("point3d.play_speed", 100.0).toDouble(), 1.0e6);
@@ -1091,6 +1112,20 @@ void Point3dWindow::openAdvancedSettings()
     QCheckBox *autoReload = new QCheckBox(QStringLiteral("启动时恢复上次的点迹窗口与数据"), &dlg);
     autoReload->setChecked(setting("point3d.auto_reload", true).toBool());
 
+    // 色标（SNR -> 颜色）映射：默认自动取本窗口数据的 min/max，也可以手动指定上下限
+    QCheckBox *snrAuto = new QCheckBox(QStringLiteral("色标 SNR 自动（按本窗口数据 min/max）"), &dlg);
+    snrAuto->setChecked(setting("point3d.snr_auto", true).toBool());
+    QDoubleSpinBox *snrLo = dspin(-100.0, 300.0, 2,
+                                  setting("point3d.snr_min", 0.0).toDouble(), 0.5);
+    QDoubleSpinBox *snrHi = dspin(-100.0, 300.0, 2,
+                                  setting("point3d.snr_max", 30.0).toDouble(), 0.5);
+    snrLo->setEnabled(!snrAuto->isChecked());
+    snrHi->setEnabled(!snrAuto->isChecked());
+    connect(snrAuto, &QCheckBox::toggled, &dlg, [snrLo, snrHi](bool on) {
+        snrLo->setEnabled(!on);
+        snrHi->setEnabled(!on);
+    });
+
     form->addRow(QStringLiteral("DetPoint 变量名"), detVar);
     form->addRow(QStringLiteral("sysPara 变量名"), sysVar);
     form->addRow(QStringLiteral("方位字段"), azField);
@@ -1105,12 +1140,15 @@ void Point3dWindow::openAdvancedSettings()
     form->addRow(QStringLiteral("连续性：速度尺度"), dopplerC);
     form->addRow(QStringLiteral("连续性：方位尺度"), azimuthC);
     form->addRow(QStringLiteral("强连续阈值"), threshold);
+    form->addRow(snrAuto);
+    form->addRow(QStringLiteral("色标 SNR 下限（dB）"), snrLo);
+    form->addRow(QStringLiteral("色标 SNR 上限（dB）"), snrHi);
     form->addRow(autoReload);
 
     QLabel *note = new QLabel(QStringLiteral(
-        "说明：播放间隔 PauseTime 由工具栏「倍速」统一控制（与主窗口共用全局时间轴）；\n"
+        "说明：回放由本窗口自己的播放器驱动（帧间隔 / 倍速）；\n"
         "变量名 / 方位字段 / 文件匹配模式在下次导入时生效，其余参数立即生效；\n"
-        "航迹变量名仅用于 MAT 解析（当前航迹来自数据库，按批次叠加）。"), &dlg);
+        "色标 SNR 手动映射会同时改变点迹颜色和右侧色标条的刻度。"), &dlg);
     note->setWordWrap(true);
     form->addRow(note);
 
@@ -1147,6 +1185,10 @@ void Point3dWindow::openAdvancedSettings()
     app::setValue(QStringLiteral("point3d.continuity_doppler_scale"), dopplerC->value());
     app::setValue(QStringLiteral("point3d.continuity_azimuth_scale"), azimuthC->value());
     app::setValue(QStringLiteral("point3d.strong_threshold"), threshold->value());
+    app::setValue(QStringLiteral("point3d.snr_auto"), snrAuto->isChecked());
+    app::setValue(QStringLiteral("point3d.snr_min"), snrLo->value());
+    app::setValue(QStringLiteral("point3d.snr_max"), snrHi->value());
+    applySnrRange();
     app::setValue(QStringLiteral("point3d.auto_reload"), autoReload->isChecked());
 
     m_canvas->setTrackLineWidth(lineWidth->value());

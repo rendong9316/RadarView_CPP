@@ -101,6 +101,7 @@ private:
     int nearestFrame(qint64 ms) const;
     void reloadOverlaysFromKeys();
     void applyLinkedSelection();
+    void applySnrRange();          // 按设置把色标 SNR 映射范围推给画布
     void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
@@ -112,7 +113,6 @@ private:
     QSpinBox *m_windowSpin = nullptr;
     QPushButton *m_importBtn = nullptr;
     QPushButton *m_sourceBtn = nullptr;   // 点源切换：弹起=平滑，按下=关联
-    QPushButton *m_panBtn = nullptr;      // 拖拽方式：弹起=旋转，按下=平移（手爪）
     QPushButton *m_pointBtn = nullptr;
     QPushButton *m_trackBtn = nullptr;
     QPushButton *m_labelBtn = nullptr;
@@ -120,6 +120,7 @@ private:
     QDoubleSpinBox *m_pointSizeSpin = nullptr;
     QDoubleSpinBox *m_lineWidthSpin = nullptr;
     QDoubleSpinBox *m_labelSizeSpin = nullptr;
+    QDoubleSpinBox *m_hoverSizeSpin = nullptr;
     QLabel *m_status = nullptr;
     QProgressBar *m_progress = nullptr;
 

@@ -7,6 +7,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include <limits>
+
 #include "point3dtypes.h"
 
 class QMouseEvent;
@@ -57,11 +59,12 @@ public:
     double pointScale() const { return m_pointScale; }
     void setLabelScale(double s);             // 航迹数字标签字号倍数
     double labelScale() const { return m_labelScale; }
-
-    // 鼠标左键拖拽的行为：旋转视角 / 平移视图（平移时鼠标显示手爪）
-    enum class DragMode { Rotate, Pan };
-    void setDragMode(DragMode mode);
-    DragMode dragMode() const { return m_dragMode; }
+    void setHoverTextScale(double s);         // 悬停信息浮窗字号倍数
+    double hoverTextScale() const { return m_hoverTextScale; }
+    // 色标（SNR）映射范围：两个都是 NaN 表示按数据自动取 min/max
+    void setSnrRange(double lo, double hi);
+    double effectiveSnrMin() const;
+    double effectiveSnrMax() const;
 
     void setCamera(double yaw, double pitch, double zoom,
                    double panX = 0.0, double panY = 0.0);
@@ -72,12 +75,15 @@ public:
     int visiblePointCount() const { return m_lastVisibleCount; }
     int visibleFrameCount() const;
     int visibleTrackCount() const { return m_lastVisibleTracks; }   // 已绘制（点源过滤后）的叠加航迹数
+    QPointF trackHead(int index) const;       // 已绘制航迹的头部屏幕坐标（自检/诊断用）
+    int trackBatchNo(int index) const;        // 已绘制航迹的批次号
     QRectF plotRect() const;                  // 三维绘图区（色标条按它定位）
     QString statusText() const;               // 顶部统计文字
 
 signals:
     void trackFocusChanged(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void trackActivated(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    void trackClicked(int batchNo, TrackSource source, qint64 t0, qint64 t1);  // 左键单击某条航迹
     void cameraChanged();
     void hoverChanged();
     void statsChanged();          // 重绘后统计文字变化（供窗口状态栏刷新）
@@ -149,15 +155,21 @@ private:
     double m_trackLineWidth = 2.0;
     double m_pointScale = 1.0;
     double m_labelScale = 1.0;
+    double m_hoverTextScale = 1.0;
+    double m_snrLo = std::numeric_limits<double>::quiet_NaN();
+    double m_snrHi = std::numeric_limits<double>::quiet_NaN();
 
     Camera m_cam;
-    DragMode m_dragMode = DragMode::Rotate;
     double m_panX = 0.0, m_panY = 0.0;   // 平移偏移（屏幕像素，叠加到投影中心）
     Basis m_basis;
     Limits m_limits[3];
 
     bool m_dragging = false;
+    Qt::MouseButton m_dragButton = Qt::NoButton;   // 左键=旋转，右键=平移
     QPoint m_lastMouse;
+    QPoint m_pressPos;
+    bool m_movedSincePress = false;
+    int m_pressTrack = -1;            // 按下时命中的航迹（松开判定为单击用）
     int m_hoverPoint = -1;            // m_projected 下标
     int m_hoverTrack = -1;            // m_tracks 下标
     int m_lastVisibleCount = 0;

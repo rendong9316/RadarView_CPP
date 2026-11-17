@@ -13,6 +13,7 @@
 #include <QtMath>
 #include <functional>
 #include <cmath>
+#include <limits>
 
 #include "track.h"
 #include "trackparsers.h"
@@ -439,36 +440,75 @@ int runPointTest(const QString &input, const QString &trackFile)
             QApplication::sendEvent(&canvas, &leave);
         }
 
-        // 平移拖拽：切到「平移」后左键拖动只移动视图、不旋转，鼠标显示手爪
+        // 右键拖拽 = 平移视图（左键拖拽仍是旋转视角）
         {
             double yaw0 = 0, pitch0 = 0, zoom0 = 0, panX0 = 0, panY0 = 0;
             canvas.camera(&yaw0, &pitch0, &zoom0, &panX0, &panY0);
-            canvas.setDragMode(Point3dCanvas::DragMode::Pan);
-            check(canvas.cursor().shape() == Qt::OpenHandCursor,
-                  QStringLiteral("平移模式鼠标显示手爪"));
             QMouseEvent press(QEvent::MouseButtonPress, QPointF(600, 400),
-                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                              Qt::RightButton, Qt::RightButton, Qt::NoModifier);
             QApplication::sendEvent(&canvas, &press);
             QMouseEvent move(QEvent::MouseMove, QPointF(640, 430),
-                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                             Qt::RightButton, Qt::RightButton, Qt::NoModifier);
             QApplication::sendEvent(&canvas, &move);
             QMouseEvent rel(QEvent::MouseButtonRelease, QPointF(640, 430),
-                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                            Qt::RightButton, Qt::NoButton, Qt::NoModifier);
             QApplication::sendEvent(&canvas, &rel);
             double yaw1 = 0, pitch1 = 0, zoom1 = 0, panX1 = 0, panY1 = 0;
             canvas.camera(&yaw1, &pitch1, &zoom1, &panX1, &panY1);
             check(qFuzzyCompare(panX1 - panX0, 40.0) && qFuzzyCompare(panY1 - panY0, 30.0),
-                  QStringLiteral("平移拖拽移动视图（Δ=%1,%2）")
+                  QStringLiteral("右键拖拽平移视图（Δ=%1,%2）")
                       .arg(panX1 - panX0).arg(panY1 - panY0));
             check(qFuzzyCompare(yaw1, yaw0) && qFuzzyCompare(pitch1, pitch0),
-                  QStringLiteral("平移拖拽不旋转视角"));
+                  QStringLiteral("右键拖拽不旋转视角"));
             canvas.resetCamera();
             canvas.camera(nullptr, nullptr, nullptr, &panX1, &panY1);
             check(qFuzzyCompare(panX1, 0.0) && qFuzzyCompare(panY1, 0.0),
                   QStringLiteral("恢复默认视角同时清零平移"));
-            canvas.setDragMode(Point3dCanvas::DragMode::Rotate);
-            check(canvas.cursor().shape() != Qt::OpenHandCursor,
-                  QStringLiteral("旋转模式恢复普通指针"));
+        }
+
+        // 航迹优先悬停 + 左键单击航迹发出 trackClicked（窗口据此单独显示并联动地图）
+        if (!data.tracks.isEmpty()) {
+            canvas.grab();
+            const QPointF head = canvas.trackHead(0);
+            int hoveredBatch = -1;
+            QObject::connect(&canvas, &Point3dCanvas::trackFocusChanged, &canvas,
+                             [&hoveredBatch](int b, TrackSource, qint64, qint64) { hoveredBatch = b; });
+            QMouseEvent hmove(QEvent::MouseMove, head, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&canvas, &hmove);
+            check(hoveredBatch > 0,
+                  QStringLiteral("悬停航迹线时命中航迹（批 %1）").arg(hoveredBatch));
+
+            int clickedBatch = -1;
+            QObject::connect(&canvas, &Point3dCanvas::trackClicked, &canvas,
+                             [&clickedBatch](int b, TrackSource, qint64, qint64) { clickedBatch = b; });
+            QMouseEvent press(QEvent::MouseButtonPress, head, Qt::LeftButton, Qt::LeftButton,
+                              Qt::NoModifier);
+            QApplication::sendEvent(&canvas, &press);
+            QMouseEvent release(QEvent::MouseButtonRelease, head, Qt::LeftButton, Qt::NoButton,
+                                Qt::NoModifier);
+            QApplication::sendEvent(&canvas, &release);
+            check(clickedBatch > 0 && clickedBatch == hoveredBatch,
+                  QStringLiteral("左键单击航迹发出 trackClicked（批 %1）").arg(clickedBatch));
+            QEvent leave(QEvent::Leave);
+            QApplication::sendEvent(&canvas, &leave);
+        }
+
+        // 色标 SNR 手动映射 / 提示字号
+        {
+            canvas.setSnrRange(0.0, 40.0);
+            check(qFuzzyCompare(canvas.effectiveSnrMin(), 0.0)
+                      && qFuzzyCompare(canvas.effectiveSnrMax(), 40.0),
+                  QStringLiteral("色标 SNR 手动映射生效"));
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            canvas.setSnrRange(nan, nan);
+            check(qFuzzyCompare(canvas.effectiveSnrMin(), data.snrMin)
+                      && qFuzzyCompare(canvas.effectiveSnrMax(), data.snrMax),
+                  QStringLiteral("色标 SNR 自动映射回到数据范围（%1~%2）")
+                      .arg(canvas.effectiveSnrMin()).arg(canvas.effectiveSnrMax()));
+            canvas.setHoverTextScale(2.0);
+            check(qFuzzyCompare(canvas.hoverTextScale(), 2.0),
+                  QStringLiteral("悬停信息字号可调"));
+            canvas.setHoverTextScale(1.0);
         }
 
         bool viewOk = true;

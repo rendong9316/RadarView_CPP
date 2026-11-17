@@ -74,7 +74,9 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
 - 航迹点源（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。
 - **工具栏只用一个按钮切平滑/关联**（库里就这两套点列，不要下拉框）：`m_sourceBtn` 弹起=平滑、按下=关联，按钮文字同步显示当前点列；取值持久化到 `point3d.track_source`（`smooth`/`associated`，老值 `auto`/`predicted` 一律按平滑处理）。不允许出现"选了却看不见"：用户在「选择航迹…」里选中的航迹若当前点源取不到点列，窗口要自动切到另一列。
-- **画布左键拖拽有两种模式**：`Point3dCanvas::DragMode::Rotate`（默认，旋转视角）与 `DragMode::Pan`（平移视图）。工具栏「平移 [H]」按钮切换，平移时鼠标始终显示手爪（拖动中为 ClosedHand），偏移以屏幕像素叠加在投影中心（`m_panX/m_panY`），随相机一起持久化（`point3d.camera_pan_x/y`、会话 JSON 的 `camera.pan_x/pan_y`），空白处双击 `resetCamera()` 一并清零。`point3d.drag_mode` 记住上次的拖拽模式。
+- **画布鼠标交互**：左键拖拽=旋转视角（空白处双击 `resetCamera()`），**右键拖拽=平移视图**（拖动中鼠标为闭合手爪；不要再做「平移」按钮/模式开关）。偏移以屏幕像素叠加在投影中心（`m_panX/m_panY`），随相机持久化（`point3d.camera_pan_x/y`、会话 JSON `camera.pan_x/pan_y`）。**左键单击某条航迹**（按下与松开位移 < 3px）= 本窗口只显示这一条并通知主窗口让地图也单独显示它（`trackClicked` → `trackActivated`）。
+- **悬停命中优先级：航迹优先于点**。点云很密时若先判点，航迹悬停会被附近的检测点抢走，表现为"在窗口里悬停航迹、地图毫无反应"；`mouseMoveEvent` 必须先 `hitTrack()`，没命中航迹才找最近点。
+- **色标（SNR→颜色）映射可调**：`setSnrRange(lo,hi)`，两个 NaN = 按本窗口数据自动取 min/max（默认）。高级参数里「色标 SNR 自动 / 下限 / 上限」对应 `point3d.snr_auto` / `point3d.snr_min` / `point3d.snr_max`，同时影响点迹着色与右侧色标条刻度。悬停信息浮窗字号走 `setHoverTextScale()`（显示设置栏「提示字号」，`point3d.hover_text_scale`）。
 - 雷达 MAT 导入时 `parseRadarMat(..., raw=false)` 会把 `asscPointList` 一并读进 `Track::rawPoints` 入库，所以同一份数据能直接切换平滑/关联，不用导两遍；老库（v3 及以前）重导同一 MAT 会**原地补列**（`DbSaveJob` 对已存在且缺 `has_measure`/`has_raw` 的行做 `INSERT OR REPLACE`，不算新增，不影响批次计数）。
 - **`ReplayController::setRange` 不得随意重置当前时刻**（主窗口地图回放）：单独显示某条航迹、筛选、增删数据都会重算回放范围，范围变了但当前时刻仍在新范围内时必须原地保留（范围完全没变则直接返回，连回放状态都不打断）。历史上每次都跳回起点，表现为"在地图上点一条航迹，时间轴就跳回开头"。
 - 航迹选择属于单个窗口：只随窗口会话（`point3d.windows`）持久化，不写全局默认键，否则新开窗口会莫名继承别的窗口选过的航迹。
@@ -82,6 +84,10 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
 - 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
 - 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
+
+### 主窗口数据源条（SourceStrip）
+
+- 数据源 chip 行整体重建（`SourceStrip::setItems`）时必须**保住横向滚动位置**：切换某个数据源的显示/隐藏会走重建，旧实现无条件 `setValue(0)`，用户滚到中间/末尾后一开关显示就跳回开头。重建前后读取/恢复 `horizontalScrollBar()->value()`（按新的 maximum 夹一下）。
 
 ### OpenGL 约束
 

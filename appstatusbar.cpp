@@ -1062,6 +1062,9 @@ SourceStrip::SourceStrip(QWidget *parent) : QWidget(parent)
 void SourceStrip::setItems(const QVector<AppStatusBar::SourceItem> &items)
 {
     m_items = items;
+    // 切换某个数据源的显示/隐藏会走这里重建整行，必须保住当前横向滚动位置，
+    // 否则用户滚到中间/末尾后一开关显示就跳回开头
+    const int keepX = m_scroll->horizontalScrollBar()->value();
     for (QAbstractButton *b : m_chips) {
         m_rowLayout->removeWidget(b);
         b->deleteLater();
@@ -1086,7 +1089,8 @@ void SourceStrip::setItems(const QVector<AppStatusBar::SourceItem> &items)
     if (m_chips.size() > 1)
         rowW += m_rowLayout->spacing() * (m_chips.size() - 1);
     m_row->setFixedSize(rowW, chipH);
-    m_scroll->horizontalScrollBar()->setValue(0);
+    QScrollBar *bar = m_scroll->horizontalScrollBar();
+    bar->setValue(qBound(0, keepX, bar->maximum()));
     update();
 }
 

@@ -257,6 +257,37 @@ void Point3dCanvas::setLabelScale(double s)
     }
 }
 
+void Point3dCanvas::setHoverTextScale(double s)
+{
+    const double v = qBound(0.5, s, 4.0);
+    if (!qFuzzyCompare(v, m_hoverTextScale)) {
+        m_hoverTextScale = v;
+        update();
+    }
+}
+
+void Point3dCanvas::setSnrRange(double lo, double hi)
+{
+    m_snrLo = lo;
+    m_snrHi = hi;
+    update();
+}
+
+double Point3dCanvas::effectiveSnrMin() const
+{
+    if (std::isfinite(m_snrLo))
+        return m_snrLo;
+    return m_data ? m_data->snrMin : 0.0;
+}
+
+double Point3dCanvas::effectiveSnrMax() const
+{
+    if (std::isfinite(m_snrHi))
+        return m_snrHi;
+    const double hi = m_data ? m_data->snrMax : 1.0;
+    return hi > effectiveSnrMin() ? hi : effectiveSnrMin() + 1.0;
+}
+
 void Point3dCanvas::setIsolatedBatches(const QSet<int> &batches)
 {
     if (batches != m_isolatedBatches) {
@@ -288,15 +319,6 @@ void Point3dCanvas::camera(double *yaw, double *pitch, double *zoom,
         *panX = m_panX;
     if (panY)
         *panY = m_panY;
-}
-
-void Point3dCanvas::setDragMode(DragMode mode)
-{
-    if (mode == m_dragMode)
-        return;
-    m_dragMode = mode;
-    setCursor(mode == DragMode::Pan ? Qt::OpenHandCursor : Qt::ArrowCursor);
-    update();
 }
 
 void Point3dCanvas::resetCamera()
@@ -447,6 +469,20 @@ int Point3dCanvas::visibleFrameCount() const
     const int cur = qBound(0, m_current, n - 1);
     const int first = m_windowLength > 0 ? qMax(0, cur - m_windowLength + 1) : 0;
     return cur - first + 1;
+}
+
+QPointF Point3dCanvas::trackHead(int index) const
+{
+    if (index < 0 || index >= m_tracks.size())
+        return QPointF();
+    return m_tracks.at(index).head;
+}
+
+int Point3dCanvas::trackBatchNo(int index) const
+{
+    if (index < 0 || index >= m_tracks.size())
+        return 0;
+    return m_tracks.at(index).batchNo;
 }
 
 QString Point3dCanvas::statusText() const
@@ -604,7 +640,7 @@ void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
     for (int i = first; i <= cur; ++i)
         total += m_data->frames.at(i).points.size();
     const int step = total > 25000 ? int(std::ceil(double(total) / 25000.0)) : 1;
-    const double snrSpan = qMax(1e-6, m_data->snrMax - m_data->snrMin);
+    const double snrSpan = qMax(1e-6, effectiveSnrMax() - effectiveSnrMin());
     const double markerScale = qBound(0.6, UiScale::instance()->scale(), 1.5) * m_pointScale;
 
     m_projected.reserve(qMin(total, 25000) + 16);
@@ -658,7 +694,7 @@ void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
             const double c = frame.continuity.size() == frame.points.size()
                                  ? double(frame.continuity.at(pp.point)) : 0.0;
             const double alpha = qBound(0.008, 0.008 + 0.90 * c * c, 0.92);
-            QColor col = turboColor((double(item.snr) - m_data->snrMin) / snrSpan);
+            QColor col = turboColor((double(item.snr) - effectiveSnrMin()) / snrSpan);
             col.setAlphaF(alpha);
             if (pp.radius <= 1.3) {
                 p.setPen(QPen(col, qMax(1.0, double(pp.radius) * 2.0), Qt::SolidLine, Qt::RoundCap));
@@ -830,7 +866,7 @@ void Point3dCanvas::drawHover(QPainter &p)
         << QStringLiteral("SNR: %1 dB").arg(double(item.snr), 0, 'f', 2)
         << QStringLiteral("帧号: %1").arg(fid);
 
-    p.setFont(plotFont(ui::px(0.48)));
+    p.setFont(plotFont(ui::px(0.48 * m_hoverTextScale)));
     const QFontMetricsF fm(p.font());
     double w = 0.0;
     for (const QString &s : lines)
@@ -882,7 +918,7 @@ void Point3dCanvas::drawColorBar(QPainter &p, const QRectF &plot)
     for (int i = 0; i < ticks; ++i) {
         const double t = double(i) / (ticks - 1);
         const double y = bar.bottom() - t * bar.height();
-        const double v = m_data->snrMin + t * (m_data->snrMax - m_data->snrMin);
+        const double v = effectiveSnrMin() + t * (effectiveSnrMax() - effectiveSnrMin());
         p.drawLine(QPointF(bar.right(), y), QPointF(bar.right() + ui::sz(4), y));
         p.drawText(QRectF(bar.right() + ui::sz(6), y - fm.height() / 2.0,
                           ui::sz(52), fm.height()),
@@ -908,11 +944,20 @@ void Point3dCanvas::drawTitle(QPainter &p, const QRectF &plot, double zlo, doubl
 
 void Point3dCanvas::mousePressEvent(QMouseEvent *e)
 {
-    if (e->button() == Qt::LeftButton) {
+    // 左键拖拽 = 旋转视角；右键拖拽 = 平移视图
+    if (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) {
         m_dragging = true;
+        m_dragButton = e->button();
         m_lastMouse = e->pos();
+        m_pressPos = e->pos();
+        m_movedSincePress = false;
+        m_pressTrack = e->button() == Qt::LeftButton ? hitTrack(e->pos()) : -1;
         setCursor(Qt::ClosedHandCursor);
         setFocus(Qt::MouseFocusReason);
+        if (e->button() == Qt::RightButton) {
+            e->accept();
+            return;                       // 右键只用于平移，不交给基类
+        }
     }
     QWidget::mousePressEvent(e);
 }
@@ -921,8 +966,10 @@ void Point3dCanvas::mouseMoveEvent(QMouseEvent *e)
 {
     if (m_dragging) {
         const QPoint d = e->pos() - m_lastMouse;
+        if (!m_movedSincePress && (e->pos() - m_pressPos).manhattanLength() > 3)
+            m_movedSincePress = true;
         m_lastMouse = e->pos();
-        if (m_dragMode == DragMode::Pan) {
+        if (m_dragButton == Qt::RightButton) {
             m_panX += d.x();
             m_panY += d.y();
         } else {
@@ -933,19 +980,22 @@ void Point3dCanvas::mouseMoveEvent(QMouseEvent *e)
         return;
     }
 
-    // 悬停：先找点，再找航迹
+    // 悬停：航迹优先。航迹线穿过密集点云时，点会先抢到悬停，
+    // 导致"在窗口里悬停航迹，地图那边毫无反应"，所以先判航迹
+    int bestTrack = hitTrack(e->pos());
     int bestPoint = -1;
-    double bestDist = 1e9;
-    for (int i = 0; i < m_projected.size(); ++i) {
-        const ProjectedPoint &pp = m_projected.at(i);
-        const double d = QLineF(e->pos(), pp.screen).length();
-        const double limit = qMax(9.0, double(pp.radius) + 5.0);
-        if (d <= limit && d < bestDist) {
-            bestDist = d;
-            bestPoint = i;
+    if (bestTrack < 0) {
+        double bestDist = 1e9;
+        for (int i = 0; i < m_projected.size(); ++i) {
+            const ProjectedPoint &pp = m_projected.at(i);
+            const double d = QLineF(e->pos(), pp.screen).length();
+            const double limit = qMax(9.0, double(pp.radius) + 5.0);
+            if (d <= limit && d < bestDist) {
+                bestDist = d;
+                bestPoint = i;
+            }
         }
     }
-    int bestTrack = bestPoint < 0 ? hitTrack(e->pos()) : -1;
     if (bestPoint != m_hoverPoint || bestTrack != m_hoverTrack) {
         m_hoverPoint = bestPoint;
         m_hoverTrack = bestTrack;
@@ -958,19 +1008,26 @@ void Point3dCanvas::mouseMoveEvent(QMouseEvent *e)
         update();
         emit hoverChanged();
     }
-    // 平移模式下始终保持手爪（提示"可以拖着走"），旋转模式按是否命中点/航迹换指针
-    if (m_dragMode == DragMode::Pan)
-        setCursor(Qt::OpenHandCursor);
-    else
-        setCursor(bestPoint >= 0 || bestTrack >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    setCursor(bestPoint >= 0 || bestTrack >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
     QWidget::mouseMoveEvent(e);
 }
 
 void Point3dCanvas::mouseReleaseEvent(QMouseEvent *e)
 {
-    if (m_dragging && e->button() == Qt::LeftButton) {
+    if (m_dragging && e->button() == m_dragButton) {
+        const bool click = e->button() == Qt::LeftButton && !m_movedSincePress
+                           && m_pressTrack >= 0 && m_pressTrack < m_tracks.size();
         m_dragging = false;
-        setCursor(m_dragMode == DragMode::Pan ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        m_dragButton = Qt::NoButton;
+        setCursor(Qt::ArrowCursor);
+        if (click) {
+            // 左键单击某条航迹：通知窗口"单独显示这一条"（并联动地图）
+            const ProjectedTrack &t = m_tracks.at(m_pressTrack);
+            m_pressTrack = -1;
+            emit trackClicked(t.batchNo, t.source, t.t0, t.t1);
+            return;
+        }
+        m_pressTrack = -1;
         emit cameraChanged();
         return;
     }
