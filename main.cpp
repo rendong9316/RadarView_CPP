@@ -377,6 +377,43 @@ int runPointTest(const QString &input, const QString &trackFile)
         QApplication::processEvents();
     }
 
+    // ---- 全局时间轴联动：两个窗口共用同一个 ReplayController ----
+    if (files.size() >= 2) {
+        ReplayController replay;
+        Point3dWindow *wa = new Point3dWindow(nullptr);
+        Point3dWindow *wb = new Point3dWindow(nullptr);
+        wa->attachReplay(&replay);
+        wb->attachReplay(&replay);
+        wa->show();
+        wb->show();
+        wa->loadDetectionFiles(files.mid(0, qMin(3, files.size())));
+        wb->loadDetectionFiles(files.mid(qMin(3, files.size() - 1),
+                                          qMin(3, files.size())));
+        QElapsedTimer wait2;
+        wait2.start();
+        while ((wa->isLoading() || wb->isLoading()) && wait2.elapsed() < 60000)
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        replay.setRange(qMin(wa->minTime(), wb->minTime()),
+                        qMax(wa->maxTime(), wb->maxTime()));
+        const bool haveA = wa->dataset()->frames.size() >= 2;
+        const bool haveB = wb->dataset()->frames.size() >= 2;
+        if (haveA) {
+            replay.seekTime(wa->dataset()->frames.at(1).timeMs);
+            check(wa->currentFrame() == 1,
+                  QStringLiteral("窗口 A 跟随全局时间轴（帧 %1）").arg(wa->currentFrame()));
+        }
+        if (haveB) {
+            replay.seekTime(wb->dataset()->frames.at(1).timeMs);
+            check(wb->currentFrame() == 1,
+                  QStringLiteral("窗口 B 跟随全局时间轴（帧 %1）").arg(wb->currentFrame()));
+        }
+        check(wa->currentTimeMs() == replay.current(),
+              QStringLiteral("各窗口读取同一全局时刻"));
+        wa->close();
+        wb->close();
+        QApplication::processEvents();
+    }
+
     out << (failures == 0 ? QStringLiteral("RESULT OK")
                           : QStringLiteral("RESULT FAILED (%1)").arg(failures)) << "\n";
     out.flush();

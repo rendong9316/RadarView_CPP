@@ -1088,6 +1088,16 @@ void MainWindow::resetReplayRange()
             hi = b;
         any = true;
     }
+    // 点迹窗口与地图共用一条时间轴：回放范围取并集（没有航迹时也能拖动进度条）
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows)) {
+        if (!win || win->maxTime() <= win->minTime())
+            continue;
+        if (!any || win->minTime() < lo)
+            lo = win->minTime();
+        if (!any || win->maxTime() > hi)
+            hi = win->maxTime();
+        any = true;
+    }
     m_replay->setRange(any ? lo : 0, any ? hi : 0);
 }
 
@@ -1295,10 +1305,14 @@ void MainWindow::showPoint3dWindow()
 {
     Point3dWindow *win = new Point3dWindow(nullptr);
     win->setNumber(++m_point3dCounter);
+    win->attachReplay(m_replay);
     m_point3dWindows.append(QPointer<Point3dWindow>(win));
     connect(win, &Point3dWindow::closed, this, [this, win]() {
         m_point3dWindows.removeAll(QPointer<Point3dWindow>(win));
+        resetReplayRange();
     });
+    // 点迹数据变化后重算全局时间范围（航迹 + 所有点迹窗口取并集）
+    connect(win, &Point3dWindow::dataChanged, this, [this]() { resetReplayRange(); });
     win->show();
     win->raise();
     win->activateWindow();

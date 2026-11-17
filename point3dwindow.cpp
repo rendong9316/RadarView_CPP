@@ -3,25 +3,36 @@
 #include "apppaths.h"
 #include "point3dcanvas.h"
 #include "point3dimportjob.h"
+#include "point3dparsers.h"
+#include "replaycontroller.h"
 #include "theme.h"
 
+#include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSet>
 #include <QShortcut>
+#include <QSlider>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <cmath>
 #include <functional>
 
 namespace {
@@ -48,6 +59,11 @@ QString toolbarQss()
         "QComboBox, QSpinBox { color: var(--text-primary); background: var(--input-bg);"
         " border: 1px solid var(--input-border); border-radius: 3px; padding: 2px 6px;"
         " font-family: %1; font-size: 12px; }"
+        "QSlider::groove:horizontal { height: 4px; background: var(--bg-tertiary);"
+        " border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: var(--accent-primary); border-radius: 2px; }"
+        "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0;"
+        " border-radius: 6px; background: var(--accent-primary); }"
         "QComboBox QAbstractItemView { background: var(--dropdown-bg); color: var(--dropdown-fg);"
         " selection-background-color: var(--dropdown-hover); }")
         .arg(ui::uiFamilies());
@@ -80,6 +96,93 @@ void Point3dWindow::setNumber(int n)
     m_number = qMax(1, n);
     setWindowTitle(m_number <= 1 ? QStringLiteral("点迹三维可视化")
                                  : QStringLiteral("点迹三维可视化 %1").arg(m_number));
+}
+
+// 接入主窗口的全局回放时钟：窗口内所有播放操作都直接驱动它
+void Point3dWindow::attachReplay(ReplayController *replay)
+{
+    if (!replay)
+        return;
+    if (m_replay == replay)
+        return;
+    if (m_replay)
+        disconnect(m_replay, nullptr, this, nullptr);
+    m_replay = replay;
+    connect(replay, &ReplayController::timeChanged, this, &Point3dWindow::onReplayTime);
+    connect(replay, &ReplayController::stateChanged, this, &Point3dWindow::updatePlaybackUi);
+
+    m_playBtn->setEnabled(true);
+    m_seekSlider->setEnabled(true);
+    m_speedCombo->setEnabled(true);
+
+    m_restoring = true;
+    m_speedCombo->setEditText(QString::number(replay->speed(), 'g', 6));
+    m_restoring = false;
+
+    onReplayTime(replay->current());
+    updatePlaybackUi();
+}
+
+qint64 Point3dWindow::currentTimeMs() const
+{
+    return m_replay ? m_replay->current() : m_data.maxTime;
+}
+
+int Point3dWindow::nearestFrame(qint64 ms) const
+{
+    const QVector<DetPointFrame> &frames = m_data.frames;
+    if (frames.isEmpty())
+        return 0;
+    int lo = 0, hi = frames.size();
+    while (lo < hi) {
+        const int mid = (lo + hi) / 2;
+        if (frames.at(mid).timeMs < ms)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    int best = qBound(0, lo, frames.size() - 1);
+    if (best > 0 && qAbs(frames.at(best - 1).timeMs - ms)
+                        <= qAbs(frames.at(best).timeMs - ms))
+        best -= 1;
+    return best;
+}
+
+void Point3dWindow::onReplayTime(qint64 ms)
+{
+    m_outOfRange = false;
+    if (!m_data.frames.isEmpty()) {
+        if (ms < m_data.minTime || ms > m_data.maxTime)
+            m_outOfRange = true;
+        else
+            m_canvas->setCurrentFrame(nearestFrame(ms));
+    }
+
+    m_syncing = true;
+    if (m_replay && m_replay->end() > m_replay->start()) {
+        m_seekSlider->setValue(int(std::lround(m_replay->progress() * 1000.0)));
+        m_timeLabel->setText(formatBeijingTime(ms));
+    } else {
+        m_seekSlider->setValue(0);
+        m_timeLabel->setText(QStringLiteral("--"));
+    }
+    m_syncing = false;
+    updateStatus();
+}
+
+void Point3dWindow::seekFromSlider(int value)
+{
+    if (m_syncing || !m_replay)
+        return;
+    m_replay->seek(qBound(0.0, value / 1000.0, 1.0));
+}
+
+void Point3dWindow::updatePlaybackUi()
+{
+    if (!m_replay)
+        return;
+    m_playBtn->setText(m_replay->isPlaying() ? QStringLiteral("暂停")
+                                             : QStringLiteral("播放"));
 }
 
 void Point3dWindow::buildUi()
@@ -144,7 +247,38 @@ void Point3dWindow::buildUi()
     m_labelBtn->setToolTip(QStringLiteral("显示 / 隐藏航迹编号（L）"));
     bar->addWidget(m_labelBtn);
 
-    bar->addStretch(1);
+    QPushButton *advBtn = new QPushButton(QStringLiteral("高级参数…"), m_toolbar);
+    advBtn->setToolTip(QStringLiteral("MATLAB 工具的全部可调参数（变量名、连续性、帧数等）"));
+    bar->addWidget(advBtn);
+
+    QPushButton *exportBtn = new QPushButton(QStringLiteral("导出 PNG…"), m_toolbar);
+    exportBtn->setToolTip(QStringLiteral("把当前画面保存为 PNG（对应 ExportFinalFrame）"));
+    bar->addWidget(exportBtn);
+
+    bar->addSpacing(ui::sz(6));
+    m_playBtn = new QPushButton(QStringLiteral("播放"), m_toolbar);
+    m_playBtn->setToolTip(QStringLiteral("播放 / 暂停全局时间轴（空格）"));
+    bar->addWidget(m_playBtn);
+
+    m_seekSlider = new QSlider(Qt::Horizontal, m_toolbar);
+    m_seekSlider->setRange(0, 1000);
+    m_seekSlider->setMinimumWidth(ui::sz(160));
+    m_seekSlider->setToolTip(QStringLiteral("拖动跳转全局时间轴（与主窗口进度条同步）"));
+    bar->addWidget(m_seekSlider, 1);
+
+    m_timeLabel = new QLabel(QStringLiteral("--"), m_toolbar);
+    m_timeLabel->setMinimumWidth(ui::sz(150));
+    bar->addWidget(m_timeLabel);
+
+    QLabel *speedLabel = new QLabel(QStringLiteral("倍速"), m_toolbar);
+    bar->addWidget(speedLabel);
+    m_speedCombo = new QComboBox(m_toolbar);
+    m_speedCombo->setEditable(true);
+    for (int s : { 1, 2, 5, 10, 20, 50, 100, 300, 500, 2000 })
+        m_speedCombo->addItem(QString::number(s));
+    m_speedCombo->setToolTip(QStringLiteral("回放倍速（作用于全局时间轴，与主窗口共用）"));
+    bar->addWidget(m_speedCombo);
+
     m_progress = new QProgressBar(m_toolbar);
     m_progress->setRange(0, 100);
     m_progress->setTextVisible(false);
@@ -172,6 +306,8 @@ void Point3dWindow::buildUi()
 
     // ---- 连接 ----
     connect(m_importBtn, &QPushButton::clicked, this, &Point3dWindow::importDetections);
+    connect(advBtn, &QPushButton::clicked, this, &Point3dWindow::openAdvancedSettings);
+    connect(exportBtn, &QPushButton::clicked, this, &Point3dWindow::exportCanvasImage);
     connect(m_viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &Point3dWindow::onViewModeChanged);
     connect(m_windowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -208,6 +344,21 @@ void Point3dWindow::buildUi()
     connect(m_canvas, &Point3dCanvas::trackActivated,
             this, &Point3dWindow::trackActivated);
 
+    // 播放控制：全部驱动主窗口的 ReplayController（全局共用时间轴）
+    connect(m_playBtn, &QPushButton::clicked, this, [this]() {
+        if (m_replay)
+            m_replay->togglePlay();
+    });
+    connect(m_seekSlider, &QSlider::sliderMoved, this, &Point3dWindow::seekFromSlider);
+    connect(m_speedCombo, &QComboBox::currentTextChanged, this, [this](const QString &text) {
+        if (m_restoring || !m_replay)
+            return;
+        bool ok = false;
+        const double v = text.toDouble(&ok);
+        if (ok && v > 0.0)
+            m_replay->setSpeed(v);
+    });
+
     // 快捷键：P / T / L（窗口内生效）
     auto bindKey = [this](Qt::Key key, const std::function<void()> &fn) {
         QShortcut *sc = new QShortcut(QKeySequence(key), this);
@@ -217,6 +368,15 @@ void Point3dWindow::buildUi()
     bindKey(Qt::Key_P, [this]() { m_pointBtn->toggle(); });
     bindKey(Qt::Key_T, [this]() { m_trackBtn->toggle(); });
     bindKey(Qt::Key_L, [this]() { m_labelBtn->toggle(); });
+    bindKey(Qt::Key_Space, [this]() {
+        if (m_replay)
+            m_replay->togglePlay();
+    });
+
+    // 未接入全局时钟前先禁用播放控制（由 attachReplay 打开）
+    m_playBtn->setEnabled(false);
+    m_seekSlider->setEnabled(false);
+    m_speedCombo->setEnabled(false);
 
     // ---- 恢复全局默认参数 ----
     const QString view = setting("point3d.view_mode", QStringLiteral("rvf")).toString();
@@ -354,6 +514,8 @@ void Point3dWindow::onImportDone()
     m_canvas->setDataset(&m_data);
     m_canvas->setHighlightedBatch(-1);
     m_files = m_pendingFiles;
+    if (m_replay)
+        onReplayTime(m_replay->current());
 
     // 持久化文件清单
     QJsonArray arr;
@@ -426,7 +588,10 @@ void Point3dWindow::updateStatus()
         return;
     if (m_data.frames.isEmpty())
         return;                       // 保留导入完成/失败时的提示文字
-    m_status->setText(m_canvas->statusText());
+    QString text = m_canvas->statusText();
+    if (m_outOfRange)
+        text += QStringLiteral(" | 当前时间不在本数据范围内");
+    m_status->setText(text);
 }
 
 void Point3dWindow::setHighlightedBatch(int batchNo)
@@ -455,6 +620,149 @@ void Point3dWindow::cancelImport()
 {
     if (m_job)
         m_job->requestCancel();
+}
+
+void Point3dWindow::openAdvancedSettings()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("点迹可视化高级参数"));
+    dlg.setModal(true);
+    QFormLayout *form = new QFormLayout(&dlg);
+
+    auto line = [&dlg](const QString &text) {
+        QLineEdit *e = new QLineEdit(&dlg);
+        e->setText(text);
+        return e;
+    };
+    auto spin = [&dlg](int lo, int hi, int value) {
+        QSpinBox *s = new QSpinBox(&dlg);
+        s->setRange(lo, hi);
+        s->setValue(value);
+        return s;
+    };
+    auto dspin = [&dlg](double lo, double hi, int decimals, double value, double step = 0.1) {
+        QDoubleSpinBox *s = new QDoubleSpinBox(&dlg);
+        s->setRange(lo, hi);
+        s->setDecimals(decimals);
+        s->setSingleStep(step);
+        s->setValue(value);
+        return s;
+    };
+
+    QLineEdit *detVar = line(setting("point3d.det_variable", QStringLiteral("DetPoint")).toString());
+    QLineEdit *sysVar = line(setting("point3d.syspara_variable", QStringLiteral("sysPara")).toString());
+    QComboBox *azField = new QComboBox(&dlg);
+    azField->setEditable(true);
+    azField->addItems(QStringList() << QStringLiteral("az") << QStringLiteral("theta"));
+    azField->setCurrentText(setting("point3d.azimuth_field", QStringLiteral("az")).toString());
+    QLineEdit *trackVar = line(setting("point3d.track_variable", QStringLiteral("trackList")).toString());
+    QLineEdit *pattern = line(setting("point3d.file_pattern", QStringLiteral("detPoint_*.mat")).toString());
+
+    QSpinBox *maxFrames = spin(0, 1000000, setting("point3d.max_frames", 0).toInt());
+    maxFrames->setSpecialValueText(QStringLiteral("全部"));
+    QSpinBox *minTrackLen = spin(1, 1000, setting("point3d.min_track_length", 4).toInt());
+    QDoubleSpinBox *rangeScale = dspin(0.001, 1000.0, 3,
+                                       setting("point3d.track_range_scale", 1.0).toDouble(), 0.1);
+    QDoubleSpinBox *lineWidth = dspin(0.5, 12.0, 1,
+                                      setting("point3d.track_line_width", 2.0).toDouble(), 0.1);
+    QSpinBox *gap = spin(1, 20, setting("point3d.continuity_frame_gap", 3).toInt());
+    QDoubleSpinBox *rangeC = dspin(0.1, 100000.0, 1,
+                                   setting("point3d.continuity_range_scale", 80.0).toDouble(), 1.0);
+    QDoubleSpinBox *dopplerC = dspin(0.1, 1000.0, 1,
+                                     setting("point3d.continuity_doppler_scale", 10.0).toDouble(), 0.5);
+    QDoubleSpinBox *azimuthC = dspin(0.1, 180.0, 1,
+                                     setting("point3d.continuity_azimuth_scale", 6.0).toDouble(), 0.5);
+    QDoubleSpinBox *threshold = dspin(0.0, 1.0, 2,
+                                      setting("point3d.strong_threshold", 0.70).toDouble(), 0.05);
+
+    form->addRow(QStringLiteral("DetPoint 变量名"), detVar);
+    form->addRow(QStringLiteral("sysPara 变量名"), sysVar);
+    form->addRow(QStringLiteral("方位字段"), azField);
+    form->addRow(QStringLiteral("航迹变量名（trackList）"), trackVar);
+    form->addRow(QStringLiteral("文件匹配模式"), pattern);
+    form->addRow(QStringLiteral("最多帧数（0=全部）"), maxFrames);
+    form->addRow(QStringLiteral("最小航迹长度（点）"), minTrackLen);
+    form->addRow(QStringLiteral("航迹距离缩放"), rangeScale);
+    form->addRow(QStringLiteral("航迹线宽"), lineWidth);
+    form->addRow(QStringLiteral("连续性：帧间隔"), gap);
+    form->addRow(QStringLiteral("连续性：距离尺度"), rangeC);
+    form->addRow(QStringLiteral("连续性：速度尺度"), dopplerC);
+    form->addRow(QStringLiteral("连续性：方位尺度"), azimuthC);
+    form->addRow(QStringLiteral("强连续阈值"), threshold);
+
+    QLabel *note = new QLabel(QStringLiteral(
+        "说明：播放间隔 PauseTime 由工具栏「倍速」统一控制（与主窗口共用全局时间轴）；\n"
+        "变量名 / 方位字段 / 文件匹配模式在下次导入时生效，其余参数立即生效。"), &dlg);
+    note->setWordWrap(true);
+    form->addRow(note);
+
+    QDialogButtonBox *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    form->addRow(box);
+    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    setThemedStyle(&dlg, QStringLiteral(
+        "QDialog { background: var(--bg-secondary); }"
+        "QLabel { color: var(--text-primary); font-family: %1; font-size: 12px; }"
+        "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { color: var(--text-primary);"
+        " background: var(--input-bg); border: 1px solid var(--input-border);"
+        " border-radius: 3px; padding: 3px 6px; font-family: %1; font-size: 12px; }"
+        "QPushButton { color: var(--text-secondary); background: var(--button-bg);"
+        " border: 1px solid var(--border-primary); border-radius: 3px;"
+        " padding: 4px 12px; font-family: %1; font-size: 12px; }"
+        "QPushButton:hover { background: var(--button-hover); }").arg(ui::uiFamilies()));
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    app::setValue(QStringLiteral("point3d.det_variable"), detVar->text().trimmed());
+    app::setValue(QStringLiteral("point3d.syspara_variable"), sysVar->text().trimmed());
+    app::setValue(QStringLiteral("point3d.azimuth_field"), azField->currentText().trimmed());
+    app::setValue(QStringLiteral("point3d.track_variable"), trackVar->text().trimmed());
+    app::setValue(QStringLiteral("point3d.file_pattern"), pattern->text().trimmed());
+    app::setValue(QStringLiteral("point3d.max_frames"), maxFrames->value());
+    app::setValue(QStringLiteral("point3d.min_track_length"), minTrackLen->value());
+    app::setValue(QStringLiteral("point3d.track_range_scale"), rangeScale->value());
+    app::setValue(QStringLiteral("point3d.track_line_width"), lineWidth->value());
+    app::setValue(QStringLiteral("point3d.continuity_frame_gap"), gap->value());
+    app::setValue(QStringLiteral("point3d.continuity_range_scale"), rangeC->value());
+    app::setValue(QStringLiteral("point3d.continuity_doppler_scale"), dopplerC->value());
+    app::setValue(QStringLiteral("point3d.continuity_azimuth_scale"), azimuthC->value());
+    app::setValue(QStringLiteral("point3d.strong_threshold"), threshold->value());
+
+    m_canvas->setTrackLineWidth(lineWidth->value());
+    if (!m_data.frames.isEmpty()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        ContinuityConfig cfg;
+        cfg.frameGap = gap->value();
+        cfg.rangeScale = rangeC->value();
+        cfg.dopplerScale = dopplerC->value();
+        cfg.azimuthScale = azimuthC->value();
+        computeContinuity(m_data.frames, cfg);
+        QApplication::restoreOverrideCursor();
+    }
+    updateStatus();
+}
+
+void Point3dWindow::exportCanvasImage()
+{
+    const QString dir = setting("point3d.last_dir", QDir::homePath()).toString();
+    const QString def = QDir(dir).filePath(
+        QStringLiteral("point3d_%1.png")
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))));
+    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出当前画面"), def,
+                                                QStringLiteral("PNG 图片 (*.png)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QLatin1String(".png"), Qt::CaseInsensitive))
+        path += QStringLiteral(".png");
+    if (m_canvas->grab().save(path)) {
+        app::setValue(QStringLiteral("point3d.export_file"), path);
+        m_status->setText(QStringLiteral("已导出画面：%1").arg(path));
+    } else if (!app::testMode()) {
+        QMessageBox::warning(this, QStringLiteral("导出失败"),
+                             QStringLiteral("无法写入：%1").arg(path));
+    }
 }
 
 void Point3dWindow::saveSettings()
