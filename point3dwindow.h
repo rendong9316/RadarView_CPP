@@ -103,7 +103,8 @@ private:
     QWidget *buildSidePanel();          // 左侧「显示」侧栏（设置页）
     QWidget *buildAdvancedPanel();      // 左侧「高级」页（原来的高级参数对话框）
     void setSidePanelPage(int page, bool show);   // 0=设置 1=高级
-    void applyAdvancedSettings();
+    void persistAdvanced();        // 高级页所有控件即时写设置
+    void recomputeContinuityNow(); // 连续性参数防抖后重算当前数据
     void importDetections();
     void onImportDone();
     void exportCanvasImage();
@@ -159,7 +160,7 @@ private:
     QDoubleSpinBox *m_azimuthCSpin = nullptr;
     QDoubleSpinBox *m_thresholdSpin = nullptr;
     QCheckBox *m_autoReloadCheck = nullptr;
-    QPushButton *m_applyAdvancedBtn = nullptr;
+    QTimer *m_advTimer = nullptr;   // 高级页连续性参数防抖
     QPushButton *m_importBtn = nullptr;
     QPushButton *m_sourceBtn = nullptr;   // 点源切换：弹起=平滑，按下=关联
     QPushButton *m_pointBtn = nullptr;

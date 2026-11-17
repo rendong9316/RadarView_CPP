@@ -389,7 +389,7 @@ static void appendOverlayPoints(const QVector<TrackPoint> &src,
 }
 
 bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
-                      TrackOverlay *out, const QColor &color)
+                      TrackOverlay *out, const QColor &color, double rangeScale)
 {
     if (!out || frames.isEmpty())
         return false;
@@ -411,6 +411,14 @@ bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
         if (!track.rawPoints.isEmpty())
             appendOverlayPoints(track.rawPoints, frames, &out->rawPoints);
     }
+    // 航迹距离缩放（对应 MATLAB TrackRangeScale）：只影响显示用的距离，不改原始数据
+    if (rangeScale > 0.0 && !qFuzzyCompare(rangeScale, 1.0)) {
+        for (TrackOverlayPoint &op : out->points)
+            op.prange = float(op.prange * rangeScale);
+        for (TrackOverlayPoint &op : out->rawPoints)
+            op.prange = float(op.prange * rangeScale);
+    }
+
     // 联动匹配用的时间范围：取两套点列里"能落到帧上"的点
     qint64 lo = 0, hi = 0;
     bool any = false;

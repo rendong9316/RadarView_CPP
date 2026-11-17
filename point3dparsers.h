@@ -44,7 +44,8 @@ void computeContinuity(QVector<DetPointFrame> &frames, const ContinuityConfig &c
 // 数据库航迹 -> 点云叠加：只保留带测量坐标的点，Z 值按时间匹配最近点迹帧。
 // 返回 false 表示没有任何可用点（例如旧数据缺少 prange/pvr/paz）。
 bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
-                      TrackOverlay *out, const QColor &color = QColor());
+                      TrackOverlay *out, const QColor &color = QColor(),
+                      double rangeScale = 1.0);
 
 // 重新计算数据集派生量（排序结果、时间范围、SNR 范围）
 void rebuildDatasetDerived(Point3dDataset *data);

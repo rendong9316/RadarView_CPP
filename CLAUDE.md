@@ -97,6 +97,13 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
 - 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
 - **坐标轴刻度**：数字字号跟随「标签大小」（`m_labelScale`）；刻度数量按"轴在屏幕上的实际长度 ÷ 文字占位"自适应（3–16 个：放大时更密，字号调大时自动变稀，不重叠）；刻度与轴标题由 `drawAxisTicks()` 在**数据之后**绘制——放在 `drawGridAndAxes()` 里会被密集点云盖住。
+- **高级参数页是实时生效的**（没有「应用」按钮）：所有控件改动即时写设置；
+  - 连续性参数（帧间隔/距离/速度/方位尺度）改动后 400ms 防抖重算当前数据的连续性（点的尺寸/透明度立刻变）；
+  - **最小航迹长度**（`point3d.min_track_length`，对应 MATLAB `MinTrackLength`）在重建叠加航迹时过滤"两套点列里较多的那套也少于 N 点"的短航迹；
+  - **航迹距离缩放**（`point3d.track_range_scale`，`TrackRangeScale`）在 `overlayFromTrack` 里乘到叠加点的 prange 上（只影响显示）；
+  - **强连续阈值**（`point3d.strong_threshold`，`StrongContinuityThreshold`）只用于状态栏/标题里的"强连续"计数（与 MATLAB 一致：`sum(continuity >= threshold)`），不影响点的大小/透明度；
+  - 变量名 / 方位字段 / 文件匹配模式 / 最多帧数在下次导入时生效；「启动时恢复」下次启动生效。
+
 - 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/区域筛选/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
 
 ### 主窗口数据源条（SourceStrip）

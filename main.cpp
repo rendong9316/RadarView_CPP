@@ -342,6 +342,19 @@ int runPointTest(const QString &input, const QString &trackFile)
             TrackOverlay farOv;
             check(!overlayFromTrack(farTrack, data.frames, &farOv),
                   QStringLiteral("时间窗完全对不上的航迹判为不可叠加（一致性校验）"));
+
+            // TrackRangeScale：距离按比例缩放
+            if (!tracks.isEmpty()) {
+                TrackOverlay base, scaled;
+                if (overlayFromTrack(tracks.first(), data.frames, &base)
+                        && overlayFromTrack(tracks.first(), data.frames, &scaled, QColor(), 2.0)
+                        && !base.points.isEmpty()) {
+                    check(qAbs(scaled.points.first().prange - base.points.first().prange * 2.0f) < 1e-2,
+                          QStringLiteral("航迹距离缩放按比例生效（%1 -> %2）")
+                              .arg(double(base.points.first().prange))
+                              .arg(double(scaled.points.first().prange)));
+                }
+            }
         }
     }
 
@@ -547,6 +560,20 @@ int runPointTest(const QString &input, const QString &trackFile)
             canvas.grab();
             check(canvas.visiblePointCount() == before,
                   QStringLiteral("清除区域筛选后恢复全部点（%1）").arg(canvas.visiblePointCount()));
+        }
+
+        // 强连续阈值：只影响"强连续点数"统计
+        {
+            canvas.setStrongThreshold(0.0);
+            canvas.grab();
+            const int strongAll = canvas.lastStrongCount();
+            canvas.setStrongThreshold(1.0);
+            canvas.grab();
+            check(strongAll > 0 && canvas.lastStrongCount() == 0
+                      && strongAll <= canvas.visiblePointCount(),
+                  QStringLiteral("强连续阈值影响统计（阈值0 -> %1，阈值1 -> %2）")
+                      .arg(strongAll).arg(canvas.lastStrongCount()));
+            canvas.setStrongThreshold(0.70);
         }
 
         bool viewOk = true;

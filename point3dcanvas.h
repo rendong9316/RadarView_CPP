@@ -61,6 +61,10 @@ public:
     double labelScale() const { return m_labelScale; }
     void setHoverTextScale(double s);         // 悬停信息浮窗字号倍数
     double hoverTextScale() const { return m_hoverTextScale; }
+    // 强连续阈值：只用于统计"强连续点"数量（对应 MATLAB StrongContinuityThreshold）
+    void setStrongThreshold(double v);
+    double strongThreshold() const { return m_strongThreshold; }
+    int lastStrongCount() const { return m_lastStrongCount; }
     // 色标（SNR）映射范围：两个都是 NaN 表示按数据自动取 min/max
     void setSnrRange(double lo, double hi);
     double effectiveSnrMin() const;
@@ -167,6 +171,8 @@ private:
     double m_pointScale = 1.0;
     double m_labelScale = 1.0;
     double m_hoverTextScale = 1.0;
+    double m_strongThreshold = 0.70;
+    int m_lastStrongCount = 0;
     double m_snrLo = std::numeric_limits<double>::quiet_NaN();
     double m_snrHi = std::numeric_limits<double>::quiet_NaN();
     Point3dRegion m_region;       // 已应用的区域筛选（裁剪 + 当作视图范围）

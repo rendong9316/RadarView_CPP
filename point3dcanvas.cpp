@@ -266,6 +266,15 @@ void Point3dCanvas::setHoverTextScale(double s)
     }
 }
 
+void Point3dCanvas::setStrongThreshold(double v)
+{
+    const double t = qBound(0.0, v, 1.0);
+    if (!qFuzzyCompare(t, m_strongThreshold)) {
+        m_strongThreshold = t;
+        update();
+    }
+}
+
 void Point3dCanvas::setSnrRange(double lo, double hi)
 {
     m_snrLo = lo;
@@ -534,9 +543,11 @@ QString Point3dCanvas::statusText() const
     const DetPointFrame &f = m_data->frames.at(cur);
     const QString fid = std::isfinite(f.frameId) ? QString::number(f.frameId, 'g', 12)
                                                  : QStringLiteral("-");
-    return QStringLiteral("%1 | 帧 %2/%3 | frameID=%4 | 本帧点数=%5 | 窗口点数=%6 | 窗口航迹=%7")
+    return QStringLiteral("%1 | 帧 %2/%3 | frameID=%4 | 本帧点数=%5 | 窗口点数=%6 | 窗口航迹=%7"
+                          " | 强连续=%8")
         .arg(viewName(m_viewMode)).arg(cur + 1).arg(n).arg(fid)
-        .arg(f.points.size()).arg(m_lastVisibleCount).arg(m_lastVisibleTracks);
+        .arg(f.points.size()).arg(m_lastVisibleCount).arg(m_lastVisibleTracks)
+        .arg(m_lastStrongCount);
 }
 
 void Point3dCanvas::paintEvent(QPaintEvent *)
@@ -704,6 +715,7 @@ void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
 {
     m_projected.clear();
     m_lastVisibleCount = 0;
+    m_lastStrongCount = 0;
     if (!m_data || m_data->frames.isEmpty() || !m_showDetections)
         return;
 
@@ -770,6 +782,8 @@ void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
             const DetPointItem &item = frame.points.at(pp.point);
             const double c = frame.continuity.size() == frame.points.size()
                                  ? double(frame.continuity.at(pp.point)) : 0.0;
+            if (c >= m_strongThreshold)
+                ++m_lastStrongCount;
             const double alpha = qBound(0.008, 0.008 + 0.90 * c * c, 0.92);
             QColor col = turboColor((double(item.snr) - effectiveSnrMin()) / snrSpan);
             col.setAlphaF(alpha);

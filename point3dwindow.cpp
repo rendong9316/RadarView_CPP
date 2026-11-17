@@ -310,15 +310,20 @@ void Point3dWindow::reloadOverlaysFromKeys()
     m_data.tracks.clear();
     m_skippedTracks = 0;
     if (!m_trackKeys.isEmpty() && !m_data.frames.isEmpty() && trackdb::isOpen()) {
+        const double rangeScale = setting("point3d.track_range_scale", 1.0).toDouble();
+        const int minLen = qMax(1, setting("point3d.min_track_length", 4).toInt());
         const QVector<Track> tracks = trackdb::loadTracks(m_trackKeys);
         for (const Track &t : tracks) {
             TrackOverlay ov;
             const QColor color = m_colorProvider ? m_colorProvider(t.source, t.fileName)
                                                  : QColor();
-            if (overlayFromTrack(t, m_data.frames, &ov, color))
-                m_data.tracks.append(ov);
-            else
+            if (!overlayFromTrack(t, m_data.frames, &ov, color, rangeScale)) {
                 ++m_skippedTracks;       // 与点迹时间窗对不上（一致性校验）
+                continue;
+            }
+            if (qMax(ov.points.size(), ov.rawPoints.size()) < minLen)
+                continue;                // 最小航迹长度：太短的航迹不画（对应 MATLAB MinTrackLength）
+            m_data.tracks.append(ov);
         }
     }
     m_canvas->refreshLimits();
@@ -975,8 +980,44 @@ void Point3dWindow::buildUi()
         const bool show = m_sidePanel->isHidden() || m_sideStack->currentIndex() != 1;
         setSidePanelPage(1, show);
     });
-    connect(m_applyAdvancedBtn, &QPushButton::clicked, this,
-            &Point3dWindow::applyAdvancedSettings);
+    // 高级页：即时持久化；连续性参数防抖 ~0.4s 后重算；航迹长度/距离缩放立即重建叠加
+    m_advTimer = new QTimer(this);
+    m_advTimer->setSingleShot(true);
+    m_advTimer->setInterval(400);
+    connect(m_advTimer, &QTimer::timeout, this, &Point3dWindow::recomputeContinuityNow);
+    auto advPersist = [this]() { persistAdvanced(); };
+    connect(m_detVarEdit, &QLineEdit::textChanged, this, advPersist);
+    connect(m_sysVarEdit, &QLineEdit::textChanged, this, advPersist);
+    connect(m_trackVarEdit, &QLineEdit::textChanged, this, advPersist);
+    connect(m_patternEdit, &QLineEdit::textChanged, this, advPersist);
+    connect(m_azFieldCombo, &QComboBox::currentTextChanged, this, advPersist);
+    connect(m_maxFramesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, advPersist);
+    connect(m_autoReloadCheck, &QCheckBox::toggled, this, advPersist);
+    auto advContinuity = [this]() {
+        persistAdvanced();
+        if (!m_restoring)
+            m_advTimer->start();
+    };
+    connect(m_gapSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, advContinuity);
+    connect(m_rangeCSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, advContinuity);
+    connect(m_dopplerCSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, advContinuity);
+    connect(m_azimuthCSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, advContinuity);
+    // 最小航迹长度 / 距离缩放立即重建叠加航迹；强连续阈值只影响状态统计
+    connect(m_minTrackLenSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        persistAdvanced();
+        reloadOverlaysFromKeys();
+        updateStatus();
+    });
+    connect(m_rangeScaleSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        persistAdvanced();
+        reloadOverlaysFromKeys();
+        updateStatus();
+    });
+    connect(m_thresholdSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v) {
+        persistAdvanced();
+        m_canvas->setStrongThreshold(v);
+        updateStatus();
+    });
     connect(m_sourceBtn, &QPushButton::toggled, this, [this](bool associated) {
         m_sourceBtn->setText(associated ? QStringLiteral("关联") : QStringLiteral("平滑"));
         m_canvas->setTrackSource(associated ? Point3dTrackSource::Associated
@@ -1158,8 +1199,9 @@ void Point3dWindow::buildUi()
     m_snrLoSpin->setValue(setting("point3d.snr_min", 0.0).toDouble());
     m_snrHiSpin->setValue(setting("point3d.snr_max", 30.0).toDouble());
 
-    // 色标 SNR 映射（高级参数里可改；默认按数据自动）
+    // 色标 SNR 映射（侧栏可改；默认按数据自动）+ 强连续阈值（只用于状态统计）
     applySnrRange();
+    m_canvas->setStrongThreshold(setting("point3d.strong_threshold", 0.70).toDouble());
 
     // 本窗口回放的倍速（只影响本窗口）
     m_speed = qBound(0.01, setting("point3d.play_speed", 100.0).toDouble(), 1.0e6);
@@ -1696,14 +1738,12 @@ QWidget *Point3dWindow::buildAdvancedPanel()
     m_autoReloadCheck->setChecked(setting("point3d.auto_reload", true).toBool());
     lay->addWidget(m_autoReloadCheck);
 
-    m_applyAdvancedBtn = new QPushButton(QStringLiteral("应用"), page);
-    m_applyAdvancedBtn->setToolTip(QStringLiteral(
-        "写入设置：变量名/匹配模式下次导入生效；连续性参数立即重算"));
-    lay->addWidget(m_applyAdvancedBtn);
-
     QLabel *note = new QLabel(QStringLiteral(
-        "变量名 / 方位字段 / 文件匹配模式在下次导入时生效；\n"
-        "连续性参数点「应用」后立即按新参数重算。"), page);
+        "改动即时生效并写入设置：\n"
+        "· 最小航迹长度 / 距离缩放 / 强连续阈值 立即作用于当前画面；\n"
+        "· 连续性参数（帧间隔/尺度）停止输入约 0.4 秒后自动重算；\n"
+        "· 变量名、方位字段、文件匹配模式、最多帧数在下次导入时生效；\n"
+        "· 「启动时恢复」在下次启动时生效。"), page);
     note->setWordWrap(true);
     lay->addWidget(note);
 
@@ -1712,9 +1752,10 @@ QWidget *Point3dWindow::buildAdvancedPanel()
     return scroll;
 }
 
-void Point3dWindow::applyAdvancedSettings()
+// 高级页：所有控件改动即时写设置
+void Point3dWindow::persistAdvanced()
 {
-    if (!m_detVarEdit)
+    if (m_restoring || !m_detVarEdit)
         return;
     app::setValue(QStringLiteral("point3d.det_variable"), m_detVarEdit->text().trimmed());
     app::setValue(QStringLiteral("point3d.syspara_variable"), m_sysVarEdit->text().trimmed());
@@ -1730,18 +1771,23 @@ void Point3dWindow::applyAdvancedSettings()
     app::setValue(QStringLiteral("point3d.continuity_azimuth_scale"), m_azimuthCSpin->value());
     app::setValue(QStringLiteral("point3d.strong_threshold"), m_thresholdSpin->value());
     app::setValue(QStringLiteral("point3d.auto_reload"), m_autoReloadCheck->isChecked());
+}
 
-    if (!m_data.frames.isEmpty()) {
-        QApplication::setOverrideCursor(Qt::WaitCursor);
-        ContinuityConfig cfg;
-        cfg.frameGap = m_gapSpin->value();
-        cfg.rangeScale = m_rangeCSpin->value();
-        cfg.dopplerScale = m_dopplerCSpin->value();
-        cfg.azimuthScale = m_azimuthCSpin->value();
-        computeContinuity(m_data.frames, cfg);
-        QApplication::restoreOverrideCursor();
-    }
-    m_status->setText(QStringLiteral("高级参数已应用（变量名/匹配模式下次导入生效）"));
+// 连续性参数改动后（防抖）按新参数重算当前数据，点的大小/透明度立刻跟着变
+void Point3dWindow::recomputeContinuityNow()
+{
+    if (m_data.frames.isEmpty())
+        return;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    ContinuityConfig cfg;
+    cfg.frameGap = m_gapSpin->value();
+    cfg.rangeScale = m_rangeCSpin->value();
+    cfg.dopplerScale = m_dopplerCSpin->value();
+    cfg.azimuthScale = m_azimuthCSpin->value();
+    computeContinuity(m_data.frames, cfg);
+    QApplication::restoreOverrideCursor();
+    m_canvas->update();
+    m_status->setText(QStringLiteral("连续性参数已按新设置重算"));
     updateStatus();
 }
 
