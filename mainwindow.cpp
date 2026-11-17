@@ -1306,6 +1306,10 @@ void MainWindow::showPoint3dWindow()
     Point3dWindow *win = new Point3dWindow(nullptr);
     win->setNumber(++m_point3dCounter);
     win->attachReplay(m_replay);
+    // 点云航迹颜色与地图上的文件颜色一致
+    win->setTrackColorProvider([this](TrackSource s, const QString &fileName) {
+        return m_store.fileColor(s, fileName);
+    });
     m_point3dWindows.append(QPointer<Point3dWindow>(win));
     connect(win, &Point3dWindow::closed, this, [this, win]() {
         m_point3dWindows.removeAll(QPointer<Point3dWindow>(win));

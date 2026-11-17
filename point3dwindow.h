@@ -4,6 +4,8 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <functional>
+
 #include "point3dtypes.h"
 
 class QComboBox;
@@ -31,6 +33,11 @@ public:
     // 接入主窗口的全局回放时钟（所有点迹窗口共用一套时间轴）
     void attachReplay(ReplayController *replay);
     qint64 currentTimeMs() const;
+
+    // 航迹颜色提供者：与主窗口地图上的文件颜色保持一致
+    void setTrackColorProvider(const std::function<QColor(TrackSource, const QString &)> &provider);
+    // 从数据库选择航迹（按 BatchNo 与主窗口联动）
+    void chooseTracksFromDb();
 
     Point3dCanvas *canvas() const { return m_canvas; }
     const Point3dDataset *dataset() const { return &m_data; }
@@ -71,12 +78,14 @@ private:
     void seekFromSlider(int value);
     void updatePlaybackUi();
     int nearestFrame(qint64 ms) const;
+    void reloadOverlaysFromKeys();
 
     Point3dCanvas *m_canvas = nullptr;
     QWidget *m_toolbar = nullptr;
     QWidget *m_statusBar = nullptr;
     QComboBox *m_viewCombo = nullptr;
     QComboBox *m_windowCombo = nullptr;
+    QComboBox *m_sourceCombo = nullptr;
     QSpinBox *m_windowSpin = nullptr;
     QPushButton *m_importBtn = nullptr;
     QPushButton *m_pointBtn = nullptr;
@@ -98,6 +107,8 @@ private:
     Point3dImportJob *m_job = nullptr;
     QStringList m_pendingFiles;
     QStringList m_files;
+    QStringList m_trackKeys;      // 已选航迹的 Track::key()（从数据库选择）
+    std::function<QColor(TrackSource, const QString &)> m_colorProvider;
     int m_number = 1;
     bool m_restoring = false;
 };

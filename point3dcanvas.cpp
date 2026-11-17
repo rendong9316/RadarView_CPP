@@ -151,6 +151,12 @@ void Point3dCanvas::setDataset(const Point3dDataset *data)
     update();
 }
 
+void Point3dCanvas::refreshLimits()
+{
+    rebuildLimits();
+    update();
+}
+
 void Point3dCanvas::setCurrentFrame(int index)
 {
     if (!m_data || m_data->frames.isEmpty()) {
@@ -631,6 +637,17 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
     p.setRenderHint(QPainter::Antialiasing, true);
     for (int ti = 0; ti < m_data->tracks.size(); ++ti) {
         const TrackOverlay &tr = m_data->tracks.at(ti);
+        // 点源过滤：数据库里 Radar 批次存平滑/output 点列，RadarRaw 存关联点列；
+        // 预测点列未入库，选「预测」时不显示。
+        bool include = true;
+        switch (m_trackSource) {
+        case Point3dTrackSource::Auto: break;
+        case Point3dTrackSource::Smooth: include = tr.source == TrackSource::Radar; break;
+        case Point3dTrackSource::Associated: include = tr.source == TrackSource::RadarRaw; break;
+        case Point3dTrackSource::Predicted: include = false; break;
+        }
+        if (!include)
+            continue;
         ProjectedTrack out;
         out.track = ti;
         out.batchNo = tr.batchNo;

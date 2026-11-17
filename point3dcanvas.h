@@ -21,6 +21,8 @@ public:
 
     void setDataset(const Point3dDataset *data);
     const Point3dDataset *dataset() const { return m_data; }
+    // 数据集内容变化（如航迹叠加变化）后重算坐标范围，不重置当前帧
+    void refreshLimits();
 
     void setCurrentFrame(int index);          // 0 基
     int currentFrame() const { return m_current; }

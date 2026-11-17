@@ -533,6 +533,48 @@ int runDbMigrationTest()
             check(q.value(0).toInt() == 2 * 52, QStringLiteral("点格式已重编码为 52 字节/点"));
         else
             check(false, QStringLiteral("读取点 BLOB 长度"));
+
+        // 再插入一条新格式航迹（带测量坐标），验证选择器能区分新旧数据
+        {
+            QByteArray blob(2 * 52, 0);
+            char *p = blob.data();
+            for (int i = 0; i < 2; ++i) {
+                const qint64 t = 1765360182000LL + i * 10000;
+                qToLittleEndian<qint64>(t, p);
+                double lat = 31.0 + i, lon = 111.0 + i;
+                quint64 u;
+                std::memcpy(&u, &lat, 8);
+                qToLittleEndian<quint64>(u, p + 8);
+                std::memcpy(&u, &lon, 8);
+                qToLittleEndian<quint64>(u, p + 16);
+                const float fs[7] = { 1000.0f, 90.0f, 200.0f, 0.0f,
+                                      1000.0f + i * 100.0f, 12.0f, 90.0f };
+                for (int k = 0; k < 7; ++k) {
+                    quint32 v;
+                    std::memcpy(&v, &fs[k], 4);
+                    qToLittleEndian<quint32>(v, p + 24 + 4 * k);
+                }
+                p += 52;
+            }
+            QSqlQuery ins(db);
+            ins.prepare(QStringLiteral(
+                "INSERT OR REPLACE INTO saved_tracks (icao_address, batch_id, source, min_timestamp,"
+                " max_timestamp, min_ms, max_ms, point_count, has_measure, deleted, points)"
+                " VALUES ('RADAR-0002', 1, 'Radar', '', '', 1765360182000, 1765360192000, 2, 1, 0, ?)"));
+            ins.addBindValue(blob);
+            check(ins.exec(), QStringLiteral("写入带测量坐标的新格式航迹"));
+        }
+        const QVector<DbTrackSummary> sums2 = trackdb::trackSummaries(QString(), &err);
+        int withMeasure = 0;
+        for (const DbTrackSummary &s : sums2)
+            withMeasure += s.hasMeasure ? 1 : 0;
+        check(sums2.size() == 2 && withMeasure == 1,
+              QStringLiteral("航迹选择器摘要：2 条，其中 1 条可叠加（%1）").arg(withMeasure));
+        const QVector<Track> loadedNew = trackdb::loadTracks(
+            QStringList() << QStringLiteral("RADAR-0002::Radar::Radar"));
+        check(loadedNew.size() == 1 && !loadedNew.first().points.isEmpty()
+                  && std::isfinite(loadedNew.first().points.first().prange),
+              QStringLiteral("新格式航迹可读出测量坐标"));
     }
     trackdb::close();
 

@@ -6,6 +6,8 @@
 #include "point3dparsers.h"
 #include "replaycontroller.h"
 #include "theme.h"
+#include "trackdb.h"
+#include "trackpicker.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -185,6 +187,55 @@ void Point3dWindow::updatePlaybackUi()
                                              : QStringLiteral("播放"));
 }
 
+void Point3dWindow::setTrackColorProvider(
+    const std::function<QColor(TrackSource, const QString &)> &provider)
+{
+    m_colorProvider = provider;
+}
+
+void Point3dWindow::reloadOverlaysFromKeys()
+{
+    m_data.tracks.clear();
+    if (!m_trackKeys.isEmpty() && !m_data.frames.isEmpty() && trackdb::isOpen()) {
+        const QVector<Track> tracks = trackdb::loadTracks(m_trackKeys);
+        for (const Track &t : tracks) {
+            TrackOverlay ov;
+            const QColor color = m_colorProvider ? m_colorProvider(t.source, t.fileName)
+                                                 : QColor();
+            if (overlayFromTrack(t, m_data.frames, &ov, color))
+                m_data.tracks.append(ov);
+        }
+    }
+    m_canvas->refreshLimits();
+}
+
+void Point3dWindow::chooseTracksFromDb()
+{
+    if (!trackdb::isOpen()) {
+        QMessageBox::information(this, QStringLiteral("选择航迹"),
+                                 QStringLiteral("数据库未打开。请先在主窗口导入雷达航迹数据。"));
+        return;
+    }
+    TrackPicker dlg(this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    const QVector<DbTrackSummary> sel = dlg.selectedTracks();
+    m_trackKeys.clear();
+    for (const DbTrackSummary &s : sel)
+        m_trackKeys << s.icao + QStringLiteral("::") + trackSourceName(s.source)
+                    + QStringLiteral("::") + s.fileName;
+
+    QJsonArray arr;
+    for (const QString &key : qAsConst(m_trackKeys))
+        arr.append(key);
+    app::setValue(QStringLiteral("point3d.selected_tracks"),
+                  QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+
+    reloadOverlaysFromKeys();
+    updateStatus();
+}
+
 void Point3dWindow::buildUi()
 {
     m_restoring = true;
@@ -203,6 +254,10 @@ void Point3dWindow::buildUi()
     m_importBtn = new QPushButton(QStringLiteral("导入点迹…"), m_toolbar);
     m_importBtn->setToolTip(QStringLiteral("选择一个或多个 detPoint_*.mat 文件（可多选，单个也可以）"));
     bar->addWidget(m_importBtn);
+
+    QPushButton *pickTracksBtn = new QPushButton(QStringLiteral("选择航迹…"), m_toolbar);
+    pickTracksBtn->setToolTip(QStringLiteral("从地球侧数据库选择要叠加的航迹（与地图共用批次与颜色）"));
+    bar->addWidget(pickTracksBtn);
 
     QLabel *viewLabel = new QLabel(QStringLiteral("视图"), m_toolbar);
     bar->addWidget(viewLabel);
@@ -229,6 +284,18 @@ void Point3dWindow::buildUi()
     m_windowSpin->setVisible(false);
     m_windowSpin->setToolTip(QStringLiteral("自定义滑动窗口帧数"));
     bar->addWidget(m_windowSpin);
+
+    QLabel *sourceLabel = new QLabel(QStringLiteral("点源"), m_toolbar);
+    bar->addWidget(sourceLabel);
+    m_sourceCombo = new QComboBox(m_toolbar);
+    m_sourceCombo->addItem(QStringLiteral("自动"), int(Point3dTrackSource::Auto));
+    m_sourceCombo->addItem(QStringLiteral("平滑"), int(Point3dTrackSource::Smooth));
+    m_sourceCombo->addItem(QStringLiteral("关联"), int(Point3dTrackSource::Associated));
+    m_sourceCombo->addItem(QStringLiteral("预测"), int(Point3dTrackSource::Predicted));
+    m_sourceCombo->setToolTip(QStringLiteral(
+        "数据库航迹来源：自动=全部；平滑=Radar 批次；关联=RadarRaw 批次；\n"
+        "预测点列未入库，选择「预测」时不显示航迹"));
+    bar->addWidget(m_sourceCombo);
 
     bar->addSpacing(ui::sz(6));
     m_pointBtn = new QPushButton(QStringLiteral("点迹 [P]"), m_toolbar);
@@ -306,8 +373,20 @@ void Point3dWindow::buildUi()
 
     // ---- 连接 ----
     connect(m_importBtn, &QPushButton::clicked, this, &Point3dWindow::importDetections);
+    connect(pickTracksBtn, &QPushButton::clicked, this, &Point3dWindow::chooseTracksFromDb);
     connect(advBtn, &QPushButton::clicked, this, &Point3dWindow::openAdvancedSettings);
     connect(exportBtn, &QPushButton::clicked, this, &Point3dWindow::exportCanvasImage);
+    connect(m_sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
+        const Point3dTrackSource src = Point3dTrackSource(m_sourceCombo->currentData().toInt());
+        m_canvas->setTrackSource(src);
+        if (!m_restoring) {
+            const char *key = src == Point3dTrackSource::Auto ? "auto"
+                            : src == Point3dTrackSource::Smooth ? "smooth"
+                            : src == Point3dTrackSource::Predicted ? "predicted" : "associated";
+            app::setValue(QStringLiteral("point3d.track_source"), QString::fromLatin1(key));
+        }
+        updateStatus();
+    });
     connect(m_viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &Point3dWindow::onViewModeChanged);
     connect(m_windowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -398,6 +477,7 @@ void Point3dWindow::buildUi()
         trackSource = Point3dTrackSource::Smooth;
     else if (src == QLatin1String("predicted"))
         trackSource = Point3dTrackSource::Predicted;
+    m_sourceCombo->setCurrentIndex(qMax(0, m_sourceCombo->findData(int(trackSource))));
     m_canvas->setTrackSource(trackSource);
     m_canvas->setTrackLineWidth(setting("point3d.track_line_width", 2.0).toDouble());
 
@@ -423,6 +503,11 @@ void Point3dWindow::buildUi()
     }
     m_windowCombo->setCurrentIndex(presetIdx);
     m_canvas->setWindowLength(len);
+
+    // 恢复上次从数据库选择的航迹 key（数据导入后重新映射 Z 值）
+    const QString keysJson = setting("point3d.selected_tracks", QString()).toString();
+    for (const QJsonValue &v : QJsonDocument::fromJson(keysJson.toUtf8()).array())
+        m_trackKeys << v.toString();
 
     m_restoring = false;
     updateStatus();
@@ -514,6 +599,8 @@ void Point3dWindow::onImportDone()
     m_canvas->setDataset(&m_data);
     m_canvas->setHighlightedBatch(-1);
     m_files = m_pendingFiles;
+    // 重新导入点迹后，已选数据库航迹需要按新帧重新映射 Z 值
+    reloadOverlaysFromKeys();
     if (m_replay)
         onReplayTime(m_replay->current());
 

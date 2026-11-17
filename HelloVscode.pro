@@ -39,7 +39,8 @@ SOURCES += \
     point3dparsers.cpp \
     point3dimportjob.cpp \
     point3dcanvas.cpp \
-    point3dwindow.cpp
+    point3dwindow.cpp \
+    trackpicker.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -74,7 +75,8 @@ HEADERS += \
     point3dparsers.h \
     point3dimportjob.h \
     point3dcanvas.h \
-    point3dwindow.h
+    point3dwindow.h \
+    trackpicker.h
 
 # Windows 用 Qt5Core 内置并导出的 zlib；其他平台链接系统 zlib
 unix: LIBS += -lz
