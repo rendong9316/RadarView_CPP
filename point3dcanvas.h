@@ -62,6 +62,7 @@ signals:
     void trackActivated(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void cameraChanged();
     void hoverChanged();
+    void statsChanged();          // 重绘后统计文字变化（供窗口状态栏刷新）
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -142,6 +143,7 @@ private:
 
     QVector<ProjectedPoint> m_projected;
     QVector<ProjectedTrack> m_tracks;
+    QString m_lastStatusText;
 };
 
 #endif // POINT3DCANVAS_H

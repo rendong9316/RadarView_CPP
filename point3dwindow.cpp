@@ -515,6 +515,7 @@ void Point3dWindow::buildUi()
     });
 
     connect(m_canvas, &Point3dCanvas::hoverChanged, this, &Point3dWindow::updateStatus);
+    connect(m_canvas, &Point3dCanvas::statsChanged, this, &Point3dWindow::updateStatus);
     connect(m_canvas, &Point3dCanvas::cameraChanged, this, &Point3dWindow::saveSettings);
     connect(m_canvas, &Point3dCanvas::trackFocusChanged,
             this, &Point3dWindow::trackFocusChanged);

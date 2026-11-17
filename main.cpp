@@ -2499,6 +2499,59 @@ int main(int argc, char *argv[])
         });
     }
 
+    // 点迹窗口端到端冒烟：--pointdemo <目录|文件> [--point-shot <png>]
+    // 走「主窗口新建窗口 → 后台导入 → 截图」的真实集成路径
+    const int pdIdx = args.indexOf(QStringLiteral("--pointdemo"));
+    if (pdIdx >= 0 && pdIdx + 1 < args.size()) {
+        const QString input = args.at(pdIdx + 1);
+        QString shot;
+        const int psIdx = args.indexOf(QStringLiteral("--point-shot"));
+        if (psIdx >= 0 && psIdx + 1 < args.size())
+            shot = args.at(psIdx + 1);
+        QTimer::singleShot(0, &w, [&w, input, shot]() {
+            w.showPoint3dWindow();
+            const QList<Point3dWindow *> wins = w.point3dWindows();
+            if (wins.isEmpty()) {
+                qWarning("pointdemo: 点迹窗口创建失败");
+                QCoreApplication::exit(2);
+                return;
+            }
+            Point3dWindow *win = wins.last();
+            QStringList files;
+            const QFileInfo fi(input);
+            if (fi.isDir()) {
+                const QDir dir(input);
+                files = dir.entryList(QStringList() << QStringLiteral("detPoint_*.mat"),
+                                      QDir::Files, QDir::Name);
+                for (QString &f : files)
+                    f = dir.filePath(f);
+            } else if (fi.isFile()) {
+                files << input;
+            }
+            win->loadDetectionFiles(files);
+            QTimer *poll = new QTimer(&w);
+            poll->setInterval(200);
+            QObject::connect(poll, &QTimer::timeout, &w, [&w, win, poll, shot]() {
+                if (win->isLoading())
+                    return;
+                poll->stop();
+                // 演示/回归：把全局时间轴拖到末端，看到完整历史累积
+                if (w.replay()->end() > w.replay()->start())
+                    w.replay()->seekTime(w.replay()->end());
+                qWarning("pointdemo: frames=%d current=%d visible=%d points0=%d",
+                         win->dataset()->frames.size(), win->currentFrame(),
+                         win->canvas()->visiblePointCount(),
+                         win->dataset()->frames.isEmpty()
+                             ? 0 : win->dataset()->frames.first().points.size());
+                win->canvas()->repaint();
+                if (!shot.isEmpty() && !win->grab().save(shot))
+                    qWarning("pointdemo: 截图保存失败");
+                QCoreApplication::exit(win->dataset()->frames.isEmpty() ? 3 : 0);
+            });
+            poll->start();
+        });
+    }
+
     if (app.arguments().contains(QStringLiteral("--selftest")))
         runSelfTest(&w);
     const int tt = args.indexOf(QStringLiteral("--tracktest"));

@@ -444,6 +444,13 @@ void Point3dCanvas::paintEvent(QPaintEvent *)
     drawHover(p);
     drawTitle(p, plot, zlo, zhi);
     drawColorBar(p, plot);
+
+    // 重绘后统计数字才准确：通知窗口刷新状态栏（避免滞后一帧）
+    const QString stats = statusText();
+    if (stats != m_lastStatusText) {
+        m_lastStatusText = stats;
+        emit statsChanged();
+    }
 }
 
 void Point3dCanvas::drawGridAndAxes(QPainter &p, const QRectF &plot, double zlo, double zhi)

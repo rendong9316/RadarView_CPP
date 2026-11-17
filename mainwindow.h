@@ -114,6 +114,7 @@ public:
     QDialog *showTrackPoints(int index);
     // 新建一个「点迹三维可视化」独立窗口（可多开）
     void showPoint3dWindow();
+    QList<Point3dWindow *> point3dWindows() const;   // 当前打开的点迹窗口（回归/演示用）
     AppStatusBar *appStatusBar() const { return m_statusBar; }
     SourceStrip *sourceStrip() const { return m_sourceStrip; }
     void setSourceStripOpen(bool open);   // 展开/收起状态栏上方的数据源条

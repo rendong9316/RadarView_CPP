@@ -69,7 +69,7 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 航迹点源下拉的语义：平滑=Radar 批次（smooth/output 点列）、关联=RadarRaw 批次（assc 点列）、预测=库中未存（不显示）、自动=全部。
 - 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
 - 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
-- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/全局时间轴/会话恢复）与 `--dbtest`（v2→v3 迁移）都必须 `RESULT OK`。
+- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/全局时间轴/会话恢复）与 `--dbtest`（v2→v3 迁移）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
 
 ### OpenGL 约束
 

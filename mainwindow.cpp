@@ -1353,6 +1353,15 @@ void MainWindow::showPoint3dWindow()
     win->activateWindow();
 }
 
+QList<Point3dWindow *> MainWindow::point3dWindows() const
+{
+    QList<Point3dWindow *> out;
+    for (const QPointer<Point3dWindow> &win : m_point3dWindows)
+        if (win)
+            out.append(win.data());
+    return out;
+}
+
 void MainWindow::savePoint3dSessions()
 {
     QJsonArray arr;
