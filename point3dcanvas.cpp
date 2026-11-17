@@ -416,7 +416,7 @@ QString Point3dCanvas::statusText() const
                                                  : QStringLiteral("-");
     return QStringLiteral("%1 | 帧 %2/%3 | frameID=%4 | 本帧点数=%5 | 窗口点数=%6 | 窗口航迹=%7")
         .arg(viewName(m_viewMode)).arg(cur + 1).arg(n).arg(fid)
-        .arg(f.points.size()).arg(m_lastVisibleCount).arg(m_lastVisibleFrames);
+        .arg(f.points.size()).arg(m_lastVisibleCount).arg(m_lastVisibleTracks);
 }
 
 void Point3dCanvas::paintEvent(QPaintEvent *)
@@ -632,7 +632,7 @@ void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
 void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
 {
     m_tracks.clear();
-    m_lastVisibleFrames = 0;
+    m_lastVisibleTracks = 0;
     if (!m_data || !m_showTracks || m_data->tracks.isEmpty())
         return;
 
@@ -655,14 +655,7 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
         const TrackOverlay &tr = m_data->tracks.at(ti);
         // 点源过滤：数据库里 Radar 批次存平滑/output 点列，RadarRaw 存关联点列；
         // 预测点列未入库，选「预测」时不显示。
-        bool include = true;
-        switch (m_trackSource) {
-        case Point3dTrackSource::Auto: break;
-        case Point3dTrackSource::Smooth: include = tr.source == TrackSource::Radar; break;
-        case Point3dTrackSource::Associated: include = tr.source == TrackSource::RadarRaw; break;
-        case Point3dTrackSource::Predicted: include = false; break;
-        }
-        if (!include)
+        if (!point3dTrackSourceAdmits(m_trackSource, tr.source))
             continue;
         ProjectedTrack out;
         out.track = ti;
@@ -692,7 +685,7 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
         out.head = last;
         out.t0 = t0;
         out.t1 = t1;
-        ++m_lastVisibleFrames;
+        ++m_lastVisibleTracks;
 
         const bool highlighted = m_highlightedBatch >= 0 && tr.batchNo == m_highlightedBatch;
         const bool dimmed = hasHighlighted && !highlighted;
@@ -768,6 +761,9 @@ void Point3dCanvas::drawHover(QPainter &p)
     }
     if (m_hoverPoint < 0 || m_hoverPoint >= m_projected.size() || !m_data)
         return;
+
+    // 画笔/画刷必须成对恢复：提示框用了不透明画刷，泄漏到后面的色标条会把渐变整个盖住
+    p.save();
     const ProjectedPoint &pp = m_projected.at(m_hoverPoint);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setPen(QPen(QColor(255, 255, 255, 220), 1.5));
@@ -805,6 +801,7 @@ void Point3dCanvas::drawHover(QPainter &p)
     p.setPen(QColor(232, 238, 248));
     for (int i = 0; i < lines.size(); ++i)
         p.drawText(QPointF(box.left() + pad, box.top() + pad + lineH * (i + 0.8)), lines.at(i));
+    p.restore();
 }
 
 void Point3dCanvas::drawColorBar(QPainter &p, const QRectF &plot)
@@ -817,11 +814,17 @@ void Point3dCanvas::drawColorBar(QPainter &p, const QRectF &plot)
     if (bar.right() > width() - 4)
         return;
 
+    // 色标条每次都完整重画：不受前面悬停提示等绘制残留画笔/画刷的影响
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
     QLinearGradient grad(bar.left(), bar.bottom(), bar.left(), bar.top());
     for (int i = 0; i < 256; ++i)
         grad.setColorAt(i / 255.0, turboColor(i / 255.0));
+    p.setPen(Qt::NoPen);
+    p.setBrush(Qt::NoBrush);
     p.fillRect(bar, grad);
     p.setPen(QPen(QColor(150, 160, 180, 180), 1.0));
+    p.setBrush(Qt::NoBrush);
     p.drawRect(bar);
 
     p.setFont(plotFont(ui::px(0.46)));
@@ -838,9 +841,11 @@ void Point3dCanvas::drawColorBar(QPainter &p, const QRectF &plot)
                    Qt::AlignLeft | Qt::AlignVCenter, QString::number(v, 'g', 3));
     }
     p.setFont(plotFont(ui::px(0.5), true));
-    p.drawText(QRectF(x - ui::sz(20), plot.top() - fm.height() - ui::sz(6),
-                      ui::sz(90), fm.height() + ui::sz(4)),
+    const double titleH = QFontMetricsF(p.font()).height();
+    p.drawText(QRectF(x - ui::sz(20), plot.top() - titleH - ui::sz(6),
+                      ui::sz(90), titleH + ui::sz(4)),
                Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("SNR / dB"));
+    p.restore();
 }
 
 void Point3dCanvas::drawTitle(QPainter &p, const QRectF &plot, double zlo, double zhi)

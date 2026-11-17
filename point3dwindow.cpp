@@ -228,13 +228,30 @@ void Point3dWindow::chooseTracksFromDb()
         m_trackKeys << s.icao + QStringLiteral("::") + trackSourceName(s.source)
                     + QStringLiteral("::") + s.fileName;
 
-    QJsonArray arr;
-    for (const QString &key : qAsConst(m_trackKeys))
-        arr.append(key);
-    app::setValue(QStringLiteral("point3d.selected_tracks"),
-                  QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
-
     reloadOverlaysFromKeys();
+
+    // 用户明确选中的航迹不能被「点源」过滤静默藏起来：当前过滤放不进来就自动切「自动」
+    if (!m_data.tracks.isEmpty()) {
+        bool admitted = false;
+        for (const TrackOverlay &ov : qAsConst(m_data.tracks))
+            if (point3dTrackSourceAdmits(m_canvas->trackSource(), ov.source)) {
+                admitted = true;
+                break;
+            }
+        if (!admitted) {
+            const int autoIdx = m_sourceCombo->findData(int(Point3dTrackSource::Auto));
+            if (autoIdx >= 0)
+                m_sourceCombo->setCurrentIndex(autoIdx);
+        }
+    } else if (!sel.isEmpty() && !app::testMode()) {
+        // 选了航迹却一条也叠加不上：多半是时间窗不重叠或旧数据没有测量坐标
+        QMessageBox::information(
+            this, QStringLiteral("选择航迹"),
+            QStringLiteral("所选 %1 条航迹都无法叠加到本窗口：\n"
+                           "· 点迹与航迹时间窗不重叠，或\n"
+                           "· 该航迹是升级前导入的，缺少测量坐标（prange/pvr/paz）。\n\n"
+                           "请检查时间范围，或在地球侧重导该雷达 MAT。").arg(sel.size()));
+    }
     updateStatus();
 }
 
@@ -568,8 +585,8 @@ void Point3dWindow::buildUi()
     m_canvas->setShowDetections(m_pointBtn->isChecked());
     m_canvas->setShowTracks(m_trackBtn->isChecked());
     m_canvas->setShowLabels(m_labelBtn->isChecked());
-    const QString src = setting("point3d.track_source", QStringLiteral("associated")).toString();
-    Point3dTrackSource trackSource = Point3dTrackSource::Associated;
+    const QString src = setting("point3d.track_source", QStringLiteral("auto")).toString();
+    Point3dTrackSource trackSource = Point3dTrackSource::Auto;
     if (src == QLatin1String("auto"))
         trackSource = Point3dTrackSource::Auto;
     else if (src == QLatin1String("smooth"))
@@ -603,11 +620,8 @@ void Point3dWindow::buildUi()
     m_windowCombo->setCurrentIndex(presetIdx);
     m_canvas->setWindowLength(len);
 
-    // 恢复上次从数据库选择的航迹 key（数据导入后重新映射 Z 值）
-    const QString keysJson = setting("point3d.selected_tracks", QString()).toString();
-    for (const QJsonValue &v : QJsonDocument::fromJson(keysJson.toUtf8()).array())
-        m_trackKeys << v.toString();
-
+    // 航迹选择属于单个窗口：只随窗口会话（point3d.windows）保存，不写全局默认，
+    // 否则新开的窗口会莫名继承别的窗口选过的航迹。
     m_restoring = false;
     updateStatus();
 }

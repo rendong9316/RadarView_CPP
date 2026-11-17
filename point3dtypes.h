@@ -110,4 +110,17 @@ inline int point3dBatchNo(const Track &t)
     return point3dBatchNoFromId(t.id);
 }
 
+// 点源过滤语义（画布绘制与窗口提示共用，避免两处判断不一致）：
+// 数据库里 Radar 批次存平滑点列、RadarRaw 批次存关联点列，预测点列未入库。
+inline bool point3dTrackSourceAdmits(Point3dTrackSource filter, TrackSource source)
+{
+    switch (filter) {
+    case Point3dTrackSource::Smooth: return source == TrackSource::Radar;
+    case Point3dTrackSource::Associated: return source == TrackSource::RadarRaw;
+    case Point3dTrackSource::Predicted: return false;
+    case Point3dTrackSource::Auto: break;
+    }
+    return true;
+}
+
 #endif // POINT3DTYPES_H

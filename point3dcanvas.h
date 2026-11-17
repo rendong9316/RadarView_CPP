@@ -55,6 +55,8 @@ public:
 
     int visiblePointCount() const { return m_lastVisibleCount; }
     int visibleFrameCount() const;
+    int visibleTrackCount() const { return m_lastVisibleTracks; }   // 已绘制（点源过滤后）的叠加航迹数
+    QRectF plotRect() const;                  // 三维绘图区（色标条按它定位）
     QString statusText() const;               // 顶部统计文字
 
 signals:
@@ -105,7 +107,6 @@ private:
 
     void rebuildLimits();
     void updateBasis(const QRectF &plot);
-    QRectF plotRect() const;
     void zRange(double *lo, double *hi) const;
     double normalizedX(double x) const;
     double normalizedY(double y) const;
@@ -123,7 +124,7 @@ private:
     int m_current = 0;
     int m_windowLength = 0;           // 0 = 全部
     Point3dViewMode m_viewMode = Point3dViewMode::RVF;
-    Point3dTrackSource m_trackSource = Point3dTrackSource::Associated;
+    Point3dTrackSource m_trackSource = Point3dTrackSource::Auto;
     bool m_showDetections = true;
     bool m_showTracks = true;
     bool m_showLabels = true;
@@ -139,7 +140,7 @@ private:
     int m_hoverPoint = -1;            // m_projected 下标
     int m_hoverTrack = -1;            // m_tracks 下标
     int m_lastVisibleCount = 0;
-    int m_lastVisibleFrames = 0;
+    int m_lastVisibleTracks = 0;
 
     QVector<ProjectedPoint> m_projected;
     QVector<ProjectedTrack> m_tracks;

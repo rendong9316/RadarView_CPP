@@ -231,6 +231,24 @@ int runPointTest(const QString &input, const QString &trackFile)
     check(formatBeijingTime(1765360786000LL) == QStringLiteral("2025 12 10 17:59:46"),
           QStringLiteral("Unix 毫秒 -> 北京时间固定样本"));
 
+    // ---- 全局时钟：显示集合变化（地图单独显示/筛选）不得把当前时刻重置到起点 ----
+    {
+        ReplayController r;
+        r.setRange(1000, 5000);
+        r.seekTime(3000);
+        r.setRange(500, 6000);
+        check(r.current() == 3000, QStringLiteral("回放范围变化后保留当前时刻（%1）").arg(r.current()));
+        r.setRange(500, 6000);
+        check(r.current() == 3000, QStringLiteral("回放范围不变时当前时刻不动"));
+        r.setRange(4000, 9000);
+        check(r.current() == 4000, QStringLiteral("当前时刻超出新范围时夹到起点（%1）").arg(r.current()));
+        r.play();
+        const bool playingBefore = r.isPlaying();
+        r.setRange(3000, 9500);
+        check(playingBefore && r.isPlaying() && r.current() == 4000,
+              QStringLiteral("范围变化不打断回放、不跳时间"));
+    }
+
     // ---- 连续性评分 ----
     clock.restart();
     ContinuityConfig cfg;
@@ -308,6 +326,58 @@ int runPointTest(const QString &input, const QString &trackFile)
         check(!shot.isNull() && shot.width() == 1200 && shot.height() == 800,
               QStringLiteral("画布抓图非空且尺寸正确"));
         check(!canvas.inherits("QOpenGLWidget"), QStringLiteral("画布不使用 OpenGL"));
+
+        // 叠加航迹：默认点源必须能看得到（回归：默认「关联」把 Radar 批次全过滤掉，叠加静默不显示）
+        if (!data.tracks.isEmpty()) {
+            canvas.grab();
+            check(canvas.visibleTrackCount() > 0,
+                  QStringLiteral("默认点源=自动时叠加航迹可见（%1 条 / 共 %2 条）")
+                      .arg(canvas.visibleTrackCount()).arg(data.tracks.size()));
+            canvas.setTrackSource(Point3dTrackSource::Associated);
+            canvas.grab();
+            check(canvas.visibleTrackCount() == 0,
+                  QStringLiteral("点源=关联 不显示 Radar 批次航迹（实际 %1）")
+                      .arg(canvas.visibleTrackCount()));
+            canvas.setTrackSource(Point3dTrackSource::Smooth);
+            canvas.grab();
+            check(canvas.visibleTrackCount() > 0, QStringLiteral("点源=平滑 显示 Radar 批次航迹"));
+            canvas.setTrackSource(Point3dTrackSource::Auto);
+            canvas.grab();
+        }
+
+        // 色标条：悬停到点迹上时必须始终显示（回归：提示框画刷泄漏，把色标渐变整块盖成深色）
+        {
+            bool hovered = false;
+            QObject::connect(&canvas, &Point3dCanvas::hoverChanged, &canvas,
+                             [&hovered]() { hovered = true; });
+            const QRectF plot = canvas.plotRect();
+            for (int y = int(plot.top()) + 8; y < int(plot.bottom()) - 8 && !hovered; y += 16) {
+                for (int x = int(plot.left()) + 8; x < int(plot.right()) - 8 && !hovered; x += 16) {
+                    QMouseEvent ev(QEvent::MouseMove, QPointF(x, y),
+                                   Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                    QApplication::sendEvent(&canvas, &ev);
+                }
+            }
+            check(hovered, QStringLiteral("鼠标悬停命中点迹（弹出提示框）"));
+            const QImage img = canvas.grab().toImage();
+            const int barX0 = int(plot.right()) + ui::sz(20) + 2;
+            const int barX1 = barX0 + ui::sz(14) - 4;
+            int colorful = 0;
+            for (int y = int(plot.top()) + 4; y < int(plot.bottom()) - 4; y += 3)
+                for (int x = barX0; x <= barX1; ++x) {
+                    const QColor c = img.pixelColor(x, y);
+                    const int hi = qMax(c.red(), qMax(c.green(), c.blue()));
+                    const int lo = qMin(c.red(), qMin(c.green(), c.blue()));
+                    if (hi - lo > 40)
+                        ++colorful;
+                }
+            check(colorful > 100,
+                  QStringLiteral("悬停时色标条仍然显示（彩色像素 %1）").arg(colorful));
+            canvas.grab().save(QCoreApplication::applicationDirPath()
+                               + QStringLiteral("/pointtest_hover.png"));
+            QEvent leave(QEvent::Leave);
+            QApplication::sendEvent(&canvas, &leave);
+        }
 
         bool viewOk = true;
         const char *const modeNames[] = { "rvf", "raf", "vaf" };
@@ -406,6 +476,14 @@ int runPointTest(const QString &input, const QString &trackFile)
             replay.seekTime(wb->dataset()->frames.at(1).timeMs);
             check(wb->currentFrame() == 1,
                   QStringLiteral("窗口 B 跟随全局时间轴（帧 %1）").arg(wb->currentFrame()));
+        }
+        // 模拟地图「单独显示另一条航迹」：显示集合变化让回放范围收窄，当前时刻不该被打回起点
+        {
+            const qint64 before = replay.current();
+            const int frameA = wa->currentFrame();
+            replay.setRange(replay.start() + 1, replay.end());
+            check(replay.current() == before && wa->currentFrame() == frameA,
+                  QStringLiteral("显示集合变化不重置点迹窗口帧（帧 %1）").arg(wa->currentFrame()));
         }
         check(wa->currentTimeMs() == replay.current(),
               QStringLiteral("各窗口读取同一全局时刻"));
@@ -601,6 +679,29 @@ int runDbMigrationTest()
         check(loadedNew.size() == 1 && !loadedNew.first().points.isEmpty()
                   && std::isfinite(loadedNew.first().points.first().prange),
               QStringLiteral("新格式航迹可读出测量坐标"));
+
+        // 真实链路：库里的航迹 → 点云叠加（按时间映射到点迹帧的 Z 值）
+        {
+            QVector<DetPointFrame> frames;
+            for (int i = 0; i < 3; ++i) {
+                DetPointFrame f;
+                f.timeMs = 1765360182000LL + i * 10000;
+                f.frameId = 100 + i;
+                f.zValue = 100 + i;
+                frames.append(f);
+            }
+            TrackOverlay ov;
+            const bool ok = !loadedNew.isEmpty()
+                    && overlayFromTrack(loadedNew.first(), frames, &ov);
+            check(ok && ov.points.size() == 2 && ov.batchNo == 2,
+                  QStringLiteral("数据库航迹转换为点云叠加（%1 点 / 批 %2）")
+                      .arg(ov.points.size()).arg(ov.batchNo));
+            if (ok && ov.points.size() == 2)
+                check(qFuzzyCompare(ov.points.at(1).prange, 1100.0f)
+                          && ov.points.at(1).zValue == 101.0,
+                      QStringLiteral("叠加点带测量坐标与帧 Z 值（z=%1）")
+                          .arg(ov.points.at(1).zValue));
+        }
     }
     trackdb::close();
 

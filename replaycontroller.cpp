@@ -16,13 +16,22 @@ ReplayController::ReplayController(QObject *parent)
         m_speed = saved;
 }
 
+// 回放范围变化时**不轻易重置当前时刻**：地图显示集合变化（单独显示某条航迹、筛选、增删数据）
+// 都会重算范围，若每次都跳回起点，点迹窗口会跟着跳到第一帧，看起来像"点迹全没了"。
+// 规则：范围没变则什么都不做；范围变了但当前时刻仍在新范围内则原地保留，否则夹回起点。
 void ReplayController::setRange(qint64 startMs, qint64 endMs)
 {
-    setPlaying(false);
+    const qint64 newEnd = qMax(startMs, endMs);
+    if (startMs == m_start && newEnd == m_end && m_current >= m_start && m_current <= m_end)
+        return;
+    const bool keepCurrent = m_end > m_start && m_current >= startMs && m_current <= newEnd;
     m_start = startMs;
-    m_end = qMax(startMs, endMs);
-    m_current = m_start;
-    m_active = false;
+    m_end = newEnd;
+    m_current = keepCurrent ? m_current : m_start;
+    if (!keepCurrent) {
+        setPlaying(false);
+        m_active = false;
+    }
     emit stateChanged();
     emit timeChanged(m_current);
 }
