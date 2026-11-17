@@ -143,6 +143,7 @@ private:
     double normalizedZ(double z, double zlo, double zhi) const;
     QPointF project(double nx, double ny, double nz, double *depth = nullptr) const;
     void drawGridAndAxes(QPainter &p, const QRectF &plot, double zlo, double zhi);
+    void drawAxisTicks(QPainter &p, double zlo, double zhi);
     void drawDetections(QPainter &p, double zlo, double zhi);
     void drawTracks(QPainter &p, double zlo, double zhi);
     void drawHover(QPainter &p);

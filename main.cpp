@@ -394,12 +394,14 @@ int runPointTest(const QString &input, const QString &trackFile)
                   QStringLiteral("清空隔离后恢复显示全部叠加航迹（%1 条）")
                       .arg(canvas.visibleTrackCount()));
 
-            // 本窗口显示设置：点迹尺寸 / 标签大小
+            // 本窗口显示设置：点迹尺寸 / 标签大小（坐标轴刻度数字跟随标签大小）
             canvas.setPointScale(2.0);
-            canvas.setLabelScale(1.5);
-            check(qFuzzyCompare(canvas.pointScale(), 2.0) && qFuzzyCompare(canvas.labelScale(), 1.5),
+            canvas.setLabelScale(2.0);
+            check(qFuzzyCompare(canvas.pointScale(), 2.0) && qFuzzyCompare(canvas.labelScale(), 2.0),
                   QStringLiteral("点迹尺寸/标签大小可调（%1 / %2）")
                       .arg(canvas.pointScale()).arg(canvas.labelScale()));
+            canvas.grab().save(QCoreApplication::applicationDirPath()
+                               + QStringLiteral("/pointtest_label_scale.png"));
             canvas.setPointScale(1.0);
             canvas.setLabelScale(1.0);
             canvas.setTrackSource(Point3dTrackSource::Auto);

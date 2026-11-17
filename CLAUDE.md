@@ -89,6 +89,7 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 画布绘制必须成对 `save()/restore()`：悬停提示框用了不透明画刷，泄漏到后面的 `drawColorBar()` 会把色标渐变整块盖掉（表现为"鼠标一悬停到点迹上，右侧色标条就消失"）。色标条任何状态下都要完整重画。
 - 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
 - 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
+- **坐标轴刻度**：数字字号跟随「标签大小」（`m_labelScale`）；刻度数量按"轴在屏幕上的实际长度 ÷ 文字占位"自适应（3–16 个：放大时更密，字号调大时自动变稀，不重叠）；刻度与轴标题由 `drawAxisTicks()` 在**数据之后**绘制——放在 `drawGridAndAxes()` 里会被密集点云盖住。
 - 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/区域筛选/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
 
 ### 主窗口数据源条（SourceStrip）

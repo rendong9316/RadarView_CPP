@@ -562,6 +562,7 @@ void Point3dCanvas::paintEvent(QPaintEvent *)
     drawDetections(p, zlo, zhi);
     drawTracks(p, zlo, zhi);
     drawRegionBox(p, zlo, zhi);
+    drawAxisTicks(p, zlo, zhi);       // 刻度/轴标题最后画，避免被密集点云盖住
     drawHover(p);
     drawTitle(p, plot, zlo, zhi);
     drawColorBar(p, plot);
@@ -576,17 +577,9 @@ void Point3dCanvas::paintEvent(QPaintEvent *)
 
 void Point3dCanvas::drawGridAndAxes(QPainter &p, const QRectF &plot, double zlo, double zhi)
 {
+    Q_UNUSED(plot);
     Q_UNUSED(zlo);
     Q_UNUSED(zhi);
-    const Limits &dataLim = m_limits[int(m_viewMode)];
-    // 区域筛选应用后刻度按框的区间生成（与放大后的视图一致）
-    Limits lim = dataLim;
-    if (m_region.valid) {
-        lim.xmin = m_region.x0;
-        lim.xmax = m_region.x1;
-        lim.ymin = m_region.y0;
-        lim.ymax = m_region.y1;
-    }
 
     auto P = [this](double nx, double ny, double nz, double *depth = nullptr) {
         return project(nx, ny, nz, depth);
@@ -624,54 +617,87 @@ void Point3dCanvas::drawGridAndAxes(QPainter &p, const QRectF &plot, double zlo,
         p.drawLine(P(C[e[0]][0], C[e[0]][1], C[e[0]][2]),
                    P(C[e[1]][0], C[e[1]][1], C[e[1]][2]));
 
-    // 刻度与轴标题
-    p.setFont(plotFont(ui::px(0.46)));
+    Q_UNUSED(plot);
+}
+
+// 坐标轴刻度与轴标题：放在数据之后画，避免密集点云把刻度数字盖住。
+// 数字大小跟随「标签大小」；刻度密度按轴在屏幕上的实际长度自适应（放大时更密，且不重叠）。
+void Point3dCanvas::drawAxisTicks(QPainter &p, double zlo, double zhi)
+{
+    auto P = [this](double nx, double ny, double nz) {
+        return project(nx, ny, nz);
+    };
+
+    Limits lim = m_limits[int(m_viewMode)];
+    if (m_region.valid) {
+        lim.xmin = m_region.x0;
+        lim.xmax = m_region.x1;
+        lim.ymin = m_region.y0;
+        lim.ymax = m_region.y1;
+    }
+
+    p.setFont(plotFont(ui::px(0.46 * m_labelScale)));
     const QColor tickColor(214, 224, 240, 210);
     const QColor titleColor(230, 236, 246, 230);
-    const int fontH = QFontMetricsF(p.font()).height();
+    const QFontMetricsF fm(p.font());
+    const double fontH = fm.height();
 
-    const double xStep = niceStep(lim.xmax - lim.xmin, 5);
-    const double yStep = niceStep(lim.ymax - lim.ymin, 5);
+    const double xSpan = lim.xmax - lim.xmin;
+    const double ySpan = lim.ymax - lim.ymin;
+    const double zSpan = zhi - zlo;
+    auto labelWidth = [&fm](double lo, double hi) {
+        return qMax(fm.width(QString::number(lo, 'g', 6)),
+                    fm.width(QString::number(hi, 'g', 6)));
+    };
+    const double xLabelW = labelWidth(lim.xmin, lim.xmax) + ui::sz(14);
+    const double yLabelW = labelWidth(lim.ymin, lim.ymax) + ui::sz(12);
+    const double zLabelW = labelWidth(zlo, zhi) + ui::sz(12);
+
+    const double xLen = QLineF(P(0, -1, -1), P(1, -1, -1)).length();
+    const double yLen = QLineF(P(-1, 0, -1), P(-1, 1, -1)).length();
+    const double zLen = QLineF(P(-1, -1, 0), P(-1, -1, 1)).length();
+    const int xCount = qBound(3, int(xLen / qMax(1.0, xLabelW)) + 1, 16);
+    const int yCount = qBound(3, int(yLen / qMax(1.0, fontH * 1.8)) + 1, 16);
+    const int zCount = qBound(3, int(zLen / qMax(1.0, fontH * 1.8)) + 1, 16);
+
+    const double xStep = niceStep(xSpan, xCount);
+    const double yStep = niceStep(ySpan, yCount);
     for (double v = lim.xmin; v <= lim.xmax + 1e-9; v += xStep) {
-        const double nx = normalizedX(v);
-        const QPointF pos = P(nx, -1, -1);
+        const QPointF pos = P(normalizedX(v), -1, -1);
         p.setPen(tickColor);
         p.drawLine(pos, pos + QPointF(0, ui::sz(4)));
-        p.drawText(QRectF(pos.x() - 30, pos.y() + ui::sz(6), 60, fontH),
+        p.drawText(QRectF(pos.x() - xLabelW / 2.0, pos.y() + ui::sz(6), xLabelW, fontH),
                    Qt::AlignHCenter | Qt::AlignTop, tickText(v, xStep));
     }
     for (double v = lim.ymin; v <= lim.ymax + 1e-9; v += yStep) {
-        const double ny = normalizedY(v);
-        const QPointF pos = P(-1, ny, -1);
+        const QPointF pos = P(-1, normalizedY(v), -1);
         p.setPen(tickColor);
         p.drawLine(pos, pos + QPointF(-ui::sz(4), 0));
-        p.drawText(QRectF(pos.x() - 70, pos.y() - fontH / 2.0, 62, fontH),
+        p.drawText(QRectF(pos.x() - yLabelW - ui::sz(8), pos.y() - fontH / 2.0, yLabelW, fontH),
                    Qt::AlignRight | Qt::AlignVCenter, tickText(v, yStep));
     }
-    // Z 轴（帧号）刻度
-    const double zStep = niceStep(zhi - zlo, 5);
+    const double zStep = niceStep(zSpan, zCount);
     for (double v = zlo; v <= zhi + 1e-9; v += zStep) {
-        const double nz = normalizedZ(v, zlo, zhi);
-        const QPointF pos = P(-1, -1, nz);
+        const QPointF pos = P(-1, -1, normalizedZ(v, zlo, zhi));
         p.setPen(tickColor);
         p.drawLine(pos, pos + QPointF(-ui::sz(4), 0));
-        p.drawText(QRectF(pos.x() - 70, pos.y() - fontH / 2.0, 62, fontH),
+        p.drawText(QRectF(pos.x() - zLabelW - ui::sz(8), pos.y() - fontH / 2.0, zLabelW, fontH),
                    Qt::AlignRight | Qt::AlignVCenter, tickText(v, zStep));
     }
 
     p.setFont(plotFont(ui::px(0.52), true));
+    const double titleH = QFontMetricsF(p.font()).height();
     p.setPen(titleColor);
     const QPointF xMid = P(0, -1, -1);
-    p.drawText(QRectF(xMid.x() - 140, xMid.y() + ui::sz(8) + fontH, 280, fontH * 1.2),
+    p.drawText(QRectF(xMid.x() - 140, xMid.y() + ui::sz(8) + fontH, 280, titleH * 1.2),
                Qt::AlignHCenter | Qt::AlignTop, viewAxisTitle(m_viewMode, true));
     const QPointF yMid = P(-1, 0, -1);
-    p.drawText(QRectF(yMid.x() - 220, yMid.y() - fontH / 2.0, 200, fontH),
+    p.drawText(QRectF(yMid.x() - 220, yMid.y() - titleH / 2.0, 200, titleH),
                Qt::AlignRight | Qt::AlignVCenter, viewAxisTitle(m_viewMode, false));
     const QPointF zTop = P(-1, -1, 1);
-    const double zTitleY = qMax<double>(ui::sz(3), zTop.y() - fontH * 1.8);
-    p.drawText(QRectF(zTop.x() - 120, zTitleY, 240, fontH * 1.4),
+    const double zTitleY = qMax<double>(ui::sz(3), zTop.y() - titleH * 1.8);
+    p.drawText(QRectF(zTop.x() - 120, zTitleY, 240, titleH * 1.4),
                Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("帧号"));
-    Q_UNUSED(plot);
 }
 
 void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
