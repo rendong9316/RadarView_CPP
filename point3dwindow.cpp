@@ -230,11 +230,11 @@ void Point3dWindow::chooseTracksFromDb()
 
     reloadOverlaysFromKeys();
 
-    // 用户明确选中的航迹不能被「点源」过滤静默藏起来：当前过滤放不进来就自动切「自动」
+    // 用户明确选中的航迹不能被「点源」过滤静默藏起来：当前模式取不到点列就自动切「自动」
     if (!m_data.tracks.isEmpty()) {
         bool admitted = false;
         for (const TrackOverlay &ov : qAsConst(m_data.tracks))
-            if (point3dTrackSourceAdmits(m_canvas->trackSource(), ov.source)) {
+            if (point3dOverlayHasColumn(ov, m_canvas->trackSource())) {
                 admitted = true;
                 break;
             }
@@ -408,7 +408,8 @@ void Point3dWindow::buildUi()
     m_sourceCombo->addItem(QStringLiteral("关联"), int(Point3dTrackSource::Associated));
     m_sourceCombo->addItem(QStringLiteral("预测"), int(Point3dTrackSource::Predicted));
     m_sourceCombo->setToolTip(QStringLiteral(
-        "数据库航迹来源：自动=全部；平滑=Radar 批次；关联=RadarRaw 批次；\n"
+        "航迹点列：自动=有平滑看平滑、没有就用关联；\n"
+        "平滑=航迹的平滑/输出点列；关联=同一 MAT 的关联点列（asscPointList）；\n"
         "预测点列未入库，选择「预测」时不显示航迹"));
     bar->addWidget(m_sourceCombo);
 

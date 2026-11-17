@@ -23,7 +23,8 @@ TrackPicker::TrackPicker(QWidget *parent) : QDialog(parent)
 
     QLabel *tip = new QLabel(QStringLiteral(
         "航迹来自主窗口已导入的数据库数据。勾选后叠加到点云视图，并与地图双向高亮。\n"
-        "灰色条目的原始 MAT 未保存测量坐标（升级前导入），请在地球侧重新导入该 MAT。"), this);
+        "雷达航迹同时带「平滑」「关联」两套点列（点源下拉切换）；点数列显示“平滑 + 关联”。\n"
+        "灰色条目没有测量坐标（升级前导入），请在地球侧重新导入该 MAT。"), this);
     tip->setWordWrap(true);
     root->addWidget(tip);
 
@@ -32,9 +33,10 @@ TrackPicker::TrackPicker(QWidget *parent) : QDialog(parent)
     root->addWidget(m_filter);
 
     m_tree = new QTreeWidget(this);
-    m_tree->setHeaderLabels(QStringList() << QStringLiteral("航迹 / 批次") << QStringLiteral("点数")
+    m_tree->setHeaderLabels(QStringList() << QStringLiteral("航迹 / 批次")
+                                          << QStringLiteral("点数（平滑+关联）")
                                           << QStringLiteral("时间范围"));
-    m_tree->setColumnWidth(0, 420);
+    m_tree->setColumnWidth(0, 400);
     m_tree->setColumnWidth(1, 70);
     m_tree->setRootIsDecorated(true);
     m_tree->setAlternatingRowColors(true);
@@ -110,16 +112,32 @@ void TrackPicker::reload()
         QTreeWidgetItem *child = new QTreeWidgetItem(batchItem);
         child->setText(0, QStringLiteral("%1   %2")
                               .arg(s.icao, s.flightNo.isEmpty() ? QStringLiteral("-") : s.flightNo));
-        child->setText(1, QString::number(s.pointCount));
+        QString pts = QString::number(s.pointCount);
+        if (s.hasRaw)
+            pts += QStringLiteral(" + %1").arg(s.rawCount);
+        child->setText(1, pts);
         child->setText(2, QStringLiteral("%1 ~ %2")
                               .arg(formatBeijingTime(s.minMs), formatBeijingTime(s.maxMs)));
         child->setData(0, Qt::UserRole, i);
-        if (s.hasMeasure) {
+
+        const bool usable = s.hasMeasure || s.hasRaw;
+        QString rowTip;
+        if (s.hasMeasure && s.hasRaw)
+            rowTip = QStringLiteral("平滑、关联两种点源都可叠加（点源下拉切换）");
+        else if (s.hasMeasure)
+            rowTip = QStringLiteral("只有平滑点列：该 MAT 的关联点列未入库（重新导入该 MAT 可补上）");
+        else if (s.hasRaw)
+            rowTip = QStringLiteral("只有关联点列");
+        else
+            rowTip = QStringLiteral("缺少测量坐标（prange/pvr/paz），请在地球侧重新导入该 MAT");
+        child->setToolTip(0, rowTip);
+        child->setToolTip(1, rowTip);
+        child->setToolTip(2, rowTip);
+        if (usable) {
             child->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
             child->setCheckState(0, Qt::Unchecked);
         } else {
             child->setFlags(Qt::ItemIsEnabled);
-            child->setToolTip(0, QStringLiteral("缺少测量坐标（prange/pvr/paz），请在地球侧重新导入该 MAT"));
             child->setForeground(0, QColor(140, 146, 158));
             child->setForeground(1, QColor(140, 146, 158));
             child->setForeground(2, QColor(140, 146, 158));

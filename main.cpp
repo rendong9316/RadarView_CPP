@@ -298,18 +298,22 @@ int runPointTest(const QString &input, const QString &trackFile)
                     }
             check(anyMeasure, QStringLiteral("航迹点带测量坐标（prange/pvr/paz）"));
 
-            int overlayTracks = 0, overlayPoints = 0;
+            int overlayTracks = 0, overlayPoints = 0, overlayRaw = 0;
             for (const Track &t : qAsConst(tracks)) {
                 TrackOverlay ov;
                 if (overlayFromTrack(t, data.frames, &ov)) {
                     ++overlayTracks;
                     overlayPoints += ov.points.size();
+                    overlayRaw += ov.rawPoints.size();
                     data.tracks.append(ov);      // 供画布自检绘制叠加航迹
                 }
             }
-            out << "overlay tracks=" << overlayTracks << " points=" << overlayPoints << "\n";
+            out << "overlay tracks=" << overlayTracks << " points=" << overlayPoints
+                << " raw=" << overlayRaw << "\n";
             check(overlayTracks > 0 && overlayPoints > 0,
                   QStringLiteral("航迹可转换为点云叠加数据"));
+            check(overlayRaw > 0,
+                  QStringLiteral("同一 MAT 的关联点列（assc）也可叠加（%1 点）").arg(overlayRaw));
         }
     }
 
@@ -327,20 +331,27 @@ int runPointTest(const QString &input, const QString &trackFile)
               QStringLiteral("画布抓图非空且尺寸正确"));
         check(!canvas.inherits("QOpenGLWidget"), QStringLiteral("画布不使用 OpenGL"));
 
-        // 叠加航迹：默认点源必须能看得到（回归：默认「关联」把 Radar 批次全过滤掉，叠加静默不显示）
+        // 叠加航迹：默认点源必须能看得到，且平滑 / 关联两种点列都能切换
         if (!data.tracks.isEmpty()) {
             canvas.grab();
             check(canvas.visibleTrackCount() > 0,
                   QStringLiteral("默认点源=自动时叠加航迹可见（%1 条 / 共 %2 条）")
                       .arg(canvas.visibleTrackCount()).arg(data.tracks.size()));
-            canvas.setTrackSource(Point3dTrackSource::Associated);
-            canvas.grab();
-            check(canvas.visibleTrackCount() == 0,
-                  QStringLiteral("点源=关联 不显示 Radar 批次航迹（实际 %1）")
-                      .arg(canvas.visibleTrackCount()));
             canvas.setTrackSource(Point3dTrackSource::Smooth);
             canvas.grab();
-            check(canvas.visibleTrackCount() > 0, QStringLiteral("点源=平滑 显示 Radar 批次航迹"));
+            const int smoothTracks = canvas.visibleTrackCount();
+            check(smoothTracks > 0,
+                  QStringLiteral("点源=平滑 显示平滑点列（%1 条）").arg(smoothTracks));
+            canvas.setTrackSource(Point3dTrackSource::Associated);
+            canvas.grab();
+            const int assocTracks = canvas.visibleTrackCount();
+            check(assocTracks > 0,
+                  QStringLiteral("点源=关联 显示关联点列（%1 条）").arg(assocTracks));
+            check(assocTracks <= data.tracks.size(),
+                  QStringLiteral("关联点列条数不超过叠加航迹总数（%1 ≤ %2）")
+                      .arg(assocTracks).arg(data.tracks.size()));
+            canvas.grab().save(QCoreApplication::applicationDirPath()
+                               + QStringLiteral("/pointtest_assoc.png"));
             canvas.setTrackSource(Point3dTrackSource::Auto);
             canvas.grab();
         }
@@ -630,13 +641,20 @@ int runDbMigrationTest()
         QSqlDatabase db = QSqlDatabase::database(QStringLiteral("radarview_main"), false);
         QSqlQuery q(db);
         if (q.exec(QStringLiteral("PRAGMA user_version")) && q.next())
-            check(q.value(0).toInt() == 3, QStringLiteral("user_version = 3"));
+            check(q.value(0).toInt() == 4, QStringLiteral("user_version = 4"));
         else
             check(false, QStringLiteral("读取 user_version"));
         if (q.exec(QStringLiteral("SELECT length(points) FROM saved_tracks")) && q.next())
             check(q.value(0).toInt() == 2 * 52, QStringLiteral("点格式已重编码为 52 字节/点"));
         else
             check(false, QStringLiteral("读取点 BLOB 长度"));
+        if (q.exec(QStringLiteral("SELECT COUNT(*) FROM saved_tracks"
+                                  " WHERE (has_raw IS NULL OR has_raw = 0) AND raw_points IS NULL"))
+                && q.next())
+            check(q.value(0).toInt() == 1,
+                  QStringLiteral("v4 迁移给旧航迹加空关联点列（has_raw=0）"));
+        else
+            check(false, QStringLiteral("检查 raw_points 列"));
 
         // 再插入一条新格式航迹（带测量坐标），验证选择器能区分新旧数据
         {
@@ -663,22 +681,52 @@ int runDbMigrationTest()
             QSqlQuery ins(db);
             ins.prepare(QStringLiteral(
                 "INSERT OR REPLACE INTO saved_tracks (icao_address, batch_id, source, min_timestamp,"
-                " max_timestamp, min_ms, max_ms, point_count, has_measure, deleted, points)"
-                " VALUES ('RADAR-0002', 1, 'Radar', '', '', 1765360182000, 1765360192000, 2, 1, 0, ?)"));
+                " max_timestamp, min_ms, max_ms, point_count, has_measure,"
+                " raw_point_count, has_raw, deleted, points, raw_points)"
+                " VALUES ('RADAR-0002', 1, 'Radar', '', '', 1765360182000, 1765360192000, 2, 1, 3, 1, 0, ?, ?)"));
             ins.addBindValue(blob);
-            check(ins.exec(), QStringLiteral("写入带测量坐标的新格式航迹"));
+            // 关联点列（同一 MAT 的 asscPointList）：3 个点，时间落在上面 2 个平滑点之间
+            QByteArray rawBlob(3 * 52, 0);
+            char *rp = rawBlob.data();
+            const qint64 rawTimes[3] = { 1765360183000LL, 1765360190000LL, 1765360191500LL };
+            for (int i = 0; i < 3; ++i) {
+                qToLittleEndian<qint64>(rawTimes[i], rp);
+                double lat = 31.5 + i * 0.1, lon = 111.5 + i * 0.1;
+                quint64 u;
+                std::memcpy(&u, &lat, 8);
+                qToLittleEndian<quint64>(u, rp + 8);
+                std::memcpy(&u, &lon, 8);
+                qToLittleEndian<quint64>(u, rp + 16);
+                const float fs[7] = { 1000.0f, 90.0f, 200.0f, 0.0f,
+                                      2000.0f + i * 10.0f, 8.0f, 91.0f };
+                for (int k = 0; k < 7; ++k) {
+                    quint32 v;
+                    std::memcpy(&v, &fs[k], 4);
+                    qToLittleEndian<quint32>(v, rp + 24 + 4 * k);
+                }
+                rp += 52;
+            }
+            ins.addBindValue(rawBlob);
+            check(ins.exec(), QStringLiteral("写入带测量坐标与关联点列的新格式航迹"));
         }
         const QVector<DbTrackSummary> sums2 = trackdb::trackSummaries(QString(), &err);
-        int withMeasure = 0;
-        for (const DbTrackSummary &s : sums2)
+        int withMeasure = 0, withRaw = 0, rawCount = 0;
+        for (const DbTrackSummary &s : sums2) {
             withMeasure += s.hasMeasure ? 1 : 0;
-        check(sums2.size() == 2 && withMeasure == 1,
-              QStringLiteral("航迹选择器摘要：2 条，其中 1 条可叠加（%1）").arg(withMeasure));
+            withRaw += s.hasRaw ? 1 : 0;
+            rawCount += s.rawCount;
+        }
+        check(sums2.size() == 2 && withMeasure == 1 && withRaw == 1 && rawCount == 3,
+              QStringLiteral("航迹选择器摘要：2 条，1 条带平滑+关联两套点列（关联 %1 点）").arg(rawCount));
         const QVector<Track> loadedNew = trackdb::loadTracks(
             QStringList() << QStringLiteral("RADAR-0002::Radar::Radar"));
         check(loadedNew.size() == 1 && !loadedNew.first().points.isEmpty()
                   && std::isfinite(loadedNew.first().points.first().prange),
               QStringLiteral("新格式航迹可读出测量坐标"));
+        check(loadedNew.size() == 1 && loadedNew.first().rawPoints.size() == 3
+                  && std::isfinite(loadedNew.first().rawPoints.first().prange),
+              QStringLiteral("关联点列随航迹一起读出（%1 点）")
+                  .arg(loadedNew.isEmpty() ? -1 : loadedNew.first().rawPoints.size()));
 
         // 真实链路：库里的航迹 → 点云叠加（按时间映射到点迹帧的 Z 值）
         {
@@ -693,14 +741,50 @@ int runDbMigrationTest()
             TrackOverlay ov;
             const bool ok = !loadedNew.isEmpty()
                     && overlayFromTrack(loadedNew.first(), frames, &ov);
-            check(ok && ov.points.size() == 2 && ov.batchNo == 2,
-                  QStringLiteral("数据库航迹转换为点云叠加（%1 点 / 批 %2）")
-                      .arg(ov.points.size()).arg(ov.batchNo));
+            check(ok && ov.points.size() == 2 && ov.rawPoints.size() == 3 && ov.batchNo == 2,
+                  QStringLiteral("数据库航迹转换为点云叠加（平滑 %1 / 关联 %2 点 / 批 %3）")
+                      .arg(ov.points.size()).arg(ov.rawPoints.size()).arg(ov.batchNo));
             if (ok && ov.points.size() == 2)
                 check(qFuzzyCompare(ov.points.at(1).prange, 1100.0f)
                           && ov.points.at(1).zValue == 101.0,
-                      QStringLiteral("叠加点带测量坐标与帧 Z 值（z=%1）")
+                      QStringLiteral("平滑叠加点带测量坐标与帧 Z 值（z=%1）")
                           .arg(ov.points.at(1).zValue));
+            if (ok && ov.rawPoints.size() == 3)
+                check(qFuzzyCompare(ov.rawPoints.at(1).prange, 2010.0f)
+                          && ov.rawPoints.at(0).zValue == 100.0
+                          && ov.rawPoints.at(1).zValue == 101.0,
+                      QStringLiteral("关联叠加点按时间映射到帧 Z 值（z=%1/%2）")
+                          .arg(ov.rawPoints.at(0).zValue).arg(ov.rawPoints.at(1).zValue));
+        }
+
+        // 老库原地升级：同一批次重导同一个 MAT 时，已存在但缺列（测量坐标/关联点列）的
+        // 航迹要被补上，而不是被"已存在"直接跳过
+        {
+            q.finish();          // 结束上面那条 SELECT：否则主连接一直持有读快照，看不到后台写入
+            Track t;
+            t.id = QStringLiteral("RADAR-0001");      // v2 迁移过来的那条，has_measure=0/has_raw=0
+            t.source = TrackSource::Radar;
+            t.fileName = QStringLiteral("Radar");
+            TrackPoint p1, p2;
+            p1.t = 1765360182000LL;
+            p2.t = 1765360192000LL;
+            p1.prange = 500.0f; p1.pvr = 10.0f; p1.paz = 45.0f;
+            p2.prange = 520.0f; p2.pvr = 11.0f; p2.paz = 46.0f;
+            t.points << p1 << p2;
+            TrackPoint r1;
+            r1.t = 1765360185000LL;
+            r1.prange = 900.0f; r1.pvr = 5.0f; r1.paz = 50.0f;
+            t.rawPoints << r1;
+            DbSaveJob job(QStringLiteral("Radar"), TrackSource::Radar, QVector<Track>() << t);
+            job.start();
+            job.wait();
+            check(job.ok() && job.savedCount() == 1 && job.appended(),
+                  QStringLiteral("重导同批次时原地补上缺失列（写入 %1 条）").arg(job.savedCount()));
+            const QVector<Track> up = trackdb::loadTracks(
+                QStringList() << QStringLiteral("RADAR-0001::Radar::Radar"));
+            check(up.size() == 1 && up.first().rawPoints.size() == 1
+                      && std::isfinite(up.first().points.first().prange),
+                  QStringLiteral("旧航迹升级后同时带平滑与关联点列"));
         }
     }
     trackdb::close();

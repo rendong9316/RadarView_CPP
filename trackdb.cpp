@@ -2,7 +2,9 @@
 #include "apppaths.h"
 
 #include <QDateTime>
+#include <QHash>
 #include <QLocale>
+#include <QPair>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -39,7 +41,9 @@ bool exec(QSqlQuery &q, const QString &sql, QString *error)
 }
 
 // 库结构版本（PRAGMA user_version）。加列/加表时 +1，并在下面补一段迁移
-const int kSchemaVersion = 3;
+// v4：saved_tracks 增加关联点列 raw_points（同一条雷达航迹的 asscPointList），
+//     点云窗口据此在同一条航迹上切换「平滑 / 关联」两种点源
+const int kSchemaVersion = 4;
 
 bool hasColumn(QSqlDatabase db, const QString &table, const QString &column)
 {
@@ -77,6 +81,7 @@ bool createSchema(QSqlDatabase db, QString *error)
         " origin TEXT, destination TEXT, min_timestamp TEXT, max_timestamp TEXT,"
         " min_ms INTEGER, max_ms INTEGER, point_count INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0,"
         " has_measure INTEGER DEFAULT 0,"
+        " raw_point_count INTEGER DEFAULT 0, has_raw INTEGER DEFAULT 0, raw_points BLOB,"
         " points BLOB NOT NULL, PRIMARY KEY (icao_address, batch_id))",
         "CREATE INDEX IF NOT EXISTS idx_tracks_source ON saved_tracks(source)",
         "CREATE INDEX IF NOT EXISTS idx_tracks_time ON saved_tracks(min_timestamp, max_timestamp)",
@@ -181,8 +186,27 @@ bool createSchema(QSqlDatabase db, QString *error)
         }
         version = 3;
     }
+    if (version < 4) {
+        // v4：雷达航迹增加关联点列 raw_points（同一 MAT 的 asscPointList）。
+        // 老行没有这一列（has_raw=0），点云只能看平滑点列；要「关联」模式时，
+        // 在主窗口把该雷达 MAT 重新导入一次（同批次会原地补上关联点列，不重复计数）。
+        struct Col { const char *name; const char *decl; };
+        const Col cols[] = {
+            { "raw_points", "BLOB" },
+            { "raw_point_count", "INTEGER DEFAULT 0" },
+            { "has_raw", "INTEGER DEFAULT 0" },
+        };
+        for (const Col &c : cols)
+            if (!ensureColumn(db, QStringLiteral("saved_tracks"), QLatin1String(c.name),
+                              QLatin1String(c.decl), error))
+                return false;
+    }
 
-    if (version < kSchemaVersion) {
+    // 以库里的实际版本为准再写一次：各段迁移内部可能已经把 user_version 写成中间值
+    int stored = 0;
+    if (q.exec(QStringLiteral("PRAGMA user_version")) && q.next())
+        stored = q.value(0).toInt();
+    if (stored < kSchemaVersion) {
         if (!exec(q, QStringLiteral("PRAGMA user_version=%1").arg(kSchemaVersion), error))
             return false;
     }
@@ -268,7 +292,7 @@ QVector<TrackPoint> decodePoints(const QByteArray &blob)
 
 const char *const kTrackCols =
     "st.icao_address, st.source, b.file_name, st.flight_no, st.icao_flight_no, st.aircraft_type,"
-    " st.registration, st.airline, st.origin, st.destination, st.points";
+    " st.registration, st.airline, st.origin, st.destination, st.points, st.raw_points";
 
 Track trackFromQuery(const QSqlQuery &q)
 {
@@ -284,6 +308,7 @@ Track trackFromQuery(const QSqlQuery &q)
     t.origin = q.value(8).toString();
     t.destination = q.value(9).toString();
     t.points = decodePoints(q.value(10).toByteArray());
+    t.rawPoints = decodePoints(q.value(11).toByteArray());
     return t;
 }
 
@@ -521,7 +546,7 @@ QVector<DbTrackSummary> trackSummaries(const QString &sourceFilter, QString *err
     QSqlQuery q(mainDb());
     QString sql = QStringLiteral(
         "SELECT st.icao_address, st.batch_id, st.source, b.file_name, st.flight_no,"
-        " st.min_ms, st.max_ms, st.point_count, st.has_measure"
+        " st.min_ms, st.max_ms, st.point_count, st.has_measure, st.has_raw, st.raw_point_count"
         " FROM saved_tracks st JOIN batches b ON st.batch_id = b.id"
         " WHERE st.deleted = 0");
     if (!sourceFilter.isEmpty())
@@ -546,6 +571,8 @@ QVector<DbTrackSummary> trackSummaries(const QString &sourceFilter, QString *err
         s.maxMs = q.value(6).toLongLong();
         s.pointCount = q.value(7).toInt();
         s.hasMeasure = q.value(8).toInt() != 0;
+        s.hasRaw = q.value(9).toInt() != 0;
+        s.rawCount = q.value(10).toInt();
         out.append(s);
     }
     return out;
@@ -798,7 +825,7 @@ void DbSaveJob::run()
                 batchId = q.value(0).toLongLong();
                 m_appended = true;
             }
-            QSet<QString> existing;
+            QHash<QString, QPair<bool, bool>> existing;   // icao -> (has_measure, has_raw)
             bool okAll = true;
             if (batchId < 0) {
                 q.prepare(QStringLiteral("INSERT INTO batches (file_name, source, track_count, imported_at) VALUES (?, ?, ?, ?)"));
@@ -813,31 +840,48 @@ void DbSaveJob::run()
                 q.prepare(QStringLiteral("UPDATE saved_tracks SET deleted = 0 WHERE batch_id = ?"));
                 q.addBindValue(batchId);
                 q.exec();
-                q.prepare(QStringLiteral("SELECT icao_address FROM saved_tracks WHERE batch_id = ?"));
+                q.prepare(QStringLiteral("SELECT icao_address, has_measure, has_raw"
+                                         " FROM saved_tracks WHERE batch_id = ?"));
                 q.addBindValue(batchId);
                 if (q.exec())
                     while (q.next())
-                        existing.insert(q.value(0).toString());
+                        existing.insert(q.value(0).toString(),
+                                        qMakePair(q.value(1).toInt() != 0, q.value(2).toInt() != 0));
             }
             QSqlQuery ins(db);
             ins.prepare(QStringLiteral(
                 "INSERT OR REPLACE INTO saved_tracks (icao_address, batch_id, source, flight_no, icao_flight_no,"
                 " registration, aircraft_type, airline, origin, destination, min_timestamp, max_timestamp,"
-                " min_ms, max_ms, point_count, has_measure, deleted, points)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)"));
+                " min_ms, max_ms, point_count, has_measure, raw_point_count, has_raw, deleted, points, raw_points)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)"));
+            int inserted = 0;
             for (int i = 0; okAll && i < m_tracks.size(); ++i) {
                 Track &t = m_tracks[i];
-                if (existing.contains(t.id))
-                    continue;
                 t.normalize();
                 if (t.points.isEmpty())
                     continue;
-                bool hasMeasure = false;
-                for (const TrackPoint &p : qAsConst(t.points))
-                    if (std::isfinite(p.prange) && std::isfinite(p.pvr) && std::isfinite(p.paz)) {
-                        hasMeasure = true;
-                        break;
-                    }
+                const bool hasMeasure = [&t]() {
+                    for (const TrackPoint &p : qAsConst(t.points))
+                        if (std::isfinite(p.prange) && std::isfinite(p.pvr) && std::isfinite(p.paz))
+                            return true;
+                    return false;
+                }();
+                const bool hasRaw = [&t]() {
+                    for (const TrackPoint &p : qAsConst(t.rawPoints))
+                        if (std::isfinite(p.prange) && std::isfinite(p.pvr) && std::isfinite(p.paz))
+                            return true;
+                    return false;
+                }();
+                // 已存在的航迹默认跳过；只有新数据补上了旧行没有的列（测量坐标/关联点列）
+                // 才覆盖，这样老库重导同一 MAT 即可原地升级，也不会重复计数
+                const bool existed = existing.contains(t.id);
+                if (existed) {
+                    const QPair<bool, bool> flags = existing.value(t.id);
+                    const bool needMeasure = hasMeasure && !flags.first;
+                    const bool needRaw = hasRaw && !flags.second;
+                    if (!needMeasure && !needRaw)
+                        continue;
+                }
                 ins.addBindValue(t.id);
                 ins.addBindValue(batchId);
                 ins.addBindValue(src);
@@ -854,16 +898,21 @@ void DbSaveJob::run()
                 ins.addBindValue(t.maxTime());
                 ins.addBindValue(t.points.size());
                 ins.addBindValue(hasMeasure ? 1 : 0);
+                ins.addBindValue(t.rawPoints.size());
+                ins.addBindValue(hasRaw ? 1 : 0);
                 ins.addBindValue(encodePoints(t.points));
+                ins.addBindValue(t.rawPoints.isEmpty() ? QByteArray() : encodePoints(t.rawPoints));
                 if (!ins.exec()) {
                     m_error = ins.lastError().text();
                     okAll = false;
                 }
                 ++m_saved;
+                if (!existed)
+                    ++inserted;
             }
-            if (okAll && m_appended && m_saved > 0) {
+            if (okAll && m_appended && inserted > 0) {
                 q.prepare(QStringLiteral("UPDATE batches SET track_count = track_count + ? WHERE id = ?"));
-                q.addBindValue(m_saved);
+                q.addBindValue(inserted);
                 q.addBindValue(batchId);
                 q.exec();
             }

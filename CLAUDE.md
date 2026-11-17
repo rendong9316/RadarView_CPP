@@ -65,15 +65,15 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 
 - 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。
 - **所有点迹窗口与主窗口共用同一个 `ReplayController` 时钟**：窗口内的播放/暂停/倍速/进度条直接驱动它，主窗口回放范围取「可见航迹 ∪ 所有点迹窗口」的并集。不要再给点迹窗口做本地计时器。
-- 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
-- 航迹点源下拉的语义：平滑=Radar 批次（smooth/output 点列）、关联=RadarRaw 批次（assc 点列）、预测=库中未存（不显示）、自动=全部。**默认必须是「自动」**：雷达航迹导入默认写的是 Radar 批次，默认值若为「关联」会让叠加航迹静默全部消失。用户在「选择航迹…」里明确选中的航迹，如果当前点源过滤放不进来，窗口要自动切回「自动」，不允许出现"选了却看不见"。
-- 点源过滤判定统一走 `point3dTrackSourceAdmits()`（`point3dtypes.h`），画布与窗口提示共用一处，不要再各写一套 switch。
+- 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
+- 航迹点源下拉的语义（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）、**自动**=有平滑看平滑、只有关联点列时看关联、**预测**=库中未存（不显示）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。**默认必须是「自动」**，不允许出现"选了却看不见"：用户在「选择航迹…」里明确选中的航迹，若当前点源取不到点列，窗口要自动切回「自动」。
+- 雷达 MAT 导入时 `parseRadarMat(..., raw=false)` 会把 `asscPointList` 一并读进 `Track::rawPoints` 入库，所以同一份数据能直接切换平滑/关联，不用导两遍；老库（v3 及以前）重导同一 MAT 会**原地补列**（`DbSaveJob` 对已存在且缺 `has_measure`/`has_raw` 的行做 `INSERT OR REPLACE`，不算新增，不影响批次计数）。
 - **`ReplayController::setRange` 不得随意重置当前时刻**：地图单独显示某条航迹、筛选、增删数据都会重算回放范围，范围变了但当前时刻仍在新范围内时必须原地保留（范围完全没变则直接返回，连回放状态都不打断）。历史上每次都跳回起点，表现为"在点迹图上还好，去地图点一条航迹，点迹窗口就跳到第一帧、点迹看起来全没了"。
 - 航迹选择属于单个窗口：只随窗口会话（`point3d.windows`）持久化，不写全局默认键，否则新开窗口会莫名继承别的窗口选过的航迹。
 - 画布绘制必须成对 `save()/restore()`：悬停提示框用了不透明画刷，泄漏到后面的 `drawColorBar()` 会把色标渐变整块盖掉（表现为"鼠标一悬停到点迹上，右侧色标条就消失"）。色标条任何状态下都要完整重画。
 - 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
 - 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
-- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/全局时间轴/会话恢复）与 `--dbtest`（v2→v3 迁移）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
+- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/全局时间轴/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
 
 ### OpenGL 约束
 
@@ -101,7 +101,7 @@ Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）�
 1. `bash build_win7.sh`：用 7.3 重编、部署到 `build/win7/release` 并跑 `--selftest`，必须 `RESULT OK`。
 2. 在 `build/win7/release` 下分别用默认、`QT_OPENGL=angle`、`QT_OPENGL=software`、`QT_OPENGL=angle QT_ANGLE_PLATFORM=d3d9` 跑 `./HelloVscode.exe --selftest`，都要 `RESULT OK` 且 GL 错误数为 0。
 3. 航迹/回放自检（同样四种渲染模式）：`./HelloVscode.exe --tracktest "D:/Desktop/RadarView_BiuldByTauri/2026-04-27 09-30-00.csv" "D:/Desktop/RadarView_BiuldByTauri/track_20251210175946.mat"`，看 `tracktest.log`。纯解析自检用 `--parsetest <csv> <mat>`，看 `parsetest.log`。
-4. 点迹可视化自检：`./HelloVscode.exe --pointtest "<detPoint 目录或文件>" --track "<track_*.mat>"` 与 `./HelloVscode.exe --dbtest`（数据库 v2→v3 迁移），均须 `RESULT OK`，分别看 `pointtest.log` / `dbtest.log`。
+4. 点迹可视化自检：`./HelloVscode.exe --pointtest "<detPoint 目录或文件>" --track "<track_*.mat>"` 与 `./HelloVscode.exe --dbtest`（数据库 v2→v4 迁移与重导补列），均须 `RESULT OK`，分别看 `pointtest.log` / `dbtest.log`。
 5. `powershell -NoProfile -ExecutionPolicy Bypass -File check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
 6. Linux（有 CentOS/RHEL 7 环境时）：`bash build_linux.sh`，会编译、部署、跑 `--selftest`，并检查产物不依赖高于 GLIBC_2.17 / GLIBCXX_3.4.19 的符号。软件渲染用 `LIBGL_ALWAYS_SOFTWARE=1` 再跑一遍。
 7. 最终确认需在 Win7 SP1 x64 虚拟机和 CentOS/RHEL 7.6 虚拟机里分别运行整包。

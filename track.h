@@ -34,13 +34,17 @@ struct Track {
     TrackSource source = TrackSource::Adsb;
     QString fileName;        // 导入文件名（雷达为显示名称）
     QString flightNo, icaoFlightNo, aircraftType, registration, airline, origin, destination;
-    QVector<TrackPoint> points;   // 按时间升序，时间戳不重复
+    QVector<TrackPoint> points;   // 主点列（雷达=平滑/输出点列，原始量测=关联点列），按时间升序
+    // 雷达航迹的关联点列（asscPointList）：点云窗口「点源=关联」用它，与平滑点列来自同一 MAT。
+    // ADS-B / 原始量测 / 老库数据为空，表示不支持关联模式。
+    QVector<TrackPoint> rawPoints;
 
     QString key() const;     // id::source::fileName，合并去重用
+    bool hasRawPoints() const { return !rawPoints.isEmpty(); }
     qint64 minTime() const { return points.isEmpty() ? 0 : points.first().t; }
     qint64 maxTime() const { return points.isEmpty() ? 0 : points.last().t; }
 
-    // 按时间稳定排序并去掉时间戳重复的点（保留先出现的）
+    // 按时间稳定排序并去掉时间戳重复的点（保留先出现的）；points 与 rawPoints 都处理
     void normalize();
 };
 

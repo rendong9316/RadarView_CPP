@@ -124,11 +124,16 @@ QString Track::key() const
 
 void Track::normalize()
 {
-    std::stable_sort(points.begin(), points.end(),
-                     [](const TrackPoint &a, const TrackPoint &b) { return a.t < b.t; });
-    auto last = std::unique(points.begin(), points.end(),
-                            [](const TrackPoint &a, const TrackPoint &b) { return a.t == b.t; });
-    points.erase(last, points.end());
+    auto norm = [](QVector<TrackPoint> &pts) {
+        std::stable_sort(pts.begin(), pts.end(),
+                         [](const TrackPoint &a, const TrackPoint &b) { return a.t < b.t; });
+        auto last = std::unique(pts.begin(), pts.end(),
+                                [](const TrackPoint &a, const TrackPoint &b) { return a.t == b.t; });
+        pts.erase(last, pts.end());
+    };
+    norm(points);
+    if (!rawPoints.isEmpty())
+        norm(rawPoints);
 }
 
 bool parseBeijingTime(const char *s, int len, qint64 *ms)
@@ -228,6 +233,16 @@ int TrackStore::addTracks(QVector<Track> tracks)
         for (const TrackPoint &p : qAsConst(t.points))
             if (!seen.contains(p.t))
                 dst.points.append(p);
+        // 关联点列同样合并（同一 MAT 重复导入时增量补齐）
+        if (!t.rawPoints.isEmpty()) {
+            QSet<qint64> seenRaw;
+            seenRaw.reserve(dst.rawPoints.size());
+            for (const TrackPoint &p : qAsConst(dst.rawPoints))
+                seenRaw.insert(p.t);
+            for (const TrackPoint &p : qAsConst(t.rawPoints))
+                if (!seenRaw.contains(p.t))
+                    dst.rawPoints.append(p);
+        }
         dst.normalize();
         QString *fields[] = { &dst.flightNo, &dst.icaoFlightNo, &dst.aircraftType, &dst.registration,
                               &dst.airline, &dst.origin, &dst.destination };

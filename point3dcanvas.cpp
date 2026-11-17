@@ -653,9 +653,10 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
     p.setRenderHint(QPainter::Antialiasing, true);
     for (int ti = 0; ti < m_data->tracks.size(); ++ti) {
         const TrackOverlay &tr = m_data->tracks.at(ti);
-        // 点源过滤：数据库里 Radar 批次存平滑/output 点列，RadarRaw 存关联点列；
-        // 预测点列未入库，选「预测」时不显示。
-        if (!point3dTrackSourceAdmits(m_trackSource, tr.source))
+        // 点源：同一条航迹可能同时带平滑点列与关联点列，按当前模式取其中一列
+        // （平滑=主点列、关联=asscPointList 点列、预测=库中未存）
+        const QVector<TrackOverlayPoint> *pts = point3dOverlayPointsFor(tr, m_trackSource);
+        if (!pts)
             continue;
         ProjectedTrack out;
         out.track = ti;
@@ -665,7 +666,7 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
         QPointF last;
         bool haveLast = false;
         qint64 t0 = 0, t1 = 0;
-        for (const TrackOverlayPoint &op : tr.points) {
+        for (const TrackOverlayPoint &op : *pts) {
             if (op.zValue < zmin || op.zValue > curZ + 1e-9)
                 continue;
             double x = 0, y = 0;

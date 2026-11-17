@@ -33,7 +33,9 @@ struct DbTrackSummary {
     QString flightNo;
     qint64 minMs = 0, maxMs = 0;
     int pointCount = 0;
-    bool hasMeasure = false;    // 是否带 prange/pvr/paz（v2 旧数据为 false，需重新导入）
+    bool hasMeasure = false;    // 主点列是否带 prange/pvr/paz（v2 旧数据为 false，需重新导入）
+    bool hasRaw = false;        // 是否带关联点列（v4 起，同一 MAT 的 asscPointList）
+    int rawCount = 0;           // 关联点列的原始点数
 };
 
 // 管理面板筛选条件（RadarView types/manage.ts TrackMetaFilter + SortConfig）

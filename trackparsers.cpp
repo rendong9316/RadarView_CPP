@@ -186,31 +186,12 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
     const QString fileName = displayName.isEmpty() ? QFileInfo(path).fileName() : displayName;
 
     out->clear();
-    const int nTracks = list.numel();
-    for (int i = 0; i < nTracks; ++i) {
-        MatArray pts;
-        for (const QString &fName : ptFields) {
-            const MatArray cand = list.field(fName, i);
-            if (cand.isStruct() && cand.numel() > 0) {
-                pts = cand;
-                break;
-            }
-        }
-        if (!pts.isValid())
-            continue;
-
-        const int batchNo = int(list.field(QStringLiteral("BatchNo"), i).scalar());
-        const int type = int(list.field(QStringLiteral("Type"), i).scalar());
-
-        Track tr;
-        tr.id = QStringLiteral("%1-%2").arg(prefix).arg(batchNo, 4, 10, QLatin1Char('0'));
-        tr.flightNo = QStringLiteral("TGT-%1").arg(batchNo, 4, 10, QLatin1Char('0'));
-        tr.aircraftType = type == 1 ? QStringLiteral("RADAR") : QStringLiteral("UNKNOWN");
-        tr.source = raw ? TrackSource::RadarRaw : TrackSource::Radar;
-        tr.fileName = fileName;
-
+    // 一套点列表（smoothPointList / outputPointList / asscPointList）→ TrackPoint；
+    // 三套字段名一致，缺失或非法的点直接跳过
+    auto parseList = [](const MatArray &pts, QVector<TrackPoint> *dst) {
+        dst->clear();
         const int nPts = pts.numel();
-        tr.points.reserve(nPts);
+        dst->reserve(nPts);
         for (int j = 0; j < nPts; ++j) {
             bool okT = false, okLat = false, okLon = false;
             const double dn = pts.field(QStringLiteral("time"), j).scalar(0, &okT);
@@ -234,11 +215,45 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
                 pt.pvr = float(pv);
             if (okA && std::isfinite(pa))
                 pt.paz = float(pa);
-            tr.points.append(pt);
+            dst->append(pt);
+        }
+    };
+
+    const int nTracks = list.numel();
+    for (int i = 0; i < nTracks; ++i) {
+        MatArray pts;
+        for (const QString &fName : ptFields) {
+            const MatArray cand = list.field(fName, i);
+            if (cand.isStruct() && cand.numel() > 0) {
+                pts = cand;
+                break;
+            }
+        }
+        if (!pts.isValid())
+            continue;
+
+        const int batchNo = int(list.field(QStringLiteral("BatchNo"), i).scalar());
+        const int type = int(list.field(QStringLiteral("Type"), i).scalar());
+
+        Track tr;
+        tr.id = QStringLiteral("%1-%2").arg(prefix).arg(batchNo, 4, 10, QLatin1Char('0'));
+        tr.flightNo = QStringLiteral("TGT-%1").arg(batchNo, 4, 10, QLatin1Char('0'));
+        tr.aircraftType = type == 1 ? QStringLiteral("RADAR") : QStringLiteral("UNKNOWN");
+        tr.source = raw ? TrackSource::RadarRaw : TrackSource::Radar;
+        tr.fileName = fileName;
+
+        parseList(pts, &tr.points);
+        if (tr.points.isEmpty())
+            continue;
+        if (!raw) {
+            // 同一 MAT 里的关联点列（asscPointList）一起入库：点云窗口才能在
+            // 同一份数据上切换「平滑 / 关联」两种点源，不用把文件导入两遍
+            const MatArray assc = list.field(QStringLiteral("asscPointList"), i);
+            if (assc.isStruct() && assc.numel() > 0)
+                parseList(assc, &tr.rawPoints);
         }
         tr.normalize();
-        if (!tr.points.isEmpty())
-            out->append(std::move(tr));
+        out->append(std::move(tr));
 
         if (progress && nTracks > 10 && i % qMax(1, nTracks / 10) == 0)
             progress(20 + 75 * i / nTracks);

@@ -52,7 +52,8 @@ struct TrackOverlay {
     QString fileName;
     TrackSource source = TrackSource::Radar;
     QColor color;
-    QVector<TrackOverlayPoint> points;
+    QVector<TrackOverlayPoint> points;      // 平滑点列（Radar 批次的主点列）
+    QVector<TrackOverlayPoint> rawPoints;   // 关联点列（同一 MAT 的 asscPointList / RadarRaw 批次）
 };
 
 // 连续性评分参数（对应 Continuity* 四个 cfg）
@@ -110,17 +111,37 @@ inline int point3dBatchNo(const Track &t)
     return point3dBatchNoFromId(t.id);
 }
 
-// 点源过滤语义（画布绘制与窗口提示共用，避免两处判断不一致）：
-// 数据库里 Radar 批次存平滑点列、RadarRaw 批次存关联点列，预测点列未入库。
-inline bool point3dTrackSourceAdmits(Point3dTrackSource filter, TrackSource source)
+// 点源选择：同一条叠加航迹可能同时带平滑点列与关联点列，按当前模式取对应的一列。
+// 返回 nullptr 表示这条航迹在当前模式下没有可画的点。
+inline const QVector<TrackOverlayPoint> *point3dOverlayPointsFor(const TrackOverlay &ov,
+                                                                Point3dTrackSource mode)
 {
-    switch (filter) {
-    case Point3dTrackSource::Smooth: return source == TrackSource::Radar;
-    case Point3dTrackSource::Associated: return source == TrackSource::RadarRaw;
+    switch (mode) {
+    case Point3dTrackSource::Smooth:
+        return ov.points.isEmpty() ? nullptr : &ov.points;
+    case Point3dTrackSource::Associated:
+        return ov.rawPoints.isEmpty() ? nullptr : &ov.rawPoints;
+    case Point3dTrackSource::Predicted:
+        return nullptr;                       // 预测点列未入库
+    case Point3dTrackSource::Auto:
+        break;
+    }
+    // 自动：有平滑看平滑，只有关联点列时看关联（避免"自动"什么都不显示）
+    if (!ov.points.isEmpty())
+        return &ov.points;
+    return ov.rawPoints.isEmpty() ? nullptr : &ov.rawPoints;
+}
+
+// 该航迹是否带某种点列（供窗口判断当前点源过滤是否把所选航迹全藏起来）
+inline bool point3dOverlayHasColumn(const TrackOverlay &ov, Point3dTrackSource mode)
+{
+    switch (mode) {
+    case Point3dTrackSource::Smooth: return !ov.points.isEmpty();
+    case Point3dTrackSource::Associated: return !ov.rawPoints.isEmpty();
     case Point3dTrackSource::Predicted: return false;
     case Point3dTrackSource::Auto: break;
     }
-    return true;
+    return !ov.points.isEmpty() || !ov.rawPoints.isEmpty();
 }
 
 #endif // POINT3DTYPES_H

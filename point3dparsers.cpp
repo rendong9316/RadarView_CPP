@@ -335,21 +335,14 @@ void computeContinuity(QVector<DetPointFrame> &frames, const ContinuityConfig &c
     }
 }
 
-bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
-                      TrackOverlay *out, const QColor &color)
+// 一套航迹点列 -> 叠加点（按时间映射到最近的检测帧，得到 Z 值）
+static void appendOverlayPoints(const QVector<TrackPoint> &src,
+                                const QVector<DetPointFrame> &frames,
+                                QVector<TrackOverlayPoint> *dst)
 {
-    if (!out || frames.isEmpty())
-        return false;
-
-    out->id = track.id;
-    out->batchNo = point3dBatchNo(track);
-    out->fileName = track.fileName;
-    out->source = track.source;
-    out->color = color;      // 由调用方（数据库航迹选择器）决定颜色；无效时画布按序号生成
-    out->points.clear();
-    out->points.reserve(track.points.size());
-
-    for (const TrackPoint &p : track.points) {
+    dst->clear();
+    dst->reserve(src.size());
+    for (const TrackPoint &p : src) {
         if (!std::isfinite(p.prange) || !std::isfinite(p.pvr) || !std::isfinite(p.paz))
             continue;
 
@@ -382,7 +375,32 @@ bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
         op.prange = p.prange;
         op.pvr = p.pvr;
         op.paz = p.paz;
-        out->points.append(op);
+        dst->append(op);
     }
-    return !out->points.isEmpty();
+}
+
+bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
+                      TrackOverlay *out, const QColor &color)
+{
+    if (!out || frames.isEmpty())
+        return false;
+
+    out->id = track.id;
+    out->batchNo = point3dBatchNo(track);
+    out->fileName = track.fileName;
+    out->source = track.source;
+    out->color = color;      // 由调用方（数据库航迹选择器）决定颜色；无效时画布按序号生成
+    out->points.clear();
+    out->rawPoints.clear();
+
+    // 雷达批次：主点列=平滑点列，rawPoints=同一 MAT 的关联点列（asscPointList）；
+    // 原始量测批次：它自己的主点列就是关联点列。点云窗口据此切换「平滑 / 关联」。
+    if (track.source == TrackSource::RadarRaw) {
+        appendOverlayPoints(track.points, frames, &out->rawPoints);
+    } else {
+        appendOverlayPoints(track.points, frames, &out->points);
+        if (!track.rawPoints.isEmpty())
+            appendOverlayPoints(track.rawPoints, frames, &out->rawPoints);
+    }
+    return !out->points.isEmpty() || !out->rawPoints.isEmpty();
 }
