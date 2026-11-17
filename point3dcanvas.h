@@ -3,6 +3,7 @@
 
 #include <QColor>
 #include <QRectF>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 
@@ -46,8 +47,16 @@ public:
     void setHighlightedBatch(int batchNo);    // -1 = 无高亮
     int highlightedBatch() const { return m_highlightedBatch; }
 
+    // 只显示这些批次号的叠加航迹（地图单独显示/筛选联动）；空集合 = 全部显示
+    void setIsolatedBatches(const QSet<int> &batches);
+    QSet<int> isolatedBatches() const { return m_isolatedBatches; }
+
     void setTrackLineWidth(double w);
     double trackLineWidth() const { return m_trackLineWidth; }
+    void setPointScale(double s);             // 点迹尺寸倍数
+    double pointScale() const { return m_pointScale; }
+    void setLabelScale(double s);             // 航迹数字标签字号倍数
+    double labelScale() const { return m_labelScale; }
 
     // 鼠标左键拖拽的行为：旋转视角 / 平移视图（平移时鼠标显示手爪）
     enum class DragMode { Rotate, Pan };
@@ -136,7 +145,10 @@ private:
     bool m_showTracks = true;
     bool m_showLabels = true;
     int m_highlightedBatch = -1;
+    QSet<int> m_isolatedBatches;
     double m_trackLineWidth = 2.0;
+    double m_pointScale = 1.0;
+    double m_labelScale = 1.0;
 
     Camera m_cam;
     DragMode m_dragMode = DragMode::Rotate;

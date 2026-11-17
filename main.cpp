@@ -282,6 +282,14 @@ int runPointTest(const QString &input, const QString &trackFile)
     const bool vafOk = qFuzzyCompare(x, 12.0) && qFuzzyCompare(y, 33.0);
     check(rvfOk && rafOk && vafOk, QStringLiteral("RVF/RAF/VAF 坐标映射"));
 
+    // ---- 三方联动匹配：BatchNo + 时间范围（雷达/原始量测两批同属一个 MAT）----
+    check(point3dRefsMatch(20050, 1000, 2000, 20050, 1500, 3000),
+          QStringLiteral("同编号且时间重叠 -> 同一条航迹"));
+    check(!point3dRefsMatch(20050, 1000, 2000, 20051, 1500, 3000),
+          QStringLiteral("编号不同 -> 不是同一条航迹"));
+    check(!point3dRefsMatch(20050, 1000, 2000, 20050, 5000, 6000),
+          QStringLiteral("编号相同但时间不重叠 -> 不是同一条航迹"));
+
     // ---- 航迹叠加（可选）----
     if (!trackFile.isEmpty()) {
         QVector<Track> tracks;
@@ -314,6 +322,21 @@ int runPointTest(const QString &input, const QString &trackFile)
                   QStringLiteral("航迹可转换为点云叠加数据"));
             check(overlayRaw > 0,
                   QStringLiteral("同一 MAT 的关联点列（assc）也可叠加（%1 点）").arg(overlayRaw));
+
+            // 时间窗完全对不上的航迹：不能被硬贴到首/末帧画成假航迹
+            Track farTrack;
+            farTrack.id = QStringLiteral("RADAR-99999");
+            farTrack.source = TrackSource::Radar;
+            farTrack.fileName = QStringLiteral("far");
+            TrackPoint fp;
+            fp.t = data.frames.first().timeMs + 6 * 3600 * 1000LL;
+            fp.prange = 1000.0f;
+            fp.pvr = 10.0f;
+            fp.paz = 45.0f;
+            farTrack.points << fp;
+            TrackOverlay farOv;
+            check(!overlayFromTrack(farTrack, data.frames, &farOv),
+                  QStringLiteral("时间窗完全对不上的航迹判为不可叠加（一致性校验）"));
         }
     }
 
@@ -352,6 +375,32 @@ int runPointTest(const QString &input, const QString &trackFile)
                       .arg(assocTracks).arg(data.tracks.size()));
             canvas.grab().save(QCoreApplication::applicationDirPath()
                                + QStringLiteral("/pointtest_assoc.png"));
+
+            // 地图单独显示/筛选联动：只显示选中的批次
+            const int firstBatch = data.tracks.first().batchNo;
+            check(data.tracks.first().minTime <= data.maxTime
+                      && data.tracks.first().maxTime >= data.minTime,
+                  QStringLiteral("叠加航迹时间范围与点迹时间窗有交集"));
+            QSet<int> only;
+            only.insert(firstBatch);
+            canvas.setIsolatedBatches(only);
+            canvas.grab();
+            check(canvas.visibleTrackCount() >= 1 && canvas.visibleTrackCount() < data.tracks.size(),
+                  QStringLiteral("只显示选中批次（%1 条）").arg(canvas.visibleTrackCount()));
+            canvas.setIsolatedBatches(QSet<int>());
+            canvas.grab();
+            check(canvas.visibleTrackCount() == data.tracks.size(),
+                  QStringLiteral("清空隔离后恢复显示全部叠加航迹（%1 条）")
+                      .arg(canvas.visibleTrackCount()));
+
+            // 本窗口显示设置：点迹尺寸 / 标签大小
+            canvas.setPointScale(2.0);
+            canvas.setLabelScale(1.5);
+            check(qFuzzyCompare(canvas.pointScale(), 2.0) && qFuzzyCompare(canvas.labelScale(), 1.5),
+                  QStringLiteral("点迹尺寸/标签大小可调（%1 / %2）")
+                      .arg(canvas.pointScale()).arg(canvas.labelScale()));
+            canvas.setPointScale(1.0);
+            canvas.setLabelScale(1.0);
             canvas.setTrackSource(Point3dTrackSource::Auto);
             canvas.grab();
         }
@@ -468,6 +517,21 @@ int runPointTest(const QString &input, const QString &trackFile)
               QStringLiteral("窗口与画布均不使用 OpenGL"));
         const QPixmap pm1 = w1->grab();
         check(!pm1.isNull(), QStringLiteral("窗口抓图非空"));
+        // 工具栏放进滚动区后，窗口最小宽度不再被一排按钮撑爆，可以自由缩放
+        check(w1->minimumSizeHint().width() < 900,
+              QStringLiteral("窗口可自由缩放（最小宽度 %1 px）").arg(w1->minimumSizeHint().width()));
+        // 显示设置栏可展开
+        bool settingsFound = false;
+        for (QPushButton *btn : w1->findChildren<QPushButton *>())
+            if (btn->text().startsWith(QStringLiteral("显示设置"))) {
+                btn->setChecked(true);
+                settingsFound = true;
+                break;
+            }
+        QApplication::processEvents();
+        check(settingsFound, QStringLiteral("工具栏有「显示设置」开关"));
+        w1->grab().save(QCoreApplication::applicationDirPath()
+                        + QStringLiteral("/pointtest_settings.png"));
         w1->close();
         w2->close();
         QApplication::processEvents();
@@ -486,6 +550,31 @@ int runPointTest(const QString &input, const QString &trackFile)
         check(!w->isLoading() && got == qMin(3, files.size()),
               QStringLiteral("窗口后台导入 %1 个文件（实际 %2 帧）")
                   .arg(qMin(3, files.size())).arg(got));
+        w->close();
+        QApplication::processEvents();
+    }
+
+    // ---- 联动：地图选中的航迹不在本窗口时，本窗口保持原样 ----
+    if (files.size() >= 1) {
+        Point3dWindow *w = new Point3dWindow(nullptr);
+        w->show();
+        w->loadDetectionFiles(files.mid(0, 1));
+        QElapsedTimer waitLink;
+        waitLink.start();
+        while (w->isLoading() && waitLink.elapsed() < 60000)
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        QVector<LinkedTrackRef> refs;
+        LinkedTrackRef r;
+        r.batchNo = 20050;
+        r.t0 = w->minTime();
+        r.t1 = w->maxTime();
+        refs << r;
+        w->setLinkedSelection(refs);          // 本窗口没有对应叠加航迹
+        check(w->isolatedBatches().isEmpty(),
+              QStringLiteral("地图选中的航迹不在本窗口时窗口保持不变"));
+        w->setLinkedHighlight(20050, w->minTime(), w->maxTime());
+        check(w->highlightedBatch() < 0,
+              QStringLiteral("悬停的航迹不在本窗口时不产生高亮"));
         w->close();
         QApplication::processEvents();
     }

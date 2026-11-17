@@ -335,12 +335,21 @@ void computeContinuity(QVector<DetPointFrame> &frames, const ContinuityConfig &c
     }
 }
 
-// 一套航迹点列 -> 叠加点（按时间映射到最近的检测帧，得到 Z 值）
+// 一套航迹点列 -> 叠加点（按时间映射到最近的检测帧，得到 Z 值）。
+// 离最近帧超过"最大帧间隔"的点会被丢掉：这样时间窗完全对不上的航迹不会
+// 被硬贴到首/末帧上画出一条假航迹，而是整条判为不可叠加。
 static void appendOverlayPoints(const QVector<TrackPoint> &src,
                                 const QVector<DetPointFrame> &frames,
                                 QVector<TrackOverlayPoint> *dst)
 {
     dst->clear();
+    if (frames.isEmpty())
+        return;
+    qint64 tol = 0;
+    for (int i = 1; i < frames.size(); ++i)
+        tol = qMax(tol, frames.at(i).timeMs - frames.at(i - 1).timeMs);
+    tol = qMax<qint64>(tol, 1000);            // 至少容忍 1 秒
+
     dst->reserve(src.size());
     for (const TrackPoint &p : src) {
         if (!std::isfinite(p.prange) || !std::isfinite(p.pvr) || !std::isfinite(p.paz))
@@ -366,7 +375,7 @@ static void appendOverlayPoints(const QVector<TrackPoint> &src,
                 bestDiff = diff;
             }
         }
-        if (best < 0)
+        if (best < 0 || bestDiff > tol)
             continue;
 
         TrackOverlayPoint op;
@@ -402,5 +411,18 @@ bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
         if (!track.rawPoints.isEmpty())
             appendOverlayPoints(track.rawPoints, frames, &out->rawPoints);
     }
+    // 联动匹配用的时间范围：取两套点列里"能落到帧上"的点
+    qint64 lo = 0, hi = 0;
+    bool any = false;
+    for (const QVector<TrackOverlayPoint> *col : { &out->points, &out->rawPoints })
+        for (const TrackOverlayPoint &op : *col) {
+            if (!any || op.timeMs < lo)
+                lo = op.timeMs;
+            if (!any || op.timeMs > hi)
+                hi = op.timeMs;
+            any = true;
+        }
+    out->minTime = any ? lo : 0;
+    out->maxTime = any ? hi : 0;
     return !out->points.isEmpty() || !out->rawPoints.isEmpty();
 }

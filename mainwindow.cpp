@@ -395,7 +395,8 @@ MainWindow::MainWindow(QWidget *parent)
             isolateTrack(-1);
     });
     connect(m_globe, &GlobeWidget::trackContextMenuRequested, this, &MainWindow::onTrackContextMenu);
-    connect(m_globe, &GlobeWidget::flagContextMenuRequested, this, &MainWindow::onFlagContextMenu);
+    // 地图悬停某条航迹 → 所有点迹窗口里的同一条航迹同步高亮
+    connect(m_globe, &GlobeWidget::trackHovered, this, &MainWindow::onMapHoverTrack);    connect(m_globe, &GlobeWidget::flagContextMenuRequested, this, &MainWindow::onFlagContextMenu);
     m_backAllBtn = new QPushButton(tr("← 返回全部"), m_globe);
     m_backAllBtn->setToolTip(tr("返回查看全部航迹（Esc）"));
     m_backAllBtn->setCursor(Qt::PointingHandCursor);
@@ -1174,13 +1175,46 @@ void MainWindow::applyDisplay()
     }
     std::sort(dots.begin(), dots.end());
     layer->setPointDotTracks(dots);
-    // 地图上单独显示的航迹 -> 所有点迹窗口同步高亮（全链路联动）
-    int hlBatch = -1;
-    if (iso >= 0)
-        hlBatch = point3dBatchNo(m_store.tracks().at(iso));
+
+    // ---- 点迹窗口联动 ----
+    // 单独显示（点地图上某条航迹）或管理面板筛选出的航迹 → 点迹窗口里对应的叠加航迹同步单独显示。
+    // 判定用 BatchNo + 时间范围：同一 MAT 按「雷达航迹」和「雷达原始测量」分别导入时
+    // id 前缀不同（RADAR-/RAW-），但编号与时间一致，三方据此互相对应。
+    QVector<LinkedTrackRef> refs;
+    if (!vis.isEmpty()) {
+        for (int i = 0; i < m_store.size(); ++i) {
+            const Track &t = m_store.tracks()[i];
+            if (vis.contains(t.key())) {
+                LinkedTrackRef r;
+                r.batchNo = point3dBatchNo(t);
+                r.t0 = t.minTime();
+                r.t1 = t.maxTime();
+                refs.append(r);
+            }
+        }
+    } else if (iso >= 0) {
+        const Track &t = m_store.tracks().at(iso);
+        LinkedTrackRef r;
+        r.batchNo = point3dBatchNo(t);
+        r.t0 = t.minTime();
+        r.t1 = t.maxTime();
+        refs.append(r);
+    }
     for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
         if (win)
-            win->setHighlightedBatch(hlBatch);
+            win->setLinkedSelection(refs);
+
+    // 单独显示的航迹同时作为高亮（悬停也会走同一套广播）；返回全部时清掉高亮
+    if (iso >= 0) {
+        const Track &t = m_store.tracks().at(iso);
+        for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
+            if (win)
+                win->setLinkedHighlight(point3dBatchNo(t), t.minTime(), t.maxTime());
+    } else {
+        for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
+            if (win)
+                win->setLinkedHighlight(-1, 0, 0);
+    }
     resetReplayRange();
     m_globe->update();
 }
@@ -1396,6 +1430,9 @@ int MainWindow::trackIndexForBatch(int batchNo, TrackSource source, qint64 t0, q
                 continue;
             const qint64 overlap = qMax<qint64>(
                 0, qMin(t.maxTime(), t1) - qMax(t.minTime(), t0));
+            // 编号在别的 MAT 里可能重复：有时间信息时必须真的重叠才算同一条
+            if (overlap <= 0 && (t0 > 0 || t1 > 0))
+                continue;
             if (best < 0 || overlap > bestOverlap) {
                 best = i;
                 bestOverlap = overlap;
@@ -1410,10 +1447,10 @@ void MainWindow::onPoint3dFocus(int batchNo, TrackSource source, qint64 t0, qint
     const int idx = batchNo < 0 ? -1 : trackIndexForBatch(batchNo, source, t0, t1);
     m_globe->trackLayer()->setHoveredTrack(idx);
     m_globe->update();
-    // 所有点迹窗口保持同一高亮批次（外部入口不再发信号，不会形成回路）
+    // 所有点迹窗口保持同一高亮（外部入口不再发信号，不会形成回路）
     for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
         if (win)
-            win->setHighlightedBatch(batchNo);
+            win->setLinkedHighlight(batchNo, t0, t1);
 }
 
 void MainWindow::onPoint3dActivate(int batchNo, TrackSource source, qint64 t0, qint64 t1)
@@ -1421,6 +1458,22 @@ void MainWindow::onPoint3dActivate(int batchNo, TrackSource source, qint64 t0, q
     const int idx = trackIndexForBatch(batchNo, source, t0, t1);
     if (idx >= 0)
         isolateTrack(idx);
+}
+
+// 地图上悬停的航迹 → 所有点迹窗口里"同一条航迹"同步高亮（id 前缀可能不同，用编号+时间匹配）
+void MainWindow::onMapHoverTrack(int index)
+{
+    int batchNo = -1;
+    qint64 t0 = 0, t1 = 0;
+    if (index >= 0 && index < m_store.size()) {
+        const Track &t = m_store.tracks().at(index);
+        batchNo = point3dBatchNo(t);
+        t0 = t.minTime();
+        t1 = t.maxTime();
+    }
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
+        if (win)
+            win->setLinkedHighlight(batchNo, t0, t1);
 }
 
 bool MainWindow::pointDotsShown(int index) const

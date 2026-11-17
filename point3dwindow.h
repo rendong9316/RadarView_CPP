@@ -11,6 +11,7 @@
 #include "point3dtypes.h"
 
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -62,6 +63,13 @@ public:
 
     void setHighlightedBatch(int batchNo);
     int highlightedBatch() const;
+
+    // 地图联动：地图单独显示 / 管理面板筛选出的航迹 → 本窗口里有对应叠加航迹就单独显示它们；
+    // 一条都对不上时本窗口保持原样（refs 为空则恢复显示全部叠加航迹）
+    void setLinkedSelection(const QVector<LinkedTrackRef> &refs);
+    // 地图悬停某条航迹 → 本窗口里对应的叠加航迹同时高亮；batchNo < 0 清除
+    void setLinkedHighlight(int batchNo, qint64 t0, qint64 t1);
+    QSet<int> isolatedBatches() const;
     void setCurrentFrame(int index);
 
 signals:
@@ -92,10 +100,12 @@ private:
     void updatePlaybackUi();             // 播放/暂停按钮文字
     int nearestFrame(qint64 ms) const;
     void reloadOverlaysFromKeys();
+    void applyLinkedSelection();
     void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
     QWidget *m_toolbar = nullptr;
+    QWidget *m_settingsBar = nullptr;
     QWidget *m_statusBar = nullptr;
     QComboBox *m_viewCombo = nullptr;
     QComboBox *m_windowCombo = nullptr;
@@ -106,6 +116,10 @@ private:
     QPushButton *m_pointBtn = nullptr;
     QPushButton *m_trackBtn = nullptr;
     QPushButton *m_labelBtn = nullptr;
+    QPushButton *m_settingsBtn = nullptr;      // 展开/收起本窗口的显示设置栏
+    QDoubleSpinBox *m_pointSizeSpin = nullptr;
+    QDoubleSpinBox *m_lineWidthSpin = nullptr;
+    QDoubleSpinBox *m_labelSizeSpin = nullptr;
     QLabel *m_status = nullptr;
     QProgressBar *m_progress = nullptr;
 
@@ -126,6 +140,8 @@ private:
     QStringList m_pendingFiles;
     QStringList m_files;
     QStringList m_trackKeys;      // 已选航迹的 Track::key()（从数据库选择）
+    int m_skippedTracks = 0;      // 与点迹时间窗对不上、被忽略的航迹条数（一致性校验结果）
+    QVector<LinkedTrackRef> m_linkedSelection;   // 地图当前的选中/筛选（重载数据后重新套用）
     std::function<QColor(TrackSource, const QString &)> m_colorProvider;
     int m_number = 1;
     bool m_restoring = false;

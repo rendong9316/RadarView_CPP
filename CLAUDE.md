@@ -63,7 +63,13 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 
 复刻 MATLAB `track_debuger_suite/tool_Track visualization`，对应文件 `point3dtypes.h` / `point3dparsers.*` / `point3dimportjob.*` / `point3dcanvas.*` / `point3dwindow.*` / `trackpicker.*`。
 
-- 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。
+- 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。**工具栏控件多，必须放在横向 QScrollArea 里**（`QScrollArea#point3dToolbarScroll`）：直接塞进窗口会把最小宽度撑到 1700px 以上、窗口没法自由缩放（自检断言最小宽度 < 900）。窗口自带的「显示设置」栏（可折叠）里调**点迹尺寸 / 航迹线宽 / 标签大小**，分别存 `point3d.point_scale` / `point3d.track_line_width` / `point3d.label_scale`，画布接口 `setPointScale/setLabelScale/setTrackLineWidth`。
+- **三方联动（地图 ↔ 点迹窗口 ↔ 数据库航迹）按「BatchNo + 时间范围」认人**，不是按 id 字符串：同一 MAT 分别按「雷达航迹」和「雷达原始测量」导入时 id 前缀不同（`RADAR-####` / `RAW-####`），但编号和时间一致，`point3dRefsMatch()` 据此认定同一条航迹。所有联动广播都带 `LinkedTrackRef{batchNo,t0,t1}`。
+  - 地图**单击单独显示**某条航迹 → `MainWindow::applyDisplay` 把所有窗口 `setLinkedSelection({该航迹})`：窗口里有对应叠加航迹就只显示它们，**一条都对不上时窗口保持原样**（这是用户明确要求）；地图回到全部（refs 为空）才恢复显示全部叠加航迹。
+  - 航迹管理系统**筛选/勾选**出的可见集合（`ManageState::visibleKeys`）同样按上面规则广播，多开的每个窗口都执行。
+  - **悬停双向同时高亮**：地图悬停经 `GlobeWidget::trackHovered` → `MainWindow::onMapHoverTrack` → 各窗口 `setLinkedHighlight(batchNo,t0,t1)`；点迹窗口悬停经 `trackFocusChanged` → `trackIndexForBatch`（同样要求编号相同且时间有重叠）→ 地图 `setHoveredTrack`。
+  - 画布侧用 `setIsolatedBatches(QSet<int>)`（空=全部）实现"只显示所选"，`m_tracks` 只装画出来的，悬停/双击自然只命中隔离后的航迹。
+- **一致性校验**：叠加航迹的点只有在"离最近检测帧不超过最大帧间隔"时才会被采用（`appendOverlayPoints` 的 `tol`），时间窗完全对不上的航迹整条判为不可叠加（不会被硬贴到首/末帧画一条假航迹），窗口记录 `m_skippedTracks` 并在状态栏/选择航迹后弹窗提示。
 - **点迹窗口的回放是窗口自带的，与主窗口时间轴完全独立**（用户明确要求，不要再接 `ReplayController`）：只回放本窗口的点迹/航迹，**不做时间插值**，而是按相邻帧的时间差逐帧切换（每帧停留 = `frames[i+1].timeMs - frames[i].timeMs` / 倍速，倍速存 `point3d.play_speed`，默认 100）。进度条绑定**帧序号**（有级），拖动只能落在某一帧上；拖拽时暂停、松手恢复；播到最后一帧自动停，再点播放从头开始。主窗口的 `resetReplayRange` 只统计地图航迹，不再并入点迹窗口。
 - 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
 - 航迹点源（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。
@@ -75,7 +81,7 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 画布绘制必须成对 `save()/restore()`：悬停提示框用了不透明画刷，泄漏到后面的 `drawColorBar()` 会把色标渐变整块盖掉（表现为"鼠标一悬停到点迹上，右侧色标条就消失"）。色标条任何状态下都要完整重画。
 - 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
 - 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
-- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
+- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
 
 ### OpenGL 约束
 

@@ -20,6 +20,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -28,6 +29,7 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSet>
 #include <QShortcut>
 #include <QSlider>
@@ -50,6 +52,17 @@ QString toolbarQss()
     return QStringLiteral(
         "QWidget#point3dToolbar { background: var(--bg-secondary);"
         " border-bottom: 1px solid var(--border-primary); }"
+        "QWidget#point3dSettings { background: var(--bg-secondary);"
+        " border-bottom: 1px solid var(--border-primary); }"
+        "QScrollArea#point3dToolbarScroll { background: var(--bg-secondary); border: none; }"
+        "QScrollArea#point3dToolbarScroll > QWidget { background: var(--bg-secondary); }"
+        "QScrollArea#point3dToolbarScroll > QWidget > QWidget { background: var(--bg-secondary); }"
+        "QScrollBar:horizontal { background: var(--bg-tertiary); height: 10px; margin: 0; border: none; }"
+        "QScrollBar::handle:horizontal { background: var(--border-primary); min-width: 40px;"
+        " border-radius: 5px; }"
+        "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0;"
+        " border: none; background: none; }"
+        "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }"
         "QWidget#point3dStatus { background: var(--bg-secondary);"
         " border-top: 1px solid var(--border-primary); }"
         "QLabel { color: var(--text-secondary); font-family: %1; font-size: 12px; }"
@@ -59,7 +72,7 @@ QString toolbarQss()
         "QPushButton:hover { background: var(--button-hover); color: var(--text-primary); }"
         "QPushButton:checked { background: var(--accent-primary); color: #ffffff;"
         " border-color: var(--accent-primary); }"
-        "QComboBox, QSpinBox { color: var(--text-primary); background: var(--input-bg);"
+        "QComboBox, QSpinBox, QDoubleSpinBox { color: var(--text-primary); background: var(--input-bg);"
         " border: 1px solid var(--input-border); border-radius: 3px; padding: 2px 6px;"
         " font-family: %1; font-size: 12px; }"
         "QSlider::groove:horizontal { height: 4px; background: var(--bg-tertiary);"
@@ -227,6 +240,7 @@ void Point3dWindow::setTrackColorProvider(
 void Point3dWindow::reloadOverlaysFromKeys()
 {
     m_data.tracks.clear();
+    m_skippedTracks = 0;
     if (!m_trackKeys.isEmpty() && !m_data.frames.isEmpty() && trackdb::isOpen()) {
         const QVector<Track> tracks = trackdb::loadTracks(m_trackKeys);
         for (const Track &t : tracks) {
@@ -235,9 +249,58 @@ void Point3dWindow::reloadOverlaysFromKeys()
                                                  : QColor();
             if (overlayFromTrack(t, m_data.frames, &ov, color))
                 m_data.tracks.append(ov);
+            else
+                ++m_skippedTracks;       // 与点迹时间窗对不上（一致性校验）
         }
     }
     m_canvas->refreshLimits();
+    applyLinkedSelection();              // 重载后重新套用地图当前的选中/筛选
+}
+
+// 地图侧选中/筛选 → 本窗口同步"单独显示"对应航迹
+void Point3dWindow::setLinkedSelection(const QVector<LinkedTrackRef> &refs)
+{
+    m_linkedSelection = refs;
+    applyLinkedSelection();
+}
+
+void Point3dWindow::applyLinkedSelection()
+{
+    if (m_linkedSelection.isEmpty()) {
+        m_canvas->setIsolatedBatches(QSet<int>());
+        updateStatus();
+        return;
+    }
+    QSet<int> batches;
+    for (const TrackOverlay &ov : qAsConst(m_data.tracks))
+        for (const LinkedTrackRef &r : qAsConst(m_linkedSelection))
+            if (point3dRefsMatch(ov.batchNo, ov.minTime, ov.maxTime, r.batchNo, r.t0, r.t1)) {
+                batches.insert(ov.batchNo);
+                break;
+            }
+    if (batches.isEmpty())
+        return;                          // 地图选中的航迹本窗口没有：保持原样
+    m_canvas->setIsolatedBatches(batches);
+    updateStatus();
+}
+
+// 地图悬停某条航迹 → 本窗口里"同一条航迹"同步高亮
+void Point3dWindow::setLinkedHighlight(int batchNo, qint64 t0, qint64 t1)
+{
+    int resolved = -1;
+    if (batchNo > 0)
+        for (const TrackOverlay &ov : qAsConst(m_data.tracks))
+            if (point3dRefsMatch(ov.batchNo, ov.minTime, ov.maxTime, batchNo, t0, t1)) {
+                resolved = ov.batchNo;
+                break;
+            }
+    m_canvas->setHighlightedBatch(resolved);
+    updateStatus();
+}
+
+QSet<int> Point3dWindow::isolatedBatches() const
+{
+    return m_canvas->isolatedBatches();
 }
 
 void Point3dWindow::chooseTracksFromDb()
@@ -258,6 +321,16 @@ void Point3dWindow::chooseTracksFromDb()
                     + QStringLiteral("::") + s.fileName;
 
     reloadOverlaysFromKeys();
+
+    // 一致性校验：航迹必须与点迹在时间上对得上，否则单独提示
+    if (m_skippedTracks > 0 && !app::testMode())
+        QMessageBox::warning(
+            this, QStringLiteral("时间不匹配"),
+            QStringLiteral("%1 条航迹与点迹时间窗对不上，已忽略。\n"
+                           "本窗口点迹：%2 ~ %3\n\n"
+                           "请确认选的是与点迹同一批数据的航迹。")
+                .arg(m_skippedTracks)
+                .arg(formatBeijingTime(m_data.minTime), formatBeijingTime(m_data.maxTime)));
 
     // 用户明确选中的航迹不能被「点源」过滤静默藏起来：当前模式取不到点列就自动切「自动」
     if (!m_data.tracks.isEmpty()) {
@@ -392,6 +465,7 @@ void Point3dWindow::buildUi()
     // ---- 工具栏 ----
     m_toolbar = new QWidget(this);
     m_toolbar->setObjectName(QStringLiteral("point3dToolbar"));
+    m_toolbar->setAttribute(Qt::WA_StyledBackground, true);
     QHBoxLayout *bar = new QHBoxLayout(m_toolbar);
     bar->setContentsMargins(ui::sz(8), ui::sz(6), ui::sz(8), ui::sz(6));
     bar->setSpacing(ui::sz(8));
@@ -466,6 +540,12 @@ void Point3dWindow::buildUi()
     m_labelBtn->setToolTip(QStringLiteral("显示 / 隐藏航迹编号（L）"));
     bar->addWidget(m_labelBtn);
 
+    m_settingsBtn = new QPushButton(QStringLiteral("显示设置"), m_toolbar);
+    m_settingsBtn->setCheckable(true);
+    m_settingsBtn->setToolTip(QStringLiteral(
+        "展开本窗口的显示设置栏：点迹尺寸 / 航迹线宽 / 标签大小"));
+    bar->addWidget(m_settingsBtn);
+
     QPushButton *advBtn = new QPushButton(QStringLiteral("高级参数…"), m_toolbar);
     advBtn->setToolTip(QStringLiteral("MATLAB 工具的全部可调参数（变量名、连续性、帧数等）"));
     bar->addWidget(advBtn);
@@ -508,7 +588,51 @@ void Point3dWindow::buildUi()
     m_progress->setFixedWidth(ui::sz(140));
     m_progress->setVisible(false);
     bar->addWidget(m_progress);
-    root->addWidget(m_toolbar);
+
+    // 工具栏控件很多，直接放进窗口会把最小宽度撑到屏幕外、窗口就没法自由缩放了；
+    // 放进横向滚动区后窗口可以随便拉窄，放不下的按钮横向滚动即可
+    bar->activate();
+    QScrollArea *barScroll = new QScrollArea(this);
+    barScroll->setObjectName(QStringLiteral("point3dToolbarScroll"));
+    barScroll->setWidgetResizable(true);
+    barScroll->setFrameShape(QFrame::NoFrame);
+    barScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    barScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    barScroll->setWidget(m_toolbar);
+    barScroll->setFixedHeight(m_toolbar->sizeHint().height() + ui::sz(12));
+    root->addWidget(barScroll);
+
+    // ---- 显示设置栏（可折叠，只影响本窗口）----
+    m_settingsBar = new QWidget(this);
+    m_settingsBar->setObjectName(QStringLiteral("point3dSettings"));
+    m_settingsBar->setAttribute(Qt::WA_StyledBackground, true);
+    QHBoxLayout *sbar = new QHBoxLayout(m_settingsBar);
+    sbar->setContentsMargins(ui::sz(10), ui::sz(4), ui::sz(10), ui::sz(4));
+    sbar->setSpacing(ui::sz(8));
+    auto dspin = [this](double lo, double hi, double value) {
+        QDoubleSpinBox *s = new QDoubleSpinBox(m_settingsBar);
+        s->setRange(lo, hi);
+        s->setDecimals(2);
+        s->setSingleStep(0.1);
+        s->setValue(value);
+        s->setMinimumWidth(ui::sz(72));
+        return s;
+    };
+    sbar->addWidget(new QLabel(QStringLiteral("点迹尺寸"), m_settingsBar));
+    m_pointSizeSpin = dspin(0.2, 5.0, 1.0);
+    m_pointSizeSpin->setToolTip(QStringLiteral("点迹点的大小倍数（0.2–5）"));
+    sbar->addWidget(m_pointSizeSpin);
+    sbar->addWidget(new QLabel(QStringLiteral("航迹线宽"), m_settingsBar));
+    m_lineWidthSpin = dspin(0.5, 12.0, 2.0);
+    m_lineWidthSpin->setToolTip(QStringLiteral("叠加航迹的线宽（0.5–12）"));
+    sbar->addWidget(m_lineWidthSpin);
+    sbar->addWidget(new QLabel(QStringLiteral("标签大小"), m_settingsBar));
+    m_labelSizeSpin = dspin(0.5, 3.0, 1.0);
+    m_labelSizeSpin->setToolTip(QStringLiteral("航迹编号（T20xxx）文字大小倍数（0.5–3）"));
+    sbar->addWidget(m_labelSizeSpin);
+    sbar->addStretch(1);
+    m_settingsBar->setVisible(false);
+    root->addWidget(m_settingsBar);
 
     // ---- 画布 ----
     m_canvas = new Point3dCanvas(this);
@@ -548,6 +672,30 @@ void Point3dWindow::buildUi()
             app::setValue(QStringLiteral("point3d.drag_mode"),
                           pan ? QStringLiteral("pan") : QStringLiteral("rotate"));
     });
+    // 显示设置栏：点迹尺寸 / 航迹线宽 / 标签大小
+    connect(m_settingsBtn, &QPushButton::toggled, this, [this](bool open) {
+        m_settingsBar->setVisible(open);
+        if (!m_restoring)
+            app::setValue(QStringLiteral("point3d.settings_open"), open);
+    });
+    connect(m_pointSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                m_canvas->setPointScale(v);
+                if (!m_restoring)
+                    app::setValue(QStringLiteral("point3d.point_scale"), v);
+            });
+    connect(m_lineWidthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                m_canvas->setTrackLineWidth(v);
+                if (!m_restoring)
+                    app::setValue(QStringLiteral("point3d.track_line_width"), v);
+            });
+    connect(m_labelSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                m_canvas->setLabelScale(v);
+                if (!m_restoring)
+                    app::setValue(QStringLiteral("point3d.label_scale"), v);
+            });
     connect(m_viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &Point3dWindow::onViewModeChanged);
     connect(m_windowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -650,7 +798,10 @@ void Point3dWindow::buildUi()
                             == QLatin1String("associated"));
     m_panBtn->setChecked(setting("point3d.drag_mode", QStringLiteral("rotate")).toString()
                          == QLatin1String("pan"));
-    m_canvas->setTrackLineWidth(setting("point3d.track_line_width", 2.0).toDouble());
+    m_pointSizeSpin->setValue(setting("point3d.point_scale", 1.0).toDouble());
+    m_lineWidthSpin->setValue(setting("point3d.track_line_width", 2.0).toDouble());
+    m_labelSizeSpin->setValue(setting("point3d.label_scale", 1.0).toDouble());
+    m_settingsBtn->setChecked(setting("point3d.settings_open", false).toBool());
 
     // 本窗口回放的倍速（只影响本窗口）
     m_speed = qBound(0.01, setting("point3d.play_speed", 100.0).toDouble(), 1.0e6);
@@ -853,6 +1004,11 @@ void Point3dWindow::updateStatus()
     if (m_data.frames.isEmpty())
         return;                       // 保留导入完成/失败时的提示文字
     QString text = m_canvas->statusText();
+    const QSet<int> isolated = m_canvas->isolatedBatches();
+    if (!isolated.isEmpty())
+        text += QStringLiteral(" | 按地图选择单独显示 %1 条").arg(isolated.size());
+    if (m_skippedTracks > 0)
+        text += QStringLiteral(" | %1 条航迹与点迹时间不匹配已忽略").arg(m_skippedTracks);
     m_status->setText(text);
 }
 

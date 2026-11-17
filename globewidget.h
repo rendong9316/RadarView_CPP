@@ -142,6 +142,7 @@ signals:
     // 相机被用户改动（拖动结束 / 滚轮 / 复位 / 定位）：主窗口据此持久化视角
     void cameraChanged();
     void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
+    void trackHovered(int index);                              // 悬停的航迹变化（离开为 -1）
     void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
     void flagContextMenuRequested(const QString &flagId, const QPoint &globalPos);
     // 绘图：文本框/油漆桶需要弹窗，交给主窗口处理（GlobeWidget 不持有对话框）

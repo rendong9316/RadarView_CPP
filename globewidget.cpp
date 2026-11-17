@@ -2469,6 +2469,7 @@ void GlobeWidget::updateHover(const QPoint &pos, const QPoint &globalPos)
         return;
     }
     m_trackLayer.setHoveredTrack(idx);
+    emit trackHovered(idx);             // 供点迹窗口做"同一条航迹同时高亮"的联动
     if (idx >= 0) {
         setCursor(Qt::PointingHandCursor);
         if (tipTrack < 0)

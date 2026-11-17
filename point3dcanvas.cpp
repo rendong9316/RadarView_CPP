@@ -239,6 +239,32 @@ void Point3dCanvas::setTrackLineWidth(double w)
     }
 }
 
+void Point3dCanvas::setPointScale(double s)
+{
+    const double v = qBound(0.2, s, 5.0);
+    if (!qFuzzyCompare(v, m_pointScale)) {
+        m_pointScale = v;
+        update();
+    }
+}
+
+void Point3dCanvas::setLabelScale(double s)
+{
+    const double v = qBound(0.5, s, 3.0);
+    if (!qFuzzyCompare(v, m_labelScale)) {
+        m_labelScale = v;
+        update();
+    }
+}
+
+void Point3dCanvas::setIsolatedBatches(const QSet<int> &batches)
+{
+    if (batches != m_isolatedBatches) {
+        m_isolatedBatches = batches;
+        update();
+    }
+}
+
 void Point3dCanvas::setCamera(double yaw, double pitch, double zoom, double panX, double panY)
 {
     m_cam.yaw = yaw;
@@ -579,7 +605,7 @@ void Point3dCanvas::drawDetections(QPainter &p, double zlo, double zhi)
         total += m_data->frames.at(i).points.size();
     const int step = total > 25000 ? int(std::ceil(double(total) / 25000.0)) : 1;
     const double snrSpan = qMax(1e-6, m_data->snrMax - m_data->snrMin);
-    const double markerScale = qBound(0.6, UiScale::instance()->scale(), 1.5);
+    const double markerScale = qBound(0.6, UiScale::instance()->scale(), 1.5) * m_pointScale;
 
     m_projected.reserve(qMin(total, 25000) + 16);
     int globalIndex = 0;
@@ -671,6 +697,9 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
     p.setRenderHint(QPainter::Antialiasing, true);
     for (int ti = 0; ti < m_data->tracks.size(); ++ti) {
         const TrackOverlay &tr = m_data->tracks.at(ti);
+        // 地图单独显示/筛选联动：只画被选中的批次
+        if (!m_isolatedBatches.isEmpty() && !m_isolatedBatches.contains(tr.batchNo))
+            continue;
         // 点源：同一条航迹可能同时带平滑点列与关联点列，按当前模式取其中一列
         // （平滑=主点列、关联=asscPointList 点列、预测=库中未存）
         const QVector<TrackOverlayPoint> *pts = point3dOverlayPointsFor(tr, m_trackSource);
@@ -733,7 +762,7 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
         p.setBrush(Qt::NoBrush);
 
         if (m_showLabels) {
-            p.setFont(plotFont(ui::px(0.48), true));
+            p.setFont(plotFont(ui::px(0.48 * m_labelScale), true));
             const QString label = QStringLiteral("T%1").arg(tr.batchNo);
             const QFontMetricsF fm(p.font());
             const QRectF lr(last.x() + ui::sz(6), last.y() - fm.height() - ui::sz(2),

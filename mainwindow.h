@@ -173,6 +173,7 @@ private:
     void restorePoint3dSessions();
     void onPoint3dFocus(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void onPoint3dActivate(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    void onMapHoverTrack(int index);     // 地图悬停 → 点迹窗口同步高亮
     int trackIndexForBatch(int batchNo, TrackSource source, qint64 t0, qint64 t1) const;
     void updateDrawColorIcon();
     void onDrawText(double lat, double lon, const QPoint &globalPos);

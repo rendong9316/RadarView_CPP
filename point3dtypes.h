@@ -54,7 +54,25 @@ struct TrackOverlay {
     QColor color;
     QVector<TrackOverlayPoint> points;      // 平滑点列（Radar 批次的主点列）
     QVector<TrackOverlayPoint> rawPoints;   // 关联点列（同一 MAT 的 asscPointList / RadarRaw 批次）
+    qint64 minTime = 0, maxTime = 0;        // 两套点列合起来的时间范围（联动匹配用）
 };
+
+// 地图侧的一条航迹在联动里怎么指代：BatchNo（MAT 里的航迹编号）+ 时间范围。
+// 同一 MAT 分别按「雷达航迹」「雷达原始测量」导入时，id 前缀不同（RADAR-/RAW-）
+// 但编号和时间一致，靠这两项就能判断"指的是同一条航迹"。
+struct LinkedTrackRef {
+    int batchNo = 0;
+    qint64 t0 = 0, t1 = 0;
+};
+
+// 两条航迹是否在联动意义上同一条：编号相同且时间范围有重叠
+inline bool point3dRefsMatch(int batchNo, qint64 t0, qint64 t1,
+                             int otherBatchNo, qint64 o0, qint64 o1)
+{
+    if (batchNo <= 0 || batchNo != otherBatchNo)
+        return false;
+    return qMin(t1, o1) >= qMax(t0, o0);
+}
 
 // 连续性评分参数（对应 Continuity* 四个 cfg）
 struct ContinuityConfig {
