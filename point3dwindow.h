@@ -91,9 +91,10 @@ private:
     QWidget *m_statusBar = nullptr;
     QComboBox *m_viewCombo = nullptr;
     QComboBox *m_windowCombo = nullptr;
-    QComboBox *m_sourceCombo = nullptr;
     QSpinBox *m_windowSpin = nullptr;
     QPushButton *m_importBtn = nullptr;
+    QPushButton *m_sourceBtn = nullptr;   // 点源切换：弹起=平滑，按下=关联
+    QPushButton *m_panBtn = nullptr;      // 拖拽方式：弹起=旋转，按下=平移（手爪）
     QPushButton *m_pointBtn = nullptr;
     QPushButton *m_trackBtn = nullptr;
     QPushButton *m_labelBtn = nullptr;

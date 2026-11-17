@@ -390,6 +390,38 @@ int runPointTest(const QString &input, const QString &trackFile)
             QApplication::sendEvent(&canvas, &leave);
         }
 
+        // 平移拖拽：切到「平移」后左键拖动只移动视图、不旋转，鼠标显示手爪
+        {
+            double yaw0 = 0, pitch0 = 0, zoom0 = 0, panX0 = 0, panY0 = 0;
+            canvas.camera(&yaw0, &pitch0, &zoom0, &panX0, &panY0);
+            canvas.setDragMode(Point3dCanvas::DragMode::Pan);
+            check(canvas.cursor().shape() == Qt::OpenHandCursor,
+                  QStringLiteral("平移模式鼠标显示手爪"));
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(600, 400),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&canvas, &press);
+            QMouseEvent move(QEvent::MouseMove, QPointF(640, 430),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&canvas, &move);
+            QMouseEvent rel(QEvent::MouseButtonRelease, QPointF(640, 430),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&canvas, &rel);
+            double yaw1 = 0, pitch1 = 0, zoom1 = 0, panX1 = 0, panY1 = 0;
+            canvas.camera(&yaw1, &pitch1, &zoom1, &panX1, &panY1);
+            check(qFuzzyCompare(panX1 - panX0, 40.0) && qFuzzyCompare(panY1 - panY0, 30.0),
+                  QStringLiteral("平移拖拽移动视图（Δ=%1,%2）")
+                      .arg(panX1 - panX0).arg(panY1 - panY0));
+            check(qFuzzyCompare(yaw1, yaw0) && qFuzzyCompare(pitch1, pitch0),
+                  QStringLiteral("平移拖拽不旋转视角"));
+            canvas.resetCamera();
+            canvas.camera(nullptr, nullptr, nullptr, &panX1, &panY1);
+            check(qFuzzyCompare(panX1, 0.0) && qFuzzyCompare(panY1, 0.0),
+                  QStringLiteral("恢复默认视角同时清零平移"));
+            canvas.setDragMode(Point3dCanvas::DragMode::Rotate);
+            check(canvas.cursor().shape() != Qt::OpenHandCursor,
+                  QStringLiteral("旋转模式恢复普通指针"));
+        }
+
         bool viewOk = true;
         const char *const modeNames[] = { "rvf", "raf", "vaf" };
         int modeIndex = 0;

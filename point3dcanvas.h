@@ -49,8 +49,15 @@ public:
     void setTrackLineWidth(double w);
     double trackLineWidth() const { return m_trackLineWidth; }
 
-    void setCamera(double yaw, double pitch, double zoom);
-    void camera(double *yaw, double *pitch, double *zoom) const;
+    // 鼠标左键拖拽的行为：旋转视角 / 平移视图（平移时鼠标显示手爪）
+    enum class DragMode { Rotate, Pan };
+    void setDragMode(DragMode mode);
+    DragMode dragMode() const { return m_dragMode; }
+
+    void setCamera(double yaw, double pitch, double zoom,
+                   double panX = 0.0, double panY = 0.0);
+    void camera(double *yaw, double *pitch, double *zoom,
+                double *panX = nullptr, double *panY = nullptr) const;
     void resetCamera();
 
     int visiblePointCount() const { return m_lastVisibleCount; }
@@ -132,6 +139,8 @@ private:
     double m_trackLineWidth = 2.0;
 
     Camera m_cam;
+    DragMode m_dragMode = DragMode::Rotate;
+    double m_panX = 0.0, m_panY = 0.0;   // 平移偏移（屏幕像素，叠加到投影中心）
     Basis m_basis;
     Limits m_limits[3];
 

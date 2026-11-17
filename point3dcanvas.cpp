@@ -239,15 +239,18 @@ void Point3dCanvas::setTrackLineWidth(double w)
     }
 }
 
-void Point3dCanvas::setCamera(double yaw, double pitch, double zoom)
+void Point3dCanvas::setCamera(double yaw, double pitch, double zoom, double panX, double panY)
 {
     m_cam.yaw = yaw;
     m_cam.pitch = qBound(-89.0, pitch, 89.0);
     m_cam.zoom = qBound(0.25, zoom, 8.0);
+    m_panX = panX;
+    m_panY = panY;
     update();
 }
 
-void Point3dCanvas::camera(double *yaw, double *pitch, double *zoom) const
+void Point3dCanvas::camera(double *yaw, double *pitch, double *zoom,
+                           double *panX, double *panY) const
 {
     if (yaw)
         *yaw = m_cam.yaw;
@@ -255,11 +258,26 @@ void Point3dCanvas::camera(double *yaw, double *pitch, double *zoom) const
         *pitch = m_cam.pitch;
     if (zoom)
         *zoom = m_cam.zoom;
+    if (panX)
+        *panX = m_panX;
+    if (panY)
+        *panY = m_panY;
+}
+
+void Point3dCanvas::setDragMode(DragMode mode)
+{
+    if (mode == m_dragMode)
+        return;
+    m_dragMode = mode;
+    setCursor(mode == DragMode::Pan ? Qt::OpenHandCursor : Qt::ArrowCursor);
+    update();
 }
 
 void Point3dCanvas::resetCamera()
 {
     m_cam = Camera();
+    m_panX = 0.0;
+    m_panY = 0.0;
     update();
     emit cameraChanged();
 }
@@ -340,8 +358,8 @@ void Point3dCanvas::updateBasis(const QRectF &plot)
     b.uy = -se * sa;
     b.uz = ce;
     b.scale = qMin(plot.width(), plot.height()) * 0.42 * m_cam.zoom;
-    b.cx = plot.center().x();
-    b.cy = plot.center().y();
+    b.cx = plot.center().x() + m_panX;
+    b.cy = plot.center().y() + m_panY;
 }
 
 void Point3dCanvas::zRange(double *lo, double *hi) const
@@ -875,8 +893,13 @@ void Point3dCanvas::mouseMoveEvent(QMouseEvent *e)
     if (m_dragging) {
         const QPoint d = e->pos() - m_lastMouse;
         m_lastMouse = e->pos();
-        m_cam.yaw += d.x() * 0.4;
-        m_cam.pitch = qBound(-89.0, m_cam.pitch - d.y() * 0.4, 89.0);
+        if (m_dragMode == DragMode::Pan) {
+            m_panX += d.x();
+            m_panY += d.y();
+        } else {
+            m_cam.yaw += d.x() * 0.4;
+            m_cam.pitch = qBound(-89.0, m_cam.pitch - d.y() * 0.4, 89.0);
+        }
         update();
         return;
     }
@@ -906,7 +929,11 @@ void Point3dCanvas::mouseMoveEvent(QMouseEvent *e)
         update();
         emit hoverChanged();
     }
-    setCursor(bestPoint >= 0 || bestTrack >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    // 平移模式下始终保持手爪（提示"可以拖着走"），旋转模式按是否命中点/航迹换指针
+    if (m_dragMode == DragMode::Pan)
+        setCursor(Qt::OpenHandCursor);
+    else
+        setCursor(bestPoint >= 0 || bestTrack >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
     QWidget::mouseMoveEvent(e);
 }
 
@@ -914,7 +941,7 @@ void Point3dCanvas::mouseReleaseEvent(QMouseEvent *e)
 {
     if (m_dragging && e->button() == Qt::LeftButton) {
         m_dragging = false;
-        setCursor(Qt::ArrowCursor);
+        setCursor(m_dragMode == DragMode::Pan ? Qt::OpenHandCursor : Qt::ArrowCursor);
         emit cameraChanged();
         return;
     }

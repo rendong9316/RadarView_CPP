@@ -66,7 +66,9 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。
 - **所有点迹窗口与主窗口共用同一个 `ReplayController` 时钟**：窗口内的播放/暂停/倍速/进度条直接驱动它，主窗口回放范围取「可见航迹 ∪ 所有点迹窗口」的并集。不要再给点迹窗口做本地计时器。
 - 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
-- 航迹点源下拉的语义（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）、**自动**=有平滑看平滑、只有关联点列时看关联、**预测**=库中未存（不显示）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。**默认必须是「自动」**，不允许出现"选了却看不见"：用户在「选择航迹…」里明确选中的航迹，若当前点源取不到点列，窗口要自动切回「自动」。
+- 航迹点源（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。
+- **工具栏只用一个按钮切平滑/关联**（库里就这两套点列，不要下拉框）：`m_sourceBtn` 弹起=平滑、按下=关联，按钮文字同步显示当前点列；取值持久化到 `point3d.track_source`（`smooth`/`associated`，老值 `auto`/`predicted` 一律按平滑处理）。不允许出现"选了却看不见"：用户在「选择航迹…」里选中的航迹若当前点源取不到点列，窗口要自动切到另一列。
+- **画布左键拖拽有两种模式**：`Point3dCanvas::DragMode::Rotate`（默认，旋转视角）与 `DragMode::Pan`（平移视图）。工具栏「平移 [H]」按钮切换，平移时鼠标始终显示手爪（拖动中为 ClosedHand），偏移以屏幕像素叠加在投影中心（`m_panX/m_panY`），随相机一起持久化（`point3d.camera_pan_x/y`、会话 JSON 的 `camera.pan_x/pan_y`），空白处双击 `resetCamera()` 一并清零。`point3d.drag_mode` 记住上次的拖拽模式。
 - 雷达 MAT 导入时 `parseRadarMat(..., raw=false)` 会把 `asscPointList` 一并读进 `Track::rawPoints` 入库，所以同一份数据能直接切换平滑/关联，不用导两遍；老库（v3 及以前）重导同一 MAT 会**原地补列**（`DbSaveJob` 对已存在且缺 `has_measure`/`has_raw` 的行做 `INSERT OR REPLACE`，不算新增，不影响批次计数）。
 - **`ReplayController::setRange` 不得随意重置当前时刻**：地图单独显示某条航迹、筛选、增删数据都会重算回放范围，范围变了但当前时刻仍在新范围内时必须原地保留（范围完全没变则直接返回，连回放状态都不打断）。历史上每次都跳回起点，表现为"在点迹图上还好，去地图点一条航迹，点迹窗口就跳到第一帧、点迹看起来全没了"。
 - 航迹选择属于单个窗口：只随窗口会话（`point3d.windows`）持久化，不写全局默认键，否则新开窗口会莫名继承别的窗口选过的航迹。

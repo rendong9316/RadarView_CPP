@@ -238,11 +238,8 @@ void Point3dWindow::chooseTracksFromDb()
                 admitted = true;
                 break;
             }
-        if (!admitted) {
-            const int autoIdx = m_sourceCombo->findData(int(Point3dTrackSource::Auto));
-            if (autoIdx >= 0)
-                m_sourceCombo->setCurrentIndex(autoIdx);
-        }
+        if (!admitted)
+            m_sourceBtn->toggle();      // 当前点列取不到点：切到另一列（平滑 <-> 关联）
     } else if (!sel.isEmpty() && !app::testMode()) {
         // 选了航迹却一条也叠加不上：多半是时间窗不重叠或旧数据没有测量坐标
         QMessageBox::information(
@@ -268,12 +265,14 @@ QJsonObject Point3dWindow::sessionJson() const
         tracks.append(k);
     o.insert(QStringLiteral("tracks"), tracks);
 
-    double yaw = 42.0, pitch = 23.0, zoom = 1.0;
-    m_canvas->camera(&yaw, &pitch, &zoom);
+    double yaw = 42.0, pitch = 23.0, zoom = 1.0, panX = 0.0, panY = 0.0;
+    m_canvas->camera(&yaw, &pitch, &zoom, &panX, &panY);
     QJsonObject cam;
     cam.insert(QStringLiteral("yaw"), yaw);
     cam.insert(QStringLiteral("pitch"), pitch);
     cam.insert(QStringLiteral("zoom"), zoom);
+    cam.insert(QStringLiteral("pan_x"), panX);
+    cam.insert(QStringLiteral("pan_y"), panY);
     o.insert(QStringLiteral("camera"), cam);
 
     o.insert(QStringLiteral("view_mode"), m_viewCombo->currentData().toInt());
@@ -323,7 +322,9 @@ void Point3dWindow::restoreSession(const QJsonObject &obj)
     if (!cam.isEmpty())
         m_canvas->setCamera(cam.value(QStringLiteral("yaw")).toDouble(42.0),
                             cam.value(QStringLiteral("pitch")).toDouble(23.0),
-                            cam.value(QStringLiteral("zoom")).toDouble(1.0));
+                            cam.value(QStringLiteral("zoom")).toDouble(1.0),
+                            cam.value(QStringLiteral("pan_x")).toDouble(0.0),
+                            cam.value(QStringLiteral("pan_y")).toDouble(0.0));
 
     m_files.clear();
     for (const QJsonValue &v : obj.value(QStringLiteral("files")).toArray())
@@ -383,6 +384,16 @@ void Point3dWindow::buildUi()
     m_viewCombo->setToolTip(QStringLiteral("三维视图的 X/Y 轴组合，Z 轴恒为帧号"));
     bar->addWidget(m_viewCombo);
 
+    // 拖拽方式：旋转视角 / 平移视图（平移时鼠标变手爪）
+    QLabel *dragLabel = new QLabel(QStringLiteral("拖拽"), m_toolbar);
+    bar->addWidget(dragLabel);
+    m_panBtn = new QPushButton(QStringLiteral("平移 [H]"), m_toolbar);
+    m_panBtn->setCheckable(true);              // 弹起 = 旋转视角，按下 = 平移视图
+    m_panBtn->setToolTip(QStringLiteral(
+        "左键拖拽方式：弹起=旋转视角；按下=平移视图（鼠标变手爪，按住左键拖动图表）\n"
+        "空白处双击恢复默认视角"));
+    bar->addWidget(m_panBtn);
+
     QLabel *windowLabel = new QLabel(QStringLiteral("窗口"), m_toolbar);
     bar->addWidget(windowLabel);
     m_windowCombo = new QComboBox(m_toolbar);
@@ -402,16 +413,12 @@ void Point3dWindow::buildUi()
 
     QLabel *sourceLabel = new QLabel(QStringLiteral("点源"), m_toolbar);
     bar->addWidget(sourceLabel);
-    m_sourceCombo = new QComboBox(m_toolbar);
-    m_sourceCombo->addItem(QStringLiteral("自动"), int(Point3dTrackSource::Auto));
-    m_sourceCombo->addItem(QStringLiteral("平滑"), int(Point3dTrackSource::Smooth));
-    m_sourceCombo->addItem(QStringLiteral("关联"), int(Point3dTrackSource::Associated));
-    m_sourceCombo->addItem(QStringLiteral("预测"), int(Point3dTrackSource::Predicted));
-    m_sourceCombo->setToolTip(QStringLiteral(
-        "航迹点列：自动=有平滑看平滑、没有就用关联；\n"
-        "平滑=航迹的平滑/输出点列；关联=同一 MAT 的关联点列（asscPointList）；\n"
-        "预测点列未入库，选择「预测」时不显示航迹"));
-    bar->addWidget(m_sourceCombo);
+    // 库里每条雷达航迹只保存两套点列（平滑 / 关联），用一个按钮来回切即可，不需要下拉框
+    m_sourceBtn = new QPushButton(QStringLiteral("平滑"), m_toolbar);
+    m_sourceBtn->setCheckable(true);           // 弹起 = 平滑，按下 = 关联
+    m_sourceBtn->setToolTip(QStringLiteral(
+        "切换叠加航迹的点列：平滑（smoothPointList）↔ 关联（asscPointList）"));
+    bar->addWidget(m_sourceBtn);
 
     bar->addSpacing(ui::sz(6));
     m_pointBtn = new QPushButton(QStringLiteral("点迹 [P]"), m_toolbar);
@@ -492,16 +499,21 @@ void Point3dWindow::buildUi()
     connect(pickTracksBtn, &QPushButton::clicked, this, &Point3dWindow::chooseTracksFromDb);
     connect(advBtn, &QPushButton::clicked, this, &Point3dWindow::openAdvancedSettings);
     connect(exportBtn, &QPushButton::clicked, this, &Point3dWindow::exportCanvasImage);
-    connect(m_sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
-        const Point3dTrackSource src = Point3dTrackSource(m_sourceCombo->currentData().toInt());
-        m_canvas->setTrackSource(src);
-        if (!m_restoring) {
-            const char *key = src == Point3dTrackSource::Auto ? "auto"
-                            : src == Point3dTrackSource::Smooth ? "smooth"
-                            : src == Point3dTrackSource::Predicted ? "predicted" : "associated";
-            app::setValue(QStringLiteral("point3d.track_source"), QString::fromLatin1(key));
-        }
+    connect(m_sourceBtn, &QPushButton::toggled, this, [this](bool associated) {
+        m_sourceBtn->setText(associated ? QStringLiteral("关联") : QStringLiteral("平滑"));
+        m_canvas->setTrackSource(associated ? Point3dTrackSource::Associated
+                                            : Point3dTrackSource::Smooth);
+        if (!m_restoring)
+            app::setValue(QStringLiteral("point3d.track_source"),
+                          associated ? QStringLiteral("associated") : QStringLiteral("smooth"));
         updateStatus();
+    });
+    connect(m_panBtn, &QPushButton::toggled, this, [this](bool pan) {
+        m_canvas->setDragMode(pan ? Point3dCanvas::DragMode::Pan
+                                  : Point3dCanvas::DragMode::Rotate);
+        if (!m_restoring)
+            app::setValue(QStringLiteral("point3d.drag_mode"),
+                          pan ? QStringLiteral("pan") : QStringLiteral("rotate"));
     });
     connect(m_viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &Point3dWindow::onViewModeChanged);
@@ -564,6 +576,7 @@ void Point3dWindow::buildUi()
     bindKey(Qt::Key_P, [this]() { m_pointBtn->toggle(); });
     bindKey(Qt::Key_T, [this]() { m_trackBtn->toggle(); });
     bindKey(Qt::Key_L, [this]() { m_labelBtn->toggle(); });
+    bindKey(Qt::Key_H, [this]() { m_panBtn->toggle(); });   // 手爪（平移）/ 旋转
     bindKey(Qt::Key_Space, [this]() {
         if (m_replay)
             m_replay->togglePlay();
@@ -586,22 +599,19 @@ void Point3dWindow::buildUi()
     m_canvas->setShowDetections(m_pointBtn->isChecked());
     m_canvas->setShowTracks(m_trackBtn->isChecked());
     m_canvas->setShowLabels(m_labelBtn->isChecked());
-    const QString src = setting("point3d.track_source", QStringLiteral("auto")).toString();
-    Point3dTrackSource trackSource = Point3dTrackSource::Auto;
-    if (src == QLatin1String("auto"))
-        trackSource = Point3dTrackSource::Auto;
-    else if (src == QLatin1String("smooth"))
-        trackSource = Point3dTrackSource::Smooth;
-    else if (src == QLatin1String("predicted"))
-        trackSource = Point3dTrackSource::Predicted;
-    m_sourceCombo->setCurrentIndex(qMax(0, m_sourceCombo->findData(int(trackSource))));
-    m_canvas->setTrackSource(trackSource);
+    // 点源（平滑/关联）与拖拽方式（旋转/平移）：按钮状态即设置值，按下时自动写回
+    m_sourceBtn->setChecked(setting("point3d.track_source", QStringLiteral("smooth")).toString()
+                            == QLatin1String("associated"));
+    m_panBtn->setChecked(setting("point3d.drag_mode", QStringLiteral("rotate")).toString()
+                         == QLatin1String("pan"));
     m_canvas->setTrackLineWidth(setting("point3d.track_line_width", 2.0).toDouble());
 
     const double camYaw = setting("point3d.camera_yaw", 42.0).toDouble();
     const double camPitch = setting("point3d.camera_pitch", 23.0).toDouble();
     const double camZoom = setting("point3d.camera_zoom", 1.0).toDouble();
-    m_canvas->setCamera(camYaw, camPitch, camZoom);
+    const double camPanX = setting("point3d.camera_pan_x", 0.0).toDouble();
+    const double camPanY = setting("point3d.camera_pan_y", 0.0).toDouble();
+    m_canvas->setCamera(camYaw, camPitch, camZoom, camPanX, camPanY);
 
     // 滑动窗口
     const int len = setting("point3d.window_length", 0).toInt();
@@ -975,11 +985,13 @@ void Point3dWindow::saveSettings()
 {
     if (m_restoring)
         return;
-    double yaw = 0, pitch = 0, zoom = 0;
-    m_canvas->camera(&yaw, &pitch, &zoom);
+    double yaw = 0, pitch = 0, zoom = 0, panX = 0, panY = 0;
+    m_canvas->camera(&yaw, &pitch, &zoom, &panX, &panY);
     app::setValue(QStringLiteral("point3d.camera_yaw"), yaw);
     app::setValue(QStringLiteral("point3d.camera_pitch"), pitch);
     app::setValue(QStringLiteral("point3d.camera_zoom"), zoom);
+    app::setValue(QStringLiteral("point3d.camera_pan_x"), panX);
+    app::setValue(QStringLiteral("point3d.camera_pan_y"), panY);
     app::setValue(QStringLiteral("point3d.window_geometry"), saveGeometry());
 }
 
