@@ -133,7 +133,7 @@ double distanceToSegment(const QPointF &p, const QPointF &a, const QPointF &b)
 
 Point3dCanvas::Point3dCanvas(QWidget *parent) : QWidget(parent)
 {
-    setMinimumSize(480, 360);
+    setMinimumSize(360, 300);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
@@ -997,14 +997,56 @@ void Point3dCanvas::drawHover(QPainter &p)
     p.restore();
 }
 
+// 色标条位置：紧贴立方体投影包围盒的右侧，竖向对齐立方体；右边留出刻度文字空间
+QRectF Point3dCanvas::colorBarRect() const
+{
+    const double w = ui::sz(14);
+    QRectF cube;
+    bool any = false;
+    for (int i = 0; i < 8; ++i) {
+        const QPointF pt = project((i & 1) ? 1.0 : -1.0, (i & 2) ? 1.0 : -1.0, (i & 4) ? 1.0 : -1.0);
+        if (!any) {
+            cube = QRectF(pt, pt);
+            any = true;
+        } else {
+            cube.setLeft(qMin(cube.left(), pt.x()));
+            cube.setRight(qMax(cube.right(), pt.x()));
+            cube.setTop(qMin(cube.top(), pt.y()));
+            cube.setBottom(qMax(cube.bottom(), pt.y()));
+        }
+    }
+    if (!any)
+        return QRectF();
+
+    double top = cube.top();
+    double bottom = cube.bottom();
+    if (bottom - top < ui::sz(140)) {          // 立方体太小：以中心为准给个最小高度
+        const double c = (top + bottom) * 0.5;
+        top = c - ui::sz(70);
+        bottom = c + ui::sz(70);
+    }
+    top = qMax(top, double(ui::sz(16)));
+    bottom = qMin(bottom, double(height() - ui::sz(8)));
+    if (bottom - top < ui::sz(80)) {
+        top = qMax<double>(ui::sz(16), height() * 0.5 - ui::sz(40));
+        bottom = top + ui::sz(80);
+    }
+
+    double x = cube.right() + ui::sz(12);
+    const double labelRoom = ui::sz(64);       // 右侧刻度文字
+    if (x + w + labelRoom > width() - ui::sz(4))
+        x = width() - ui::sz(4) - labelRoom - w;
+    x = qMax(x, double(ui::sz(4)));
+    return QRectF(x, top, w, bottom - top);
+}
+
 void Point3dCanvas::drawColorBar(QPainter &p, const QRectF &plot)
 {
+    Q_UNUSED(plot);
     if (!m_data)
         return;
-    const double w = ui::sz(14);
-    const double x = plot.right() + ui::sz(20);
-    const QRectF bar(x, plot.top(), w, plot.height());
-    if (bar.right() > width() - 4)
+    const QRectF bar = colorBarRect();
+    if (!bar.isValid() || bar.right() > width() - 2)
         return;
 
     // 色标条每次都完整重画：不受前面悬停提示等绘制残留画笔/画刷的影响
@@ -1035,7 +1077,7 @@ void Point3dCanvas::drawColorBar(QPainter &p, const QRectF &plot)
     }
     p.setFont(plotFont(ui::px(0.5), true));
     const double titleH = QFontMetricsF(p.font()).height();
-    p.drawText(QRectF(x - ui::sz(20), plot.top() - titleH - ui::sz(6),
+    p.drawText(QRectF(bar.left() - ui::sz(4), bar.top() - titleH - ui::sz(6),
                       ui::sz(90), titleH + ui::sz(4)),
                Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("SNR / dB"));
     p.restore();

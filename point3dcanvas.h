@@ -85,7 +85,8 @@ public:
     int visibleTrackCount() const { return m_lastVisibleTracks; }   // 已绘制（点源过滤后）的叠加航迹数
     QPointF trackHead(int index) const;       // 已绘制航迹的头部屏幕坐标（自检/诊断用）
     int trackBatchNo(int index) const;        // 已绘制航迹的批次号
-    QRectF plotRect() const;                  // 三维绘图区（色标条按它定位）
+    QRectF plotRect() const;                  // 三维绘图区
+    QRectF colorBarRect() const;              // 色标条（紧贴立方体右侧）
     QString statusText() const;               // 顶部统计文字
 
 signals:

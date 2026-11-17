@@ -39,6 +39,9 @@
 #include "point3dwindow.h"
 
 #include <QMouseEvent>
+#include <QMenuBar>
+#include <QGroupBox>
+#include <QScrollArea>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QLineEdit>
@@ -423,10 +426,12 @@ int runPointTest(const QString &input, const QString &trackFile)
             }
             check(hovered, QStringLiteral("鼠标悬停命中点迹（弹出提示框）"));
             const QImage img = canvas.grab().toImage();
-            const int barX0 = int(plot.right()) + ui::sz(20) + 2;
-            const int barX1 = barX0 + ui::sz(14) - 4;
+            // 色标条紧贴立方体右侧，取样区域按画布给出的矩形
+            const QRectF bar = canvas.colorBarRect();
+            const int barX0 = int(bar.left()) + 2;
+            const int barX1 = int(bar.right()) - 2;
             int colorful = 0;
-            for (int y = int(plot.top()) + 4; y < int(plot.bottom()) - 4; y += 3)
+            for (int y = int(bar.top()) + 4; y < int(bar.bottom()) - 4; y += 3)
                 for (int x = barX0; x <= barX1; ++x) {
                     const QColor c = img.pixelColor(x, y);
                     const int hi = qMax(c.red(), qMax(c.green(), c.blue()));
@@ -589,33 +594,17 @@ int runPointTest(const QString &input, const QString &trackFile)
               QStringLiteral("窗口与画布均不使用 OpenGL"));
         const QPixmap pm1 = w1->grab();
         check(!pm1.isNull(), QStringLiteral("窗口抓图非空"));
-        // 工具栏放进滚动区后，窗口最小宽度不再被一排按钮撑爆，可以自由缩放
+        // 布局：菜单 + 左侧「显示」侧栏 + 底部回放条（对齐地图窗口）
         check(w1->minimumSizeHint().width() < 900,
               QStringLiteral("窗口可自由缩放（最小宽度 %1 px）").arg(w1->minimumSizeHint().width()));
-        // 显示设置栏可展开
-        bool settingsFound = false;
-        for (QPushButton *btn : w1->findChildren<QPushButton *>())
-            if (btn->text().startsWith(QStringLiteral("显示设置"))) {
-                btn->setChecked(true);
-                settingsFound = true;
-                break;
-            }
+        QScrollArea *side = w1->findChild<QScrollArea *>(QStringLiteral("point3dSide"));
+        check(side != nullptr, QStringLiteral("左侧有「显示」侧栏"));
+        const int groups = w1->findChildren<QGroupBox *>().size();
+        check(groups >= 5, QStringLiteral("侧栏含 %1 个设置分组").arg(groups));
+        check(w1->findChild<QMenuBar *>() != nullptr, QStringLiteral("顶部有菜单栏"));
         QApplication::processEvents();
-        check(settingsFound, QStringLiteral("工具栏有「显示设置」开关"));
         w1->grab().save(QCoreApplication::applicationDirPath()
-                        + QStringLiteral("/pointtest_settings.png"));
-        // 区域筛选栏可展开（三行 = 当前视图的三个轴）
-        bool regionFound = false;
-        for (QPushButton *btn : w1->findChildren<QPushButton *>())
-            if (btn->text().startsWith(QStringLiteral("区域筛选"))) {
-                btn->setChecked(true);
-                regionFound = true;
-                break;
-            }
-        QApplication::processEvents();
-        check(regionFound, QStringLiteral("工具栏有「区域筛选」开关"));
-        w1->grab().save(QCoreApplication::applicationDirPath()
-                        + QStringLiteral("/pointtest_region_bar.png"));
+                        + QStringLiteral("/pointtest_side_panel.png"));
         w1->close();
         w2->close();
         QApplication::processEvents();

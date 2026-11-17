@@ -63,7 +63,13 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 
 复刻 MATLAB `track_debuger_suite/tool_Track visualization`，对应文件 `point3dtypes.h` / `point3dparsers.*` / `point3dimportjob.*` / `point3dcanvas.*` / `point3dwindow.*` / `trackpicker.*`。
 
-- 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。**工具栏控件多，必须放在横向 QScrollArea 里**（`QScrollArea#point3dToolbarScroll`）：直接塞进窗口会把最小宽度撑到 1700px 以上、窗口没法自由缩放（自检断言最小宽度 < 900）。窗口自带的「显示设置」栏（可折叠）里调**点迹尺寸 / 航迹线宽 / 标签大小**，分别存 `point3d.point_scale` / `point3d.track_line_width` / `point3d.label_scale`，画布接口 `setPointScale/setLabelScale/setTrackLineWidth`。
+- 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。
+- **布局对齐地图窗口：菜单 + 左侧「显示」侧栏 + 底部回放条**（用户确认过的方案，不要再把所有控件平铺成一条工具栏）：
+  - 顶部细菜单：文件（导入点迹 Ctrl+O / 选择航迹 / 导出 PNG / 关闭 Ctrl+W）、视图（显示侧栏 / 三个三轴视图 / 重置视角）、设置（高级参数…）；
+  - 左侧 `QScrollArea#point3dSide`（`SideScrollArea` 子类把 minimumSizeHint 固定得很小，否则内容最小宽度会顶到窗口最小宽度上）按分区放：视图、显示（点源 + P/T/L）、尺寸（点迹尺寸/航迹线宽/标签大小/提示字号）、色标 SNR、区域筛选；宽度 `ui::sz(300)`，可由「视图 → 显示侧栏」收起（`point3d.side_panel`）；
+  - 底部状态栏两行：状态文字 + 导入进度；回放条（播放 / 帧进度 / 时间 / 倍速），与地图窗口的 `AppStatusBar` 同一视觉语言。
+  - 自检断言：窗口最小宽度 < 900、左侧存在 `point3dSide` 滚动区、≥5 个 `QGroupBox`、存在菜单栏。
+- **色标条紧贴立方体投影包围盒的右侧**（`colorBarRect()`：x = 立方体右沿 + 间距，竖向对齐立方体，右侧留刻度文字空间），不要再按绘图区右边距摆。
 - **三方联动（地图 ↔ 点迹窗口 ↔ 数据库航迹）按「BatchNo + 时间范围」认人**，不是按 id 字符串：同一 MAT 分别按「雷达航迹」和「雷达原始测量」导入时 id 前缀不同（`RADAR-####` / `RAW-####`），但编号和时间一致，`point3dRefsMatch()` 据此认定同一条航迹。所有联动广播都带 `LinkedTrackRef{batchNo,t0,t1}`。
   - 地图**单击单独显示**某条航迹 → `MainWindow::applyDisplay` 把所有窗口 `setLinkedSelection({该航迹})`：窗口里有对应叠加航迹就只显示它们，**一条都对不上时窗口保持原样**（这是用户明确要求）；地图回到全部（refs 为空）才恢复显示全部叠加航迹。
   - 航迹管理系统**筛选/勾选**出的可见集合（`ManageState::visibleKeys`）同样按上面规则广播，多开的每个窗口都执行。
@@ -73,11 +79,11 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - **点迹窗口的回放是窗口自带的，与主窗口时间轴完全独立**（用户明确要求，不要再接 `ReplayController`）：只回放本窗口的点迹/航迹，**不做时间插值**，而是按相邻帧的时间差逐帧切换（每帧停留 = `frames[i+1].timeMs - frames[i].timeMs` / 倍速，倍速存 `point3d.play_speed`，默认 100）。进度条绑定**帧序号**（有级），拖动只能落在某一帧上；拖拽时暂停、松手恢复；播到最后一帧自动停，再点播放从头开始。主窗口的 `resetReplayRange` 只统计地图航迹，不再并入点迹窗口。
 - 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
 - 航迹点源（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。
-- **工具栏只用一个按钮切平滑/关联**（库里就这两套点列，不要下拉框）：`m_sourceBtn` 弹起=平滑、按下=关联，按钮文字同步显示当前点列；取值持久化到 `point3d.track_source`（`smooth`/`associated`，老值 `auto`/`predicted` 一律按平滑处理）。不允许出现"选了却看不见"：用户在「选择航迹…」里选中的航迹若当前点源取不到点列，窗口要自动切到另一列。
+- **点源只用一个按钮切平滑/关联（在侧栏「显示」分组里）**（库里就这两套点列，不要下拉框）：`m_sourceBtn` 弹起=平滑、按下=关联，按钮文字同步显示当前点列；取值持久化到 `point3d.track_source`（`smooth`/`associated`，老值 `auto`/`predicted` 一律按平滑处理）。不允许出现"选了却看不见"：用户在「选择航迹…」里选中的航迹若当前点源取不到点列，窗口要自动切到另一列。
 - **画布鼠标交互**：左键拖拽=旋转视角（空白处双击 `resetCamera()`），**右键拖拽=平移视图**（拖动中鼠标为闭合手爪；不要再做「平移」按钮/模式开关）。偏移以屏幕像素叠加在投影中心（`m_panX/m_panY`），随相机持久化（`point3d.camera_pan_x/y`、会话 JSON `camera.pan_x/pan_y`）。**左键单击某条航迹**（按下与松开位移 < 3px）= 本窗口只显示这一条并通知主窗口让地图也单独显示它（`trackClicked` → `trackActivated`）。
 - **悬停命中优先级：航迹优先于点**。点云很密时若先判点，航迹悬停会被附近的检测点抢走，表现为"在窗口里悬停航迹、地图毫无反应"；`mouseMoveEvent` 必须先 `hitTrack()`，没命中航迹才找最近点。
-- **色标（SNR→颜色）映射可调**：`setSnrRange(lo,hi)`，两个 NaN = 按本窗口数据自动取 min/max（默认）。高级参数里「色标 SNR 自动 / 下限 / 上限」对应 `point3d.snr_auto` / `point3d.snr_min` / `point3d.snr_max`，同时影响点迹着色与右侧色标条刻度。悬停信息浮窗字号走 `setHoverTextScale()`（显示设置栏「提示字号」，`point3d.hover_text_scale`）。
-- **区域筛选（三行 = 当前视图的三个轴）**：工具栏「区域筛选」展开的三行分别对应 X/Y/Z（X/Y 随视图模式变，Z 恒为帧号），**每个视图各存一套**（`point3d.region.rvf/raf/vaf`、`point3d.region_applied.*`），切换视图原样恢复。语义：
+- **色标（SNR→颜色）映射可调**：`setSnrRange(lo,hi)`，两个 NaN = 按本窗口数据自动取 min/max（默认）。侧栏「色标 SNR」分组（高级参数里也有一份，改完会同步）对应 `point3d.snr_auto` / `point3d.snr_min` / `point3d.snr_max`，同时影响点迹着色与右侧色标条刻度。悬停信息浮窗字号走 `setHoverTextScale()`（侧栏「尺寸 → 提示字号」，`point3d.hover_text_scale`）。
+- **区域筛选（三行 = 当前视图的三个轴，在侧栏分组里）**：三行分别对应 X/Y/Z（X/Y 随视图模式变，Z 恒为帧号），**每个视图各存一套**（`point3d.region.rvf/raf/vaf`、`point3d.region_applied.*`），切换视图原样恢复。语义：
   - 未应用：归一化仍按全量，`setRegionBox()` 只画一个橙色候选框，数据不裁剪；
   - 「应用」`setRegionFilter()`：归一化范围改成该区间（框 = 绘图区边界，坐标轴刻度变成子区间，即"放大到只有这个框"），点迹与叠加航迹都按 `x/y/z` 裁到框内；区间先夹到数据量程，`min ≥ max` 直接拒绝；
   - 已应用后再改数字 → **自动退回全量视图**（`onRegionSpinEdited` 清掉 filter），只显示候选框，点「应用」才重新放大+裁剪；

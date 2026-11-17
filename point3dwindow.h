@@ -18,6 +18,8 @@ class QPushButton;
 class QSlider;
 class QSpinBox;
 class QTimer;
+class QAction;
+class QCheckBox;
 
 class Point3dCanvas;
 class Point3dImportJob;
@@ -96,6 +98,7 @@ private:
     };
 
     void buildUi();
+    QWidget *buildSidePanel();          // 左侧「显示」侧栏
     void importDetections();
     void onImportDone();
     void openAdvancedSettings();
@@ -115,6 +118,7 @@ private:
     void reloadOverlaysFromKeys();
     void applyLinkedSelection();
     void applySnrRange();          // 按设置把色标 SNR 映射范围推给画布
+    void syncSnrControls();        // 把 SNR 设置同步到侧栏控件
     void loadRegionForCurrentView();   // 三行标签/数值 + 画布框/筛选
     void onRegionSpinEdited();
     void applyRegion();
@@ -122,12 +126,14 @@ private:
     void persistRegion(int mode);
     void revalidateRegions();      // 数据变化后按新量程夹紧各视图的区间
     void updateRegionButtons();
+    bool regionBoxVisible() const;
     void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
-    QWidget *m_toolbar = nullptr;
-    QWidget *m_settingsBar = nullptr;
-    QWidget *m_regionBar = nullptr;
+    QWidget *m_sidePanel = nullptr;     // 左侧可折叠的「显示」侧栏（对齐地图窗口的侧栏）
+    QAction *m_panelAction = nullptr;   // 视图 → 显示侧栏
+    QAction *m_viewActions[3] = { nullptr, nullptr, nullptr };
+    QAction *m_importAction = nullptr;  // 文件 → 导入点迹（导入中禁用）
     QWidget *m_statusBar = nullptr;
     QComboBox *m_viewCombo = nullptr;
     QComboBox *m_windowCombo = nullptr;
@@ -137,13 +143,14 @@ private:
     QPushButton *m_pointBtn = nullptr;
     QPushButton *m_trackBtn = nullptr;
     QPushButton *m_labelBtn = nullptr;
-    QPushButton *m_settingsBtn = nullptr;      // 展开/收起本窗口的显示设置栏
     QDoubleSpinBox *m_pointSizeSpin = nullptr;
     QDoubleSpinBox *m_lineWidthSpin = nullptr;
     QDoubleSpinBox *m_labelSizeSpin = nullptr;
     QDoubleSpinBox *m_hoverSizeSpin = nullptr;
+    QCheckBox *m_snrAuto = nullptr;      // 色标 SNR 自动
+    QDoubleSpinBox *m_snrLoSpin = nullptr;
+    QDoubleSpinBox *m_snrHiSpin = nullptr;
     // 区域筛选栏
-    QPushButton *m_regionBtn = nullptr;
     QLabel *m_regionAxisLabel[3] = { nullptr, nullptr, nullptr };
     QDoubleSpinBox *m_regionMinSpin[3] = { nullptr, nullptr, nullptr };
     QDoubleSpinBox *m_regionMaxSpin[3] = { nullptr, nullptr, nullptr };
