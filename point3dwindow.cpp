@@ -39,6 +39,8 @@
 #include <QShortcut>
 #include <QSlider>
 #include <QSpinBox>
+#include <QSplitter>
+#include <QStackedWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -94,8 +96,10 @@ QString toolbarQss()
 {
     return QStringLiteral(
         // 菜单栏（对齐主窗口）
-        "QMenuBar { background: var(--bg-secondary); color: var(--text-secondary);"
-        " font-family: %1; font-size: 12px; border-bottom: 1px solid var(--border-primary); }"
+        "QWidget#point3dNavBar { background: var(--bg-secondary);"
+        " border-bottom: 1px solid var(--border-primary); }"
+        "QMenuBar { background: transparent; color: var(--text-secondary);"
+        " font-family: %1; font-size: 12px; border: none; }"
         "QMenuBar::item { padding: 4px 10px; background: transparent; }"
         "QMenuBar::item:selected { background: var(--button-hover); color: var(--text-primary); }"
         "QMenu { background: var(--dropdown-bg); color: var(--dropdown-fg);"
@@ -103,8 +107,11 @@ QString toolbarQss()
         "QMenu::item { padding: 4px 18px; }"
         "QMenu::item:selected { background: var(--dropdown-hover); }"
         // 左侧「显示」侧栏
-        "QScrollArea#point3dSide { background: var(--bg-secondary); border: none;"
+        "QStackedWidget#point3dSideStack { background: var(--bg-secondary);"
         " border-right: 1px solid var(--border-primary); }"
+        "QSplitter::handle { background: var(--border-primary); }"
+        "QScrollArea#point3dSide, QScrollArea#point3dAdvanced { background: var(--bg-secondary);"
+        " border: none; }"
         "QWidget#point3dSidePage { background: var(--bg-secondary); }"
         "QGroupBox { color: var(--text-secondary); border: 1px solid var(--border-primary);"
         " border-radius: 4px; margin-top: 10px; font-family: %1; font-size: 12px; }"
@@ -577,6 +584,8 @@ bool Point3dWindow::regionBoxVisible() const
 {
     if (m_sidePanel && m_sidePanel->isHidden())
         return false;
+    if (m_sideStack && m_sideStack->currentIndex() != 0)
+        return false;      // 高级页时看不到区域控件，不必画候选框
     const int vi = int(m_canvas->viewMode());
     const ViewRegion &st = m_viewRegions[vi];
     if (st.applied)
@@ -831,9 +840,6 @@ void Point3dWindow::buildUi()
     actClose->setShortcut(QKeySequence(QStringLiteral("Ctrl+W")));
 
     QMenu *viewMenu = mb->addMenu(QStringLiteral("视图"));
-    m_panelAction = viewMenu->addAction(QStringLiteral("显示侧栏"));
-    m_panelAction->setCheckable(true);
-    viewMenu->addSeparator();
     {
         QActionGroup *group = new QActionGroup(this);
         const QString names[3] = { QStringLiteral("距离–速度–帧号"),
@@ -852,17 +858,54 @@ void Point3dWindow::buildUi()
     QAction *actResetView = viewMenu->addAction(QStringLiteral("重置视角"));
     connect(actResetView, &QAction::triggered, m_canvas, &Point3dCanvas::resetCamera);
 
-    QMenu *settingsMenu = mb->addMenu(QStringLiteral("设置"));
-    QAction *actAdvanced = settingsMenu->addAction(QStringLiteral("高级参数…"));
-    root->addWidget(mb);
+    // 顶部导航：菜单 + 「设置」「高级」按钮（点一下展开/收起对应的左侧侧栏）
+    QWidget *navBar = new QWidget(this);
+    navBar->setObjectName(QStringLiteral("point3dNavBar"));
+    navBar->setAttribute(Qt::WA_StyledBackground, true);
+    QHBoxLayout *nav = new QHBoxLayout(navBar);
+    nav->setContentsMargins(ui::sz(6), 0, ui::sz(8), 0);
+    nav->setSpacing(ui::sz(6));
+    nav->addWidget(mb);
+    m_settingsBtn = new QPushButton(QStringLiteral("设置"), navBar);
+    m_settingsBtn->setCheckable(true);
+    m_settingsBtn->setToolTip(QStringLiteral("展开 / 收起左侧「显示」设置侧栏"));
+    m_advancedBtn = new QPushButton(QStringLiteral("高级"), navBar);
+    m_advancedBtn->setCheckable(true);
+    m_advancedBtn->setToolTip(QStringLiteral("展开 / 收起左侧「高级参数」侧栏"));
+    nav->addWidget(m_settingsBtn);
+    nav->addWidget(m_advancedBtn);
+    nav->addStretch(1);
+    root->addWidget(navBar);
 
-    // ---- 主体：左侧「显示」侧栏 + 画布 ----
+    // ---- 主体：左侧停靠区（设置页 / 高级页）+ 画布 ----
     QHBoxLayout *body = new QHBoxLayout;
     body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(0);
-    m_sidePanel = buildSidePanel();
-    body->addWidget(m_sidePanel);
-    body->addWidget(m_canvas, 1);
+    m_sideStack = new QStackedWidget(this);
+    m_sideStack->setObjectName(QStringLiteral("point3dSideStack"));
+    m_sideStack->setMinimumWidth(ui::sz(220));
+    m_sideStack->addWidget(buildSidePanel());
+    m_sideStack->addWidget(buildAdvancedPanel());
+    m_sidePanel = m_sideStack;
+    // 侧栏和画布之间用分割器：侧栏宽度可以拖着改
+    QSplitter *split = new QSplitter(Qt::Horizontal, this);
+    split->setChildrenCollapsible(false);
+    split->setHandleWidth(ui::sz(4));
+    split->addWidget(m_sidePanel);
+    split->addWidget(m_canvas);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    {
+        const int sideW = qBound(ui::sz(220), app::settings().value(
+                                     QStringLiteral("point3d.side_width"), ui::sz(300)).toInt(),
+                                 ui::sz(900));
+        split->setSizes(QList<int>() << sideW << qMax(int(ui::sz(200)), width() - sideW));
+    }
+    connect(split, &QSplitter::splitterMoved, this, [this](int, int) {
+        if (!m_restoring)
+            app::setValue(QStringLiteral("point3d.side_width"), m_sidePanel->width());
+    });
+    body->addWidget(split, 1);
     root->addLayout(body, 1);
 
     // ---- 底部：状态文字 + 回放条（对齐地图窗口的状态栏）----
@@ -922,18 +965,18 @@ void Point3dWindow::buildUi()
     m_importAction = actImport;
     connect(actPick, &QAction::triggered, this, &Point3dWindow::chooseTracksFromDb);
     connect(actExport, &QAction::triggered, this, &Point3dWindow::exportCanvasImage);
-    connect(actAdvanced, &QAction::triggered, this, &Point3dWindow::openAdvancedSettings);
     connect(actClose, &QAction::triggered, this, &QWidget::close);
-    // 侧栏显隐（视图 → 显示侧栏）
-    connect(m_panelAction, &QAction::toggled, this, [this](bool open) {
-        m_sidePanel->setVisible(open);
-        if (open)
-            loadRegionForCurrentView();
-        else
-            m_canvas->setRegionBox(Point3dRegion());
-        if (!m_restoring)
-            app::setValue(QStringLiteral("point3d.side_panel"), open);
+    // 顶部「设置」「高级」：点一下展开对应的左侧侧栏，再点一下收起
+    connect(m_settingsBtn, &QPushButton::clicked, this, [this]() {
+        const bool show = m_sidePanel->isHidden() || m_sideStack->currentIndex() != 0;
+        setSidePanelPage(0, show);
     });
+    connect(m_advancedBtn, &QPushButton::clicked, this, [this]() {
+        const bool show = m_sidePanel->isHidden() || m_sideStack->currentIndex() != 1;
+        setSidePanelPage(1, show);
+    });
+    connect(m_applyAdvancedBtn, &QPushButton::clicked, this,
+            &Point3dWindow::applyAdvancedSettings);
     connect(m_sourceBtn, &QPushButton::toggled, this, [this](bool associated) {
         m_sourceBtn->setText(associated ? QStringLiteral("关联") : QStringLiteral("平滑"));
         m_canvas->setTrackSource(associated ? Point3dTrackSource::Associated
@@ -1107,8 +1150,9 @@ void Point3dWindow::buildUi()
     m_lineWidthSpin->setValue(setting("point3d.track_line_width", 2.0).toDouble());
     m_labelSizeSpin->setValue(setting("point3d.label_scale", 1.0).toDouble());
     m_hoverSizeSpin->setValue(setting("point3d.hover_text_scale", 1.0).toDouble());
-    // 左侧显示侧栏（对齐地图窗口的侧栏，默认展开）
-    m_panelAction->setChecked(setting("point3d.side_panel", true).toBool());
+    // 左侧侧栏：恢复可见性 + 当前页（0=设置，1=高级）
+    setSidePanelPage(setting("point3d.side_page", 0).toInt(),
+                     setting("point3d.side_panel", true).toBool());
     // 色标 SNR 映射控件
     m_snrAuto->setChecked(setting("point3d.snr_auto", true).toBool());
     m_snrLoSpin->setValue(setting("point3d.snr_min", 0.0).toDouble());
@@ -1559,153 +1603,164 @@ void Point3dWindow::cancelImport()
         m_job->requestCancel();
 }
 
-void Point3dWindow::openAdvancedSettings()
+// 左侧「高级」页：原来高级参数对话框的内容，改成常驻侧栏（点顶部「高级」展开/收起）
+QWidget *Point3dWindow::buildAdvancedPanel()
 {
-    QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("点迹可视化高级参数"));
-    dlg.setModal(true);
-    QFormLayout *form = new QFormLayout(&dlg);
+    QScrollArea *scroll = new SideScrollArea(this);
+    scroll->setObjectName(QStringLiteral("point3dAdvanced"));
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 
-    auto line = [&dlg](const QString &text) {
-        QLineEdit *e = new QLineEdit(&dlg);
+    QWidget *page = new QWidget(scroll);
+    page->setObjectName(QStringLiteral("point3dAdvancedPage"));
+    QVBoxLayout *lay = new QVBoxLayout(page);
+    lay->setContentsMargins(ui::sz(8), ui::sz(8), ui::sz(8), ui::sz(8));
+    lay->setSpacing(ui::sz(8));
+
+    auto mkLine = [&](const QString &text) {
+        QLineEdit *e = new QLineEdit(page);
         e->setText(text);
         return e;
     };
-    auto spin = [&dlg](int lo, int hi, int value) {
-        QSpinBox *s = new QSpinBox(&dlg);
-        s->setRange(lo, hi);
-        s->setValue(value);
-        return s;
+    auto mkSpin = [&](int lo, int hi, int value) {
+        QSpinBox *sp = new QSpinBox(page);
+        sp->setRange(lo, hi);
+        sp->setValue(value);
+        return sp;
     };
-    auto dspin = [&dlg](double lo, double hi, int decimals, double value, double step = 0.1) {
-        QDoubleSpinBox *s = new QDoubleSpinBox(&dlg);
-        s->setRange(lo, hi);
-        s->setDecimals(decimals);
-        s->setSingleStep(step);
-        s->setValue(value);
-        return s;
+    auto mkDSpin = [&](double lo, double hi, int decimals, double value, double step) {
+        QDoubleSpinBox *sp = new QDoubleSpinBox(page);
+        sp->setRange(lo, hi);
+        sp->setDecimals(decimals);
+        sp->setSingleStep(step);
+        sp->setValue(value);
+        return sp;
+    };
+    auto addForm = [&](const QString &title) {
+        QGroupBox *g = new QGroupBox(title, page);
+        QFormLayout *f = new QFormLayout(g);
+        f->setContentsMargins(ui::sz(8), ui::sz(10), ui::sz(8), ui::sz(8));
+        f->setSpacing(ui::sz(6));
+        f->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        lay->addWidget(g);
+        return f;
     };
 
-    QLineEdit *detVar = line(setting("point3d.det_variable", QStringLiteral("DetPoint")).toString());
-    QLineEdit *sysVar = line(setting("point3d.syspara_variable", QStringLiteral("sysPara")).toString());
-    QComboBox *azField = new QComboBox(&dlg);
-    azField->setEditable(true);
-    azField->addItems(QStringList() << QStringLiteral("az") << QStringLiteral("theta"));
-    azField->setCurrentText(setting("point3d.azimuth_field", QStringLiteral("az")).toString());
-    QLineEdit *trackVar = line(setting("point3d.track_variable", QStringLiteral("trackList")).toString());
-    QLineEdit *pattern = line(setting("point3d.file_pattern", QStringLiteral("detPoint_*.mat")).toString());
+    {
+        QFormLayout *f = addForm(QStringLiteral("解析（下次导入生效）"));
+        m_detVarEdit = mkLine(setting("point3d.det_variable", QStringLiteral("DetPoint")).toString());
+        m_sysVarEdit = mkLine(setting("point3d.syspara_variable", QStringLiteral("sysPara")).toString());
+        m_azFieldCombo = new QComboBox(page);
+        m_azFieldCombo->setEditable(true);
+        m_azFieldCombo->addItems(QStringList() << QStringLiteral("az") << QStringLiteral("theta"));
+        m_azFieldCombo->setCurrentText(
+            setting("point3d.azimuth_field", QStringLiteral("az")).toString());
+        m_trackVarEdit = mkLine(setting("point3d.track_variable", QStringLiteral("trackList")).toString());
+        m_patternEdit = mkLine(setting("point3d.file_pattern", QStringLiteral("detPoint_*.mat")).toString());
+        m_maxFramesSpin = mkSpin(0, 1000000, setting("point3d.max_frames", 0).toInt());
+        m_maxFramesSpin->setSpecialValueText(QStringLiteral("全部"));
+        f->addRow(QStringLiteral("DetPoint 变量"), m_detVarEdit);
+        f->addRow(QStringLiteral("sysPara 变量"), m_sysVarEdit);
+        f->addRow(QStringLiteral("方位字段"), m_azFieldCombo);
+        f->addRow(QStringLiteral("航迹变量"), m_trackVarEdit);
+        f->addRow(QStringLiteral("文件匹配模式"), m_patternEdit);
+        f->addRow(QStringLiteral("最多帧数"), m_maxFramesSpin);
+    }
+    {
+        QFormLayout *f = addForm(QStringLiteral("航迹"));
+        m_minTrackLenSpin = mkSpin(1, 1000, setting("point3d.min_track_length", 4).toInt());
+        m_rangeScaleSpin = mkDSpin(0.001, 1000.0, 3,
+                                   setting("point3d.track_range_scale", 1.0).toDouble(), 0.1);
+        f->addRow(QStringLiteral("最小航迹长度"), m_minTrackLenSpin);
+        f->addRow(QStringLiteral("航迹距离缩放"), m_rangeScaleSpin);
+    }
+    {
+        QFormLayout *f = addForm(QStringLiteral("连续性评分"));
+        m_gapSpin = mkSpin(1, 20, setting("point3d.continuity_frame_gap", 3).toInt());
+        m_rangeCSpin = mkDSpin(0.1, 100000.0, 1,
+                               setting("point3d.continuity_range_scale", 80.0).toDouble(), 1.0);
+        m_dopplerCSpin = mkDSpin(0.1, 1000.0, 1,
+                                 setting("point3d.continuity_doppler_scale", 10.0).toDouble(), 0.5);
+        m_azimuthCSpin = mkDSpin(0.1, 180.0, 1,
+                                 setting("point3d.continuity_azimuth_scale", 6.0).toDouble(), 0.5);
+        m_thresholdSpin = mkDSpin(0.0, 1.0, 2,
+                                  setting("point3d.strong_threshold", 0.70).toDouble(), 0.05);
+        f->addRow(QStringLiteral("帧间隔"), m_gapSpin);
+        f->addRow(QStringLiteral("距离尺度"), m_rangeCSpin);
+        f->addRow(QStringLiteral("速度尺度"), m_dopplerCSpin);
+        f->addRow(QStringLiteral("方位尺度"), m_azimuthCSpin);
+        f->addRow(QStringLiteral("强连续阈值"), m_thresholdSpin);
+    }
+    m_autoReloadCheck = new QCheckBox(QStringLiteral("启动时恢复上次的窗口与数据"), page);
+    m_autoReloadCheck->setChecked(setting("point3d.auto_reload", true).toBool());
+    lay->addWidget(m_autoReloadCheck);
 
-    QSpinBox *maxFrames = spin(0, 1000000, setting("point3d.max_frames", 0).toInt());
-    maxFrames->setSpecialValueText(QStringLiteral("全部"));
-    QSpinBox *minTrackLen = spin(1, 1000, setting("point3d.min_track_length", 4).toInt());
-    QDoubleSpinBox *rangeScale = dspin(0.001, 1000.0, 3,
-                                       setting("point3d.track_range_scale", 1.0).toDouble(), 0.1);
-    QDoubleSpinBox *lineWidth = dspin(0.5, 12.0, 1,
-                                      setting("point3d.track_line_width", 2.0).toDouble(), 0.1);
-    QSpinBox *gap = spin(1, 20, setting("point3d.continuity_frame_gap", 3).toInt());
-    QDoubleSpinBox *rangeC = dspin(0.1, 100000.0, 1,
-                                   setting("point3d.continuity_range_scale", 80.0).toDouble(), 1.0);
-    QDoubleSpinBox *dopplerC = dspin(0.1, 1000.0, 1,
-                                     setting("point3d.continuity_doppler_scale", 10.0).toDouble(), 0.5);
-    QDoubleSpinBox *azimuthC = dspin(0.1, 180.0, 1,
-                                     setting("point3d.continuity_azimuth_scale", 6.0).toDouble(), 0.5);
-    QDoubleSpinBox *threshold = dspin(0.0, 1.0, 2,
-                                      setting("point3d.strong_threshold", 0.70).toDouble(), 0.05);
-    QCheckBox *autoReload = new QCheckBox(QStringLiteral("启动时恢复上次的点迹窗口与数据"), &dlg);
-    autoReload->setChecked(setting("point3d.auto_reload", true).toBool());
-
-    // 色标（SNR -> 颜色）映射：默认自动取本窗口数据的 min/max，也可以手动指定上下限
-    QCheckBox *snrAuto = new QCheckBox(QStringLiteral("色标 SNR 自动（按本窗口数据 min/max）"), &dlg);
-    snrAuto->setChecked(setting("point3d.snr_auto", true).toBool());
-    QDoubleSpinBox *snrLo = dspin(-100.0, 300.0, 2,
-                                  setting("point3d.snr_min", 0.0).toDouble(), 0.5);
-    QDoubleSpinBox *snrHi = dspin(-100.0, 300.0, 2,
-                                  setting("point3d.snr_max", 30.0).toDouble(), 0.5);
-    snrLo->setEnabled(!snrAuto->isChecked());
-    snrHi->setEnabled(!snrAuto->isChecked());
-    connect(snrAuto, &QCheckBox::toggled, &dlg, [snrLo, snrHi](bool on) {
-        snrLo->setEnabled(!on);
-        snrHi->setEnabled(!on);
-    });
-
-    form->addRow(QStringLiteral("DetPoint 变量名"), detVar);
-    form->addRow(QStringLiteral("sysPara 变量名"), sysVar);
-    form->addRow(QStringLiteral("方位字段"), azField);
-    form->addRow(QStringLiteral("航迹变量名（trackList）"), trackVar);
-    form->addRow(QStringLiteral("文件匹配模式"), pattern);
-    form->addRow(QStringLiteral("最多帧数（0=全部）"), maxFrames);
-    form->addRow(QStringLiteral("最小航迹长度（点）"), minTrackLen);
-    form->addRow(QStringLiteral("航迹距离缩放"), rangeScale);
-    form->addRow(QStringLiteral("航迹线宽"), lineWidth);
-    form->addRow(QStringLiteral("连续性：帧间隔"), gap);
-    form->addRow(QStringLiteral("连续性：距离尺度"), rangeC);
-    form->addRow(QStringLiteral("连续性：速度尺度"), dopplerC);
-    form->addRow(QStringLiteral("连续性：方位尺度"), azimuthC);
-    form->addRow(QStringLiteral("强连续阈值"), threshold);
-    form->addRow(snrAuto);
-    form->addRow(QStringLiteral("色标 SNR 下限（dB）"), snrLo);
-    form->addRow(QStringLiteral("色标 SNR 上限（dB）"), snrHi);
-    form->addRow(autoReload);
+    m_applyAdvancedBtn = new QPushButton(QStringLiteral("应用"), page);
+    m_applyAdvancedBtn->setToolTip(QStringLiteral(
+        "写入设置：变量名/匹配模式下次导入生效；连续性参数立即重算"));
+    lay->addWidget(m_applyAdvancedBtn);
 
     QLabel *note = new QLabel(QStringLiteral(
-        "说明：回放由本窗口自己的播放器驱动（帧间隔 / 倍速）；\n"
-        "变量名 / 方位字段 / 文件匹配模式在下次导入时生效，其余参数立即生效；\n"
-        "色标 SNR 手动映射会同时改变点迹颜色和右侧色标条的刻度。"), &dlg);
+        "变量名 / 方位字段 / 文件匹配模式在下次导入时生效；\n"
+        "连续性参数点「应用」后立即按新参数重算。"), page);
     note->setWordWrap(true);
-    form->addRow(note);
+    lay->addWidget(note);
 
-    QDialogButtonBox *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    form->addRow(box);
-    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addStretch(1);
+    scroll->setWidget(page);
+    return scroll;
+}
 
-    setThemedStyle(&dlg, QStringLiteral(
-        "QDialog { background: var(--bg-secondary); }"
-        "QLabel { color: var(--text-primary); font-family: %1; font-size: 12px; }"
-        "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { color: var(--text-primary);"
-        " background: var(--input-bg); border: 1px solid var(--input-border);"
-        " border-radius: 3px; padding: 3px 6px; font-family: %1; font-size: 12px; }"
-        "QPushButton { color: var(--text-secondary); background: var(--button-bg);"
-        " border: 1px solid var(--border-primary); border-radius: 3px;"
-        " padding: 4px 12px; font-family: %1; font-size: 12px; }"
-        "QPushButton:hover { background: var(--button-hover); }").arg(ui::uiFamilies()));
-
-    if (dlg.exec() != QDialog::Accepted)
+void Point3dWindow::applyAdvancedSettings()
+{
+    if (!m_detVarEdit)
         return;
+    app::setValue(QStringLiteral("point3d.det_variable"), m_detVarEdit->text().trimmed());
+    app::setValue(QStringLiteral("point3d.syspara_variable"), m_sysVarEdit->text().trimmed());
+    app::setValue(QStringLiteral("point3d.azimuth_field"), m_azFieldCombo->currentText().trimmed());
+    app::setValue(QStringLiteral("point3d.track_variable"), m_trackVarEdit->text().trimmed());
+    app::setValue(QStringLiteral("point3d.file_pattern"), m_patternEdit->text().trimmed());
+    app::setValue(QStringLiteral("point3d.max_frames"), m_maxFramesSpin->value());
+    app::setValue(QStringLiteral("point3d.min_track_length"), m_minTrackLenSpin->value());
+    app::setValue(QStringLiteral("point3d.track_range_scale"), m_rangeScaleSpin->value());
+    app::setValue(QStringLiteral("point3d.continuity_frame_gap"), m_gapSpin->value());
+    app::setValue(QStringLiteral("point3d.continuity_range_scale"), m_rangeCSpin->value());
+    app::setValue(QStringLiteral("point3d.continuity_doppler_scale"), m_dopplerCSpin->value());
+    app::setValue(QStringLiteral("point3d.continuity_azimuth_scale"), m_azimuthCSpin->value());
+    app::setValue(QStringLiteral("point3d.strong_threshold"), m_thresholdSpin->value());
+    app::setValue(QStringLiteral("point3d.auto_reload"), m_autoReloadCheck->isChecked());
 
-    app::setValue(QStringLiteral("point3d.det_variable"), detVar->text().trimmed());
-    app::setValue(QStringLiteral("point3d.syspara_variable"), sysVar->text().trimmed());
-    app::setValue(QStringLiteral("point3d.azimuth_field"), azField->currentText().trimmed());
-    app::setValue(QStringLiteral("point3d.track_variable"), trackVar->text().trimmed());
-    app::setValue(QStringLiteral("point3d.file_pattern"), pattern->text().trimmed());
-    app::setValue(QStringLiteral("point3d.max_frames"), maxFrames->value());
-    app::setValue(QStringLiteral("point3d.min_track_length"), minTrackLen->value());
-    app::setValue(QStringLiteral("point3d.track_range_scale"), rangeScale->value());
-    app::setValue(QStringLiteral("point3d.track_line_width"), lineWidth->value());
-    app::setValue(QStringLiteral("point3d.continuity_frame_gap"), gap->value());
-    app::setValue(QStringLiteral("point3d.continuity_range_scale"), rangeC->value());
-    app::setValue(QStringLiteral("point3d.continuity_doppler_scale"), dopplerC->value());
-    app::setValue(QStringLiteral("point3d.continuity_azimuth_scale"), azimuthC->value());
-    app::setValue(QStringLiteral("point3d.strong_threshold"), threshold->value());
-    app::setValue(QStringLiteral("point3d.snr_auto"), snrAuto->isChecked());
-    app::setValue(QStringLiteral("point3d.snr_min"), snrLo->value());
-    app::setValue(QStringLiteral("point3d.snr_max"), snrHi->value());
-    applySnrRange();
-    syncSnrControls();
-    app::setValue(QStringLiteral("point3d.auto_reload"), autoReload->isChecked());
-
-    m_canvas->setTrackLineWidth(lineWidth->value());
     if (!m_data.frames.isEmpty()) {
         QApplication::setOverrideCursor(Qt::WaitCursor);
         ContinuityConfig cfg;
-        cfg.frameGap = gap->value();
-        cfg.rangeScale = rangeC->value();
-        cfg.dopplerScale = dopplerC->value();
-        cfg.azimuthScale = azimuthC->value();
+        cfg.frameGap = m_gapSpin->value();
+        cfg.rangeScale = m_rangeCSpin->value();
+        cfg.dopplerScale = m_dopplerCSpin->value();
+        cfg.azimuthScale = m_azimuthCSpin->value();
         computeContinuity(m_data.frames, cfg);
         QApplication::restoreOverrideCursor();
     }
+    m_status->setText(QStringLiteral("高级参数已应用（变量名/匹配模式下次导入生效）"));
     updateStatus();
+}
+
+// 顶部「设置」「高级」：展开对应页；再点同一个按钮或 show=false 时收起
+void Point3dWindow::setSidePanelPage(int page, bool show)
+{
+    m_sideStack->setCurrentIndex(qBound(0, page, 1));
+    m_sidePanel->setVisible(show);
+    const bool visible = !m_sidePanel->isHidden();
+    m_settingsBtn->setChecked(visible && m_sideStack->currentIndex() == 0);
+    m_advancedBtn->setChecked(visible && m_sideStack->currentIndex() == 1);
+    if (!visible)
+        m_canvas->setRegionBox(Point3dRegion());
+    else if (m_sideStack->currentIndex() == 0)
+        loadRegionForCurrentView();
+    if (!m_restoring) {
+        app::setValue(QStringLiteral("point3d.side_panel"), visible);
+        app::setValue(QStringLiteral("point3d.side_page"), m_sideStack->currentIndex());
+    }
 }
 
 void Point3dWindow::exportCanvasImage()

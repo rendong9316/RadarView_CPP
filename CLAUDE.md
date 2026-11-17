@@ -64,11 +64,12 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 复刻 MATLAB `track_debuger_suite/tool_Track visualization`，对应文件 `point3dtypes.h` / `point3dparsers.*` / `point3dimportjob.*` / `point3dcanvas.*` / `point3dwindow.*` / `trackpicker.*`。
 
 - 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。
-- **布局对齐地图窗口：菜单 + 左侧「显示」侧栏 + 底部回放条**（用户确认过的方案，不要再把所有控件平铺成一条工具栏）：
-  - 顶部细菜单：文件（导入点迹 Ctrl+O / 选择航迹 / 导出 PNG / 关闭 Ctrl+W）、视图（显示侧栏 / 三个三轴视图 / 重置视角）、设置（高级参数…）；
-  - 左侧 `QScrollArea#point3dSide`（`SideScrollArea` 子类把 minimumSizeHint 固定得很小，否则内容最小宽度会顶到窗口最小宽度上）按分区放：视图、显示（点源 + P/T/L）、尺寸（点迹尺寸/航迹线宽/标签大小/提示字号）、色标 SNR、区域筛选；宽度 `ui::sz(300)`，可由「视图 → 显示侧栏」收起（`point3d.side_panel`）；
+- **布局对齐地图窗口：顶部导航 + 左侧停靠区 + 底部回放条**（用户确认过的方案，不要再把所有控件平铺成一条工具栏）：
+  - 顶部导航条 `QWidget#point3dNavBar`：左侧两个菜单（文件：导入点迹 Ctrl+O / 选择航迹 / 导出 PNG / 关闭 Ctrl+W；视图：三个三轴视图（互斥）/ 重置视角），右侧两个可勾选按钮 **「设置」「高级」**——点一下展开对应侧栏，再点一下收起（勾选态 = 当前展开的是哪一页）。视图菜单里**没有**「显示侧栏」，不要再加回来。
+  - 左侧停靠区是 `QStackedWidget#point3dSideStack`：第 0 页 = 设置页 `QScrollArea#point3dSide`（视图 / 显示（点源 + P/T/L）/ 尺寸 / 色标 SNR / 区域筛选），第 1 页 = 高级页 `QScrollArea#point3dAdvanced`（解析变量名、航迹长度/缩放、连续性评分、"启动时恢复"、应用按钮）——**高级参数不再是独立对话框**。两页都用 `SideScrollArea` 子类把 minimumSizeHint 固定得很小，避免内容最小宽度顶到窗口最小宽度上。
+  - 侧栏与画布之间是 `QSplitter`：**侧栏宽度可以拖着改**，宽度存 `point3d.side_width`；可见性与当前页存 `point3d.side_panel` / `point3d.side_page`。
   - 底部状态栏两行：状态文字 + 导入进度；回放条（播放 / 帧进度 / 时间 / 倍速），与地图窗口的 `AppStatusBar` 同一视觉语言。
-  - 自检断言：窗口最小宽度 < 900、左侧存在 `point3dSide` 滚动区、≥5 个 `QGroupBox`、存在菜单栏。
+  - 自检断言：窗口最小宽度 < 900、左侧存在 `point3dSide`/`point3dAdvanced` 两个滚动页、≥5 个 `QGroupBox`、存在菜单栏与「设置」「高级」按钮、点「高级」/「设置」能在两页间切换。
 - **色标条紧贴立方体投影包围盒的右侧**（`colorBarRect()`：x = 立方体右沿 + 间距，竖向对齐立方体，右侧留刻度文字空间），不要再按绘图区右边距摆。
 - **三方联动（地图 ↔ 点迹窗口 ↔ 数据库航迹）按「BatchNo + 时间范围」认人**，不是按 id 字符串：同一 MAT 分别按「雷达航迹」和「雷达原始测量」导入时 id 前缀不同（`RADAR-####` / `RAW-####`），但编号和时间一致，`point3dRefsMatch()` 据此认定同一条航迹。所有联动广播都带 `LinkedTrackRef{batchNo,t0,t1}`。
   - 地图**单击单独显示**某条航迹 → `MainWindow::applyDisplay` 把所有窗口 `setLinkedSelection({该航迹})`：窗口里有对应叠加航迹就只显示它们，**一条都对不上时窗口保持原样**（这是用户明确要求）；地图回到全部（refs 为空）才恢复显示全部叠加航迹。

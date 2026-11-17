@@ -20,6 +20,8 @@ class QSpinBox;
 class QTimer;
 class QAction;
 class QCheckBox;
+class QLineEdit;
+class QStackedWidget;
 
 class Point3dCanvas;
 class Point3dImportJob;
@@ -98,10 +100,12 @@ private:
     };
 
     void buildUi();
-    QWidget *buildSidePanel();          // 左侧「显示」侧栏
+    QWidget *buildSidePanel();          // 左侧「显示」侧栏（设置页）
+    QWidget *buildAdvancedPanel();      // 左侧「高级」页（原来的高级参数对话框）
+    void setSidePanelPage(int page, bool show);   // 0=设置 1=高级
+    void applyAdvancedSettings();
     void importDetections();
     void onImportDone();
-    void openAdvancedSettings();
     void exportCanvasImage();
     void onViewModeChanged();
     void onWindowLengthChanged();
@@ -130,14 +134,32 @@ private:
     void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
-    QWidget *m_sidePanel = nullptr;     // 左侧可折叠的「显示」侧栏（对齐地图窗口的侧栏）
-    QAction *m_panelAction = nullptr;   // 视图 → 显示侧栏
+    QWidget *m_sidePanel = nullptr;     // 左侧停靠区（QStackedWidget：设置页 / 高级页）
+    QStackedWidget *m_sideStack = nullptr;
+    QPushButton *m_settingsBtn = nullptr;   // 顶部「设置」按钮：切换设置侧栏
+    QPushButton *m_advancedBtn = nullptr;   // 顶部「高级」按钮：切换高级参数侧栏
     QAction *m_viewActions[3] = { nullptr, nullptr, nullptr };
     QAction *m_importAction = nullptr;  // 文件 → 导入点迹（导入中禁用）
     QWidget *m_statusBar = nullptr;
     QComboBox *m_viewCombo = nullptr;
     QComboBox *m_windowCombo = nullptr;
     QSpinBox *m_windowSpin = nullptr;
+    // 高级参数页控件
+    QLineEdit *m_detVarEdit = nullptr;
+    QLineEdit *m_sysVarEdit = nullptr;
+    QComboBox *m_azFieldCombo = nullptr;
+    QLineEdit *m_trackVarEdit = nullptr;
+    QLineEdit *m_patternEdit = nullptr;
+    QSpinBox *m_maxFramesSpin = nullptr;
+    QSpinBox *m_minTrackLenSpin = nullptr;
+    QDoubleSpinBox *m_rangeScaleSpin = nullptr;
+    QSpinBox *m_gapSpin = nullptr;
+    QDoubleSpinBox *m_rangeCSpin = nullptr;
+    QDoubleSpinBox *m_dopplerCSpin = nullptr;
+    QDoubleSpinBox *m_azimuthCSpin = nullptr;
+    QDoubleSpinBox *m_thresholdSpin = nullptr;
+    QCheckBox *m_autoReloadCheck = nullptr;
+    QPushButton *m_applyAdvancedBtn = nullptr;
     QPushButton *m_importBtn = nullptr;
     QPushButton *m_sourceBtn = nullptr;   // 点源切换：弹起=平滑，按下=关联
     QPushButton *m_pointBtn = nullptr;

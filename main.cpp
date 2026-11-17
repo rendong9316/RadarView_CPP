@@ -42,6 +42,7 @@
 #include <QMenuBar>
 #include <QGroupBox>
 #include <QScrollArea>
+#include <QStackedWidget>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QLineEdit>
@@ -602,6 +603,30 @@ int runPointTest(const QString &input, const QString &trackFile)
         const int groups = w1->findChildren<QGroupBox *>().size();
         check(groups >= 5, QStringLiteral("侧栏含 %1 个设置分组").arg(groups));
         check(w1->findChild<QMenuBar *>() != nullptr, QStringLiteral("顶部有菜单栏"));
+        check(w1->findChild<QScrollArea *>(QStringLiteral("point3dAdvanced")) != nullptr,
+              QStringLiteral("左侧有「高级」参数页"));
+        QPushButton *setBtn = nullptr, *advBtn = nullptr;
+        for (QPushButton *b : w1->findChildren<QPushButton *>()) {
+            if (b->text() == QStringLiteral("高级"))
+                advBtn = b;
+            else if (b->text() == QStringLiteral("设置") && b->isCheckable())
+                setBtn = b;
+        }
+        check(setBtn != nullptr && advBtn != nullptr,
+              QStringLiteral("顶部有「设置」「高级」按钮"));
+        QStackedWidget *stack = w1->findChild<QStackedWidget *>(QStringLiteral("point3dSideStack"));
+        if (advBtn && stack) {
+            advBtn->click();
+            QApplication::processEvents();
+            check(stack->currentIndex() == 1, QStringLiteral("点「高级」切到高级参数页"));
+            w1->grab().save(QCoreApplication::applicationDirPath()
+                            + QStringLiteral("/pointtest_advanced_panel.png"));
+        }
+        if (setBtn && stack) {
+            setBtn->click();
+            QApplication::processEvents();
+            check(stack->currentIndex() == 0, QStringLiteral("点「设置」切回设置页"));
+        }
         QApplication::processEvents();
         w1->grab().save(QCoreApplication::applicationDirPath()
                         + QStringLiteral("/pointtest_side_panel.png"));
