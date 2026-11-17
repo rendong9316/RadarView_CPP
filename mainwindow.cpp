@@ -1096,16 +1096,7 @@ void MainWindow::resetReplayRange()
             hi = b;
         any = true;
     }
-    // 点迹窗口与地图共用一条时间轴：回放范围取并集（没有航迹时也能拖动进度条）
-    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows)) {
-        if (!win || win->maxTime() <= win->minTime())
-            continue;
-        if (!any || win->minTime() < lo)
-            lo = win->minTime();
-        if (!any || win->maxTime() > hi)
-            hi = win->maxTime();
-        any = true;
-    }
+    // 点迹窗口有自己的独立回放，不再并入主窗口的时间轴
     m_replay->setRange(any ? lo : 0, any ? hi : 0);
 }
 
@@ -1320,7 +1311,6 @@ Point3dWindow *MainWindow::createPoint3dWindow()
 {
     Point3dWindow *win = new Point3dWindow(nullptr);
     win->setNumber(++m_point3dCounter);
-    win->attachReplay(m_replay);
     // 点云航迹颜色与地图上的文件颜色一致
     win->setTrackColorProvider([this](TrackSource s, const QString &fileName) {
         return m_store.fileColor(s, fileName);

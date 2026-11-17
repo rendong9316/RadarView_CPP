@@ -490,13 +490,10 @@ int runPointTest(const QString &input, const QString &trackFile)
         QApplication::processEvents();
     }
 
-    // ---- 全局时间轴联动：两个窗口共用同一个 ReplayController ----
+    // ---- 本窗口独立回放：逐帧推进、倍速、按帧吸附、多窗口互不影响 ----
     if (files.size() >= 2) {
-        ReplayController replay;
         Point3dWindow *wa = new Point3dWindow(nullptr);
         Point3dWindow *wb = new Point3dWindow(nullptr);
-        wa->attachReplay(&replay);
-        wb->attachReplay(&replay);
         wa->show();
         wb->show();
         wa->loadDetectionFiles(files.mid(0, qMin(3, files.size())));
@@ -506,30 +503,56 @@ int runPointTest(const QString &input, const QString &trackFile)
         wait2.start();
         while ((wa->isLoading() || wb->isLoading()) && wait2.elapsed() < 60000)
             QApplication::processEvents(QEventLoop::AllEvents, 50);
-        replay.setRange(qMin(wa->minTime(), wb->minTime()),
-                        qMax(wa->maxTime(), wb->maxTime()));
-        const bool haveA = wa->dataset()->frames.size() >= 2;
-        const bool haveB = wb->dataset()->frames.size() >= 2;
-        if (haveA) {
-            replay.seekTime(wa->dataset()->frames.at(1).timeMs);
+
+        const int nA = wa->frameCount();
+        check(nA >= 2, QStringLiteral("窗口 A 导入 %1 帧").arg(nA));
+        if (nA >= 2) {
+            // 拖拽按帧吸附
+            wa->seekToFrame(1);
             check(wa->currentFrame() == 1,
-                  QStringLiteral("窗口 A 跟随全局时间轴（帧 %1）").arg(wa->currentFrame()));
+                  QStringLiteral("定位到指定帧（帧 %1）").arg(wa->currentFrame()));
+            wa->seekToFrame(999999);
+            check(wa->currentFrame() == nA - 1,
+                  QStringLiteral("越界定位夹到最后一帧（帧 %1）").arg(wa->currentFrame()));
+            wa->seekToFrame(-5);
+            check(wa->currentFrame() == 0, QStringLiteral("负值定位夹到第一帧"));
+
+            // 倍速：每帧停留 = 相邻帧时间差 / 倍速
+            wa->setSpeed(1000.0);
+            const qint64 iv = wa->dataset()->frames.at(1).timeMs
+                              - wa->dataset()->frames.at(0).timeMs;
+            const int expect = qBound(1, int(std::llround(double(iv) / 1000.0)), 600000);
+            out << "frame interval=" << iv << " ms hold=" << wa->frameHoldMs()
+                << " expect=" << expect << "\n";
+            check(qAbs(wa->frameHoldMs() - expect) <= 1,
+                  QStringLiteral("每帧停留 = 帧间隔 / 倍速（%1 ms）").arg(wa->frameHoldMs()));
+
+            // 播放：按帧间隔逐帧推进（不插值）
+            wb->seekToFrame(wb->frameCount() - 1);
+            wa->seekToFrame(0);
+            wa->togglePlay();
+            check(wa->isPlaying(), QStringLiteral("开始播放"));
+            QElapsedTimer play;
+            play.start();
+            while (play.elapsed() < 5000 && wa->currentFrame() == 0)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(wa->currentFrame() >= 1,
+                  QStringLiteral("播放按帧推进（当前帧 %1）").arg(wa->currentFrame()));
+            check(!wb->isPlaying() && wb->currentFrame() == wb->frameCount() - 1,
+                  QStringLiteral("另一个窗口不跟着播（回放相互独立）"));
+            wa->togglePlay();
+            check(!wa->isPlaying(), QStringLiteral("暂停"));
+
+            // 播到最后一帧自动停
+            wa->seekToFrame(nA - 2);
+            wa->togglePlay();
+            QElapsedTimer tail;
+            tail.start();
+            while (tail.elapsed() < 5000 && wa->isPlaying())
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(!wa->isPlaying() && wa->currentFrame() == nA - 1,
+                  QStringLiteral("播到最后一帧自动停（帧 %1）").arg(wa->currentFrame()));
         }
-        if (haveB) {
-            replay.seekTime(wb->dataset()->frames.at(1).timeMs);
-            check(wb->currentFrame() == 1,
-                  QStringLiteral("窗口 B 跟随全局时间轴（帧 %1）").arg(wb->currentFrame()));
-        }
-        // 模拟地图「单独显示另一条航迹」：显示集合变化让回放范围收窄，当前时刻不该被打回起点
-        {
-            const qint64 before = replay.current();
-            const int frameA = wa->currentFrame();
-            replay.setRange(replay.start() + 1, replay.end());
-            check(replay.current() == before && wa->currentFrame() == frameA,
-                  QStringLiteral("显示集合变化不重置点迹窗口帧（帧 %1）").arg(wa->currentFrame()));
-        }
-        check(wa->currentTimeMs() == replay.current(),
-              QStringLiteral("各窗口读取同一全局时刻"));
         wa->close();
         wb->close();
         QApplication::processEvents();
@@ -2752,9 +2775,9 @@ int main(int argc, char *argv[])
                 if (win->isLoading())
                     return;
                 poll->stop();
-                // 演示/回归：把全局时间轴拖到末端，看到完整历史累积
-                if (w.replay()->end() > w.replay()->start())
-                    w.replay()->seekTime(w.replay()->end());
+                // 演示/回归：定位到最后一帧，看到完整历史累积
+                if (win->frameCount() > 0)
+                    win->seekToFrame(win->frameCount() - 1);
                 qWarning("pointdemo: frames=%d current=%d visible=%d points0=%d",
                          win->dataset()->frames.size(), win->currentFrame(),
                          win->canvas()->visiblePointCount(),

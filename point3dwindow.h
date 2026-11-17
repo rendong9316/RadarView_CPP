@@ -1,6 +1,7 @@
 #ifndef POINT3DWINDOW_H
 #define POINT3DWINDOW_H
 
+#include <QElapsedTimer>
 #include <QStringList>
 #include <QWidget>
 #include <QJsonObject>
@@ -15,10 +16,10 @@ class QProgressBar;
 class QPushButton;
 class QSlider;
 class QSpinBox;
+class QTimer;
 
 class Point3dCanvas;
 class Point3dImportJob;
-class ReplayController;
 
 // 点迹三维可视化独立窗口（可多开；每个窗口承载一组点迹数据）
 class Point3dWindow : public QWidget
@@ -31,9 +32,15 @@ public:
     void setNumber(int n);
     int number() const { return m_number; }
 
-    // 接入主窗口的全局回放时钟（所有点迹窗口共用一套时间轴）
-    void attachReplay(ReplayController *replay);
-    qint64 currentTimeMs() const;
+    // 窗口自带的回放：只回放本窗口的点迹/航迹，按帧间隔逐帧推进（不插值、不做时间换算）
+    bool isPlaying() const { return m_playing; }
+    void togglePlay();                 // 到头就从头播
+    void setSpeed(double speed);       // 倍速（帧间隔 / 倍速 = 每帧停留的真实毫秒）
+    double speed() const { return m_speed; }
+    void seekToFrame(int index);       // 拖动定位：吸附到整帧
+    int currentFrame() const;
+    int frameCount() const { return m_data.frames.size(); }
+    int frameHoldMs() const;           // 当前帧应停留的真实毫秒（自检用）
 
     // 航迹颜色提供者：与主窗口地图上的文件颜色保持一致
     void setTrackColorProvider(const std::function<QColor(TrackSource, const QString &)> &provider);
@@ -55,7 +62,6 @@ public:
 
     void setHighlightedBatch(int batchNo);
     int highlightedBatch() const;
-    int currentFrame() const;
     void setCurrentFrame(int index);
 
 signals:
@@ -79,9 +85,11 @@ private:
     void setLoadingUi(bool loading, int percent);
     void updateStatus();
     void saveSettings();
-    void onReplayTime(qint64 ms);
-    void seekFromSlider(int value);
-    void updatePlaybackUi();
+    void setPlaying(bool on);
+    void onPlayTick();
+    void setFrameInternal(int index);
+    void syncPlaybackUi();               // 把当前帧同步到进度条/时间标签
+    void updatePlaybackUi();             // 播放/暂停按钮文字
     int nearestFrame(qint64 ms) const;
     void reloadOverlaysFromKeys();
     void startPendingLoad();
@@ -101,14 +109,17 @@ private:
     QLabel *m_status = nullptr;
     QProgressBar *m_progress = nullptr;
 
-    // 播放控制（驱动主窗口的 ReplayController，全局共用时间轴）
-    ReplayController *m_replay = nullptr;
+    // 本窗口自带的回放（独立于主窗口时间轴）
     QPushButton *m_playBtn = nullptr;
     QSlider *m_seekSlider = nullptr;
     QComboBox *m_speedCombo = nullptr;
     QLabel *m_timeLabel = nullptr;
+    QTimer *m_playTimer = nullptr;
+    QElapsedTimer m_frameClock;          // 当前帧已经显示的真实时长
+    double m_speed = 100.0;
+    bool m_playing = false;
+    bool m_resumeAfterSeek = false;
     bool m_syncing = false;
-    bool m_outOfRange = false;
 
     Point3dDataset m_data;
     Point3dImportJob *m_job = nullptr;

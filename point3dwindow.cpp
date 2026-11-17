@@ -4,7 +4,6 @@
 #include "point3dcanvas.h"
 #include "point3dimportjob.h"
 #include "point3dparsers.h"
-#include "replaycontroller.h"
 #include "theme.h"
 #include "trackdb.h"
 #include "trackpicker.h"
@@ -102,91 +101,121 @@ void Point3dWindow::setNumber(int n)
                                  : QStringLiteral("点迹三维可视化 %1").arg(m_number));
 }
 
-// 接入主窗口的全局回放时钟：窗口内所有播放操作都直接驱动它
-void Point3dWindow::attachReplay(ReplayController *replay)
+// ---------------------------------------------------------------------------
+//  本窗口自带的回放：独立于主窗口时间轴，只按本窗口点迹帧逐帧推进
+//  - 不做插值：一帧停留一段时间后直接切到下一帧
+//  - 停留时长 = 相邻两帧的时间差 / 倍速（1× 即按数据真实节奏回放）
+//  - 进度条绑定帧序号（有级），拖动只能落在某一帧上
+// ---------------------------------------------------------------------------
+int Point3dWindow::currentFrame() const
 {
-    if (!replay)
+    return m_canvas->currentFrame();
+}
+
+int Point3dWindow::frameHoldMs() const
+{
+    const int n = m_data.frames.size();
+    if (n < 2)
+        return 100;
+    const int cur = qBound(0, m_canvas->currentFrame(), n - 1);
+    const int next = qMin(cur + 1, n - 1);
+    qint64 interval = m_data.frames.at(next).timeMs - m_data.frames.at(cur).timeMs;
+    if (interval <= 0)
+        interval = 100;                       // 时间戳异常时的兜底
+    const double hold = double(interval) / qMax(0.01, m_speed);
+    return int(qBound<qint64>(1, qint64(std::llround(hold)), 600000));
+}
+
+void Point3dWindow::setPlaying(bool on)
+{
+    if (on == m_playing)
         return;
-    if (m_replay == replay)
-        return;
-    if (m_replay)
-        disconnect(m_replay, nullptr, this, nullptr);
-    m_replay = replay;
-    connect(replay, &ReplayController::timeChanged, this, &Point3dWindow::onReplayTime);
-    connect(replay, &ReplayController::stateChanged, this, &Point3dWindow::updatePlaybackUi);
-
-    m_playBtn->setEnabled(true);
-    m_seekSlider->setEnabled(true);
-    m_speedCombo->setEnabled(true);
-
-    m_restoring = true;
-    m_speedCombo->setEditText(QString::number(replay->speed(), 'g', 6));
-    m_restoring = false;
-
-    onReplayTime(replay->current());
+    if (on) {
+        if (m_data.frames.isEmpty())
+            return;
+        if (m_canvas->currentFrame() >= m_data.frames.size() - 1)
+            setFrameInternal(0);              // 已在末尾：从头播
+        m_frameClock.start();
+        m_playTimer->start();
+    } else {
+        m_playTimer->stop();
+    }
+    m_playing = on;
     updatePlaybackUi();
 }
 
-qint64 Point3dWindow::currentTimeMs() const
+void Point3dWindow::togglePlay()
 {
-    return m_replay ? m_replay->current() : m_data.maxTime;
+    setPlaying(!m_playing);
 }
 
-int Point3dWindow::nearestFrame(qint64 ms) const
+void Point3dWindow::setSpeed(double speed)
 {
-    const QVector<DetPointFrame> &frames = m_data.frames;
-    if (frames.isEmpty())
-        return 0;
-    int lo = 0, hi = frames.size();
-    while (lo < hi) {
-        const int mid = (lo + hi) / 2;
-        if (frames.at(mid).timeMs < ms)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    int best = qBound(0, lo, frames.size() - 1);
-    if (best > 0 && qAbs(frames.at(best - 1).timeMs - ms)
-                        <= qAbs(frames.at(best).timeMs - ms))
-        best -= 1;
-    return best;
+    if (!(speed > 0.0) || !std::isfinite(speed))
+        return;
+    m_speed = speed;
+    m_frameClock.restart();                   // 新倍速从当前帧重新计时
+    app::setValue(QStringLiteral("point3d.play_speed"), m_speed);
 }
 
-void Point3dWindow::onReplayTime(qint64 ms)
+void Point3dWindow::onPlayTick()
 {
-    m_outOfRange = false;
-    if (!m_data.frames.isEmpty()) {
-        if (ms < m_data.minTime || ms > m_data.maxTime)
-            m_outOfRange = true;
-        else
-            m_canvas->setCurrentFrame(nearestFrame(ms));
+    if (!m_playing || m_data.frames.isEmpty())
+        return;
+    const int n = m_data.frames.size();
+    const int cur = m_canvas->currentFrame();
+    if (cur >= n - 1) {
+        setPlaying(false);
+        return;
     }
-
-    m_syncing = true;
-    if (m_replay && m_replay->end() > m_replay->start()) {
-        m_seekSlider->setValue(int(std::lround(m_replay->progress() * 1000.0)));
-        m_timeLabel->setText(formatBeijingTime(ms));
+    if (m_frameClock.elapsed() < frameHoldMs())
+        return;
+    setFrameInternal(cur + 1);
+    if (m_canvas->currentFrame() >= n - 1) {
+        setPlaying(false);                    // 最后一帧显示完就停
     } else {
-        m_seekSlider->setValue(0);
-        m_timeLabel->setText(QStringLiteral("--"));
+        m_frameClock.restart();
     }
-    m_syncing = false;
+}
+
+void Point3dWindow::seekToFrame(int index)
+{
+    if (m_data.frames.isEmpty())
+        return;
+    setFrameInternal(qBound(0, index, m_data.frames.size() - 1));
+    m_frameClock.restart();                   // 拖拽后重新计时，避免刚拖完就跳帧
+}
+
+void Point3dWindow::setFrameInternal(int index)
+{
+    m_canvas->setCurrentFrame(index);
+    syncPlaybackUi();
     updateStatus();
 }
 
-void Point3dWindow::seekFromSlider(int value)
+void Point3dWindow::syncPlaybackUi()
 {
-    if (m_syncing || !m_replay)
-        return;
-    m_replay->seek(qBound(0.0, value / 1000.0, 1.0));
+    const int n = m_data.frames.size();
+    const int cur = n > 0 ? qBound(0, m_canvas->currentFrame(), n - 1) : 0;
+    m_syncing = true;
+    m_seekSlider->setRange(0, qMax(0, n - 1));
+    m_seekSlider->setPageStep(1);
+    m_seekSlider->setSingleStep(1);
+    m_seekSlider->setValue(cur);
+    m_seekSlider->setEnabled(n > 1);
+    if (n > 0)
+        m_timeLabel->setText(QStringLiteral("%1  帧 %2/%3")
+                                 .arg(formatBeijingTime(m_data.frames.at(cur).timeMs))
+                                 .arg(cur + 1).arg(n));
+    else
+        m_timeLabel->setText(QStringLiteral("--"));
+    m_syncing = false;
 }
 
 void Point3dWindow::updatePlaybackUi()
 {
-    if (!m_replay)
-        return;
-    m_playBtn->setText(m_replay->isPlaying() ? QStringLiteral("暂停")
-                                             : QStringLiteral("播放"));
+    m_playBtn->setText(m_playing ? QStringLiteral("暂停") : QStringLiteral("播放"));
+    m_playBtn->setEnabled(!m_data.frames.isEmpty());
 }
 
 void Point3dWindow::setTrackColorProvider(
@@ -447,17 +476,20 @@ void Point3dWindow::buildUi()
 
     bar->addSpacing(ui::sz(6));
     m_playBtn = new QPushButton(QStringLiteral("播放"), m_toolbar);
-    m_playBtn->setToolTip(QStringLiteral("播放 / 暂停全局时间轴（空格）"));
+    m_playBtn->setToolTip(QStringLiteral("播放 / 暂停本窗口的回放（空格）。只回放本窗口的点迹与航迹"));
     bar->addWidget(m_playBtn);
 
+    // 进度条 = 帧序号（有级）：每一格就是一帧，拖动只能落到某一帧上
     m_seekSlider = new QSlider(Qt::Horizontal, m_toolbar);
-    m_seekSlider->setRange(0, 1000);
+    m_seekSlider->setRange(0, 0);
+    m_seekSlider->setPageStep(1);
+    m_seekSlider->setSingleStep(1);
     m_seekSlider->setMinimumWidth(ui::sz(160));
-    m_seekSlider->setToolTip(QStringLiteral("拖动跳转全局时间轴（与主窗口进度条同步）"));
+    m_seekSlider->setToolTip(QStringLiteral("拖动跳转到某一帧（按帧吸附，不插值）"));
     bar->addWidget(m_seekSlider, 1);
 
     m_timeLabel = new QLabel(QStringLiteral("--"), m_toolbar);
-    m_timeLabel->setMinimumWidth(ui::sz(150));
+    m_timeLabel->setMinimumWidth(ui::sz(190));
     bar->addWidget(m_timeLabel);
 
     QLabel *speedLabel = new QLabel(QStringLiteral("倍速"), m_toolbar);
@@ -466,7 +498,8 @@ void Point3dWindow::buildUi()
     m_speedCombo->setEditable(true);
     for (int s : { 1, 2, 5, 10, 20, 50, 100, 300, 500, 2000 })
         m_speedCombo->addItem(QString::number(s));
-    m_speedCombo->setToolTip(QStringLiteral("回放倍速（作用于全局时间轴，与主窗口共用）"));
+    m_speedCombo->setToolTip(QStringLiteral(
+        "本窗口回放倍速：每帧停留 = 相邻帧时间差 / 倍速（1× 为数据真实节奏）"));
     bar->addWidget(m_speedCombo);
 
     m_progress = new QProgressBar(m_toolbar);
@@ -553,21 +586,37 @@ void Point3dWindow::buildUi()
             this, &Point3dWindow::trackActivated);
 
     // 播放控制：全部驱动主窗口的 ReplayController（全局共用时间轴）
-    connect(m_playBtn, &QPushButton::clicked, this, [this]() {
-        if (m_replay)
-            m_replay->togglePlay();
+    connect(m_playBtn, &QPushButton::clicked, this, &Point3dWindow::togglePlay);
+    // 进度条：拖动暂停、松手恢复；每一格都是一帧
+    connect(m_seekSlider, &QSlider::sliderPressed, this, [this]() {
+        m_resumeAfterSeek = m_playing;
+        setPlaying(false);
     });
-    connect(m_seekSlider, &QSlider::sliderMoved, this, &Point3dWindow::seekFromSlider);
+    connect(m_seekSlider, &QSlider::sliderReleased, this, [this]() {
+        if (m_resumeAfterSeek)
+            setPlaying(true);
+        m_resumeAfterSeek = false;
+    });
+    connect(m_seekSlider, &QSlider::valueChanged, this, [this](int v) {
+        if (!m_syncing)
+            seekToFrame(v);
+    });
     connect(m_speedCombo, &QComboBox::currentTextChanged, this, [this](const QString &text) {
-        if (m_restoring || !m_replay)
+        if (m_restoring)
             return;
         bool ok = false;
         const double v = text.toDouble(&ok);
         if (ok && v > 0.0)
-            m_replay->setSpeed(v);
+            setSpeed(v);
     });
 
-    // 快捷键：P / T / L（窗口内生效）
+    // 回放心跳：每 16ms 检查当前帧是否该换下一帧（按帧间隔 / 倍速）
+    m_playTimer = new QTimer(this);
+    m_playTimer->setInterval(16);
+    m_playTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_playTimer, &QTimer::timeout, this, &Point3dWindow::onPlayTick);
+
+    // 快捷键：P / T / L / H / 空格（窗口内生效）
     auto bindKey = [this](Qt::Key key, const std::function<void()> &fn) {
         QShortcut *sc = new QShortcut(QKeySequence(key), this);
         sc->setContext(Qt::WidgetWithChildrenShortcut);
@@ -577,15 +626,12 @@ void Point3dWindow::buildUi()
     bindKey(Qt::Key_T, [this]() { m_trackBtn->toggle(); });
     bindKey(Qt::Key_L, [this]() { m_labelBtn->toggle(); });
     bindKey(Qt::Key_H, [this]() { m_panBtn->toggle(); });   // 手爪（平移）/ 旋转
-    bindKey(Qt::Key_Space, [this]() {
-        if (m_replay)
-            m_replay->togglePlay();
-    });
+    bindKey(Qt::Key_Space, [this]() { togglePlay(); });
 
-    // 未接入全局时钟前先禁用播放控制（由 attachReplay 打开）
+    // 没有点迹数据前先禁用播放控制（导入完成后 syncPlaybackUi 打开）
     m_playBtn->setEnabled(false);
     m_seekSlider->setEnabled(false);
-    m_speedCombo->setEnabled(false);
+    m_speedCombo->setEnabled(true);
 
     // ---- 恢复全局默认参数 ----
     const QString view = setting("point3d.view_mode", QStringLiteral("rvf")).toString();
@@ -605,6 +651,10 @@ void Point3dWindow::buildUi()
     m_panBtn->setChecked(setting("point3d.drag_mode", QStringLiteral("rotate")).toString()
                          == QLatin1String("pan"));
     m_canvas->setTrackLineWidth(setting("point3d.track_line_width", 2.0).toDouble());
+
+    // 本窗口回放的倍速（只影响本窗口）
+    m_speed = qBound(0.01, setting("point3d.play_speed", 100.0).toDouble(), 1.0e6);
+    m_speedCombo->setEditText(QString::number(m_speed, 'g', 6));
 
     const double camYaw = setting("point3d.camera_yaw", 42.0).toDouble();
     const double camPitch = setting("point3d.camera_pitch", 23.0).toDouble();
@@ -634,6 +684,8 @@ void Point3dWindow::buildUi()
     // 航迹选择属于单个窗口：只随窗口会话（point3d.windows）保存，不写全局默认，
     // 否则新开的窗口会莫名继承别的窗口选过的航迹。
     m_restoring = false;
+    syncPlaybackUi();
+    updatePlaybackUi();
     updateStatus();
 }
 
@@ -720,13 +772,14 @@ void Point3dWindow::onImportDone()
     }
 
     m_data = job->dataset();
+    setPlaying(false);
     m_canvas->setDataset(&m_data);
     m_canvas->setHighlightedBatch(-1);
     m_files = m_pendingFiles;
     // 重新导入点迹后，已选数据库航迹需要按新帧重新映射 Z 值
     reloadOverlaysFromKeys();
-    if (m_replay)
-        onReplayTime(m_replay->current());
+    syncPlaybackUi();
+    updatePlaybackUi();
 
     // 持久化文件清单
     QJsonArray arr;
@@ -800,8 +853,6 @@ void Point3dWindow::updateStatus()
     if (m_data.frames.isEmpty())
         return;                       // 保留导入完成/失败时的提示文字
     QString text = m_canvas->statusText();
-    if (m_outOfRange)
-        text += QStringLiteral(" | 当前时间不在本数据范围内");
     m_status->setText(text);
 }
 
@@ -816,14 +867,10 @@ int Point3dWindow::highlightedBatch() const
     return m_canvas->highlightedBatch();
 }
 
-int Point3dWindow::currentFrame() const
-{
-    return m_canvas->currentFrame();
-}
-
 void Point3dWindow::setCurrentFrame(int index)
 {
     m_canvas->setCurrentFrame(index);
+    syncPlaybackUi();
     updateStatus();
 }
 

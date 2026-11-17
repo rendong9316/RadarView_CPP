@@ -64,18 +64,18 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 复刻 MATLAB `track_debuger_suite/tool_Track visualization`，对应文件 `point3dtypes.h` / `point3dparsers.*` / `point3dimportjob.*` / `point3dcanvas.*` / `point3dwindow.*` / `trackpicker.*`。
 
 - 窗口可**多开**（每个窗口一组点迹），从主窗口「视图 → 新建点迹三维窗口」打开（Ctrl+Shift+P）。
-- **所有点迹窗口与主窗口共用同一个 `ReplayController` 时钟**：窗口内的播放/暂停/倍速/进度条直接驱动它，主窗口回放范围取「可见航迹 ∪ 所有点迹窗口」的并集。不要再给点迹窗口做本地计时器。
+- **点迹窗口的回放是窗口自带的，与主窗口时间轴完全独立**（用户明确要求，不要再接 `ReplayController`）：只回放本窗口的点迹/航迹，**不做时间插值**，而是按相邻帧的时间差逐帧切换（每帧停留 = `frames[i+1].timeMs - frames[i].timeMs` / 倍速，倍速存 `point3d.play_speed`，默认 100）。进度条绑定**帧序号**（有级），拖动只能落在某一帧上；拖拽时暂停、松手恢复；播到最后一帧自动停，再点播放从头开始。主窗口的 `resetReplayRange` 只统计地图航迹，不再并入点迹窗口。
 - 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
 - 航迹点源（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。
 - **工具栏只用一个按钮切平滑/关联**（库里就这两套点列，不要下拉框）：`m_sourceBtn` 弹起=平滑、按下=关联，按钮文字同步显示当前点列；取值持久化到 `point3d.track_source`（`smooth`/`associated`，老值 `auto`/`predicted` 一律按平滑处理）。不允许出现"选了却看不见"：用户在「选择航迹…」里选中的航迹若当前点源取不到点列，窗口要自动切到另一列。
 - **画布左键拖拽有两种模式**：`Point3dCanvas::DragMode::Rotate`（默认，旋转视角）与 `DragMode::Pan`（平移视图）。工具栏「平移 [H]」按钮切换，平移时鼠标始终显示手爪（拖动中为 ClosedHand），偏移以屏幕像素叠加在投影中心（`m_panX/m_panY`），随相机一起持久化（`point3d.camera_pan_x/y`、会话 JSON 的 `camera.pan_x/pan_y`），空白处双击 `resetCamera()` 一并清零。`point3d.drag_mode` 记住上次的拖拽模式。
 - 雷达 MAT 导入时 `parseRadarMat(..., raw=false)` 会把 `asscPointList` 一并读进 `Track::rawPoints` 入库，所以同一份数据能直接切换平滑/关联，不用导两遍；老库（v3 及以前）重导同一 MAT 会**原地补列**（`DbSaveJob` 对已存在且缺 `has_measure`/`has_raw` 的行做 `INSERT OR REPLACE`，不算新增，不影响批次计数）。
-- **`ReplayController::setRange` 不得随意重置当前时刻**：地图单独显示某条航迹、筛选、增删数据都会重算回放范围，范围变了但当前时刻仍在新范围内时必须原地保留（范围完全没变则直接返回，连回放状态都不打断）。历史上每次都跳回起点，表现为"在点迹图上还好，去地图点一条航迹，点迹窗口就跳到第一帧、点迹看起来全没了"。
+- **`ReplayController::setRange` 不得随意重置当前时刻**（主窗口地图回放）：单独显示某条航迹、筛选、增删数据都会重算回放范围，范围变了但当前时刻仍在新范围内时必须原地保留（范围完全没变则直接返回，连回放状态都不打断）。历史上每次都跳回起点，表现为"在地图上点一条航迹，时间轴就跳回开头"。
 - 航迹选择属于单个窗口：只随窗口会话（`point3d.windows`）持久化，不写全局默认键，否则新开窗口会莫名继承别的窗口选过的航迹。
 - 画布绘制必须成对 `save()/restore()`：悬停提示框用了不透明画刷，泄漏到后面的 `drawColorBar()` 会把色标渐变整块盖掉（表现为"鼠标一悬停到点迹上，右侧色标条就消失"）。色标条任何状态下都要完整重画。
 - 设置全部走 `point3d.*` 键；多窗口现场存 `point3d.windows`（JSON 数组），`point3d.auto_reload` 控制启动时是否恢复。
 - 渲染只用 QPainter（不用 GL）：正交投影、turbo 色标、深度分桶、LOD 抽样；画布是固定深色背景，工具条/状态栏跟随主题。
-- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/全局时间轴/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
+- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
 
 ### OpenGL 约束
 
