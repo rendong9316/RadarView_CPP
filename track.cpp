@@ -172,6 +172,15 @@ QString formatBeijingTime(qint64 ms)
         .arg(sec % 60, 2, 10, QLatin1Char('0'));
 }
 
+// MATLAB datenum（北京墙钟）-> Unix 毫秒；与 RadarView 一致取整到秒。
+// 航迹 MAT 的 time 字段与点迹 MAT 的 datenum 同源同值，二者都走这里，
+// 保证时间轴只有一套换算（见 CLAUDE.md「时间基准」）。
+qint64 datenumToMs(double dn)
+{
+    const qint64 sec = qint64(std::llround((dn - 719529.0) * 86400.0));
+    return sec * 1000 - kBeijingOffsetMs;
+}
+
 // ---------------------------------------------------------------
 //  TrackStore
 // ---------------------------------------------------------------

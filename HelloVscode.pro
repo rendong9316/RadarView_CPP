@@ -35,7 +35,8 @@ SOURCES += \
     drawingmanager.cpp \
     drawcommands.cpp \
     splashscreen.cpp \
-    settingspanel.cpp
+    settingspanel.cpp \
+    point3dparsers.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -65,7 +66,9 @@ HEADERS += \
     drawingmanager.h \
     drawcommands.h \
     splashscreen.h \
-    settingspanel.h
+    settingspanel.h \
+    point3dtypes.h \
+    point3dparsers.h
 
 # Windows 用 Qt5Core 内置并导出的 zlib；其他平台链接系统 zlib
 unix: LIBS += -lz

@@ -24,6 +24,18 @@ struct BatchInfo {
     QString importedAt;
 };
 
+// 点云窗口「从数据库选择航迹」用的摘要（不含点序列）
+struct DbTrackSummary {
+    QString icao;
+    qint64 batchId = 0;
+    TrackSource source = TrackSource::Radar;
+    QString fileName;
+    QString flightNo;
+    qint64 minMs = 0, maxMs = 0;
+    int pointCount = 0;
+    bool hasMeasure = false;    // 是否带 prange/pvr/paz（v2 旧数据为 false，需重新导入）
+};
+
 // 管理面板筛选条件（RadarView types/manage.ts TrackMetaFilter + SortConfig）
 struct ManageFilter {
     QString source;              // "" / adsb / radar / radar_raw
@@ -77,6 +89,8 @@ QVector<Track> loadTracks(const QStringList &trackKeys);      // 按 Track::key(
 QVector<BatchInfo> batches();                                 // id 倒序
 QVector<Track> loadBatchTracks(qint64 batchId);               // 该批次全部航迹（含软删除的）
 QStringList batchKeys(qint64 batchId);                        // 该批次航迹的 Track::key()
+QVector<DbTrackSummary> trackSummaries(const QString &sourceFilter = QString(),
+                                       QString *error = nullptr);  // 点云航迹选择器用
 ManageStats stats();
 QStringList distinctValues(const QString &column, const QString &source);   // airline / aircraft_type
 QVector<ManageRow> query(const ManageFilter &f, int limit, int offset, int *total);

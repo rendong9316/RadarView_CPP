@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QSet>
 #include <QColor>
+#include <limits>
 
 // 航迹数据源，对应 RadarView 的 adsb / radar / radar_raw
 enum class TrackSource { Adsb = 0, Radar = 1, RadarRaw = 2 };
@@ -22,6 +23,10 @@ struct TrackPoint {
     float heading = 0.0f;    // 度
     float speed = 0.0f;      // 节
     float vrate = 0.0f;      // 英尺/分
+    // 雷达测量坐标（点云可视化用）；ADS-B 或旧数据为 NaN
+    float prange = std::numeric_limits<float>::quiet_NaN();  // 距离，米
+    float pvr = std::numeric_limits<float>::quiet_NaN();     // 多普勒径向速度，m/s
+    float paz = std::numeric_limits<float>::quiet_NaN();     // 方位角，度
 };
 
 struct Track {
@@ -43,6 +48,8 @@ struct Track {
 bool parseBeijingTime(const char *s, int len, qint64 *ms);
 // Unix 毫秒 -> "YYYY MM DD HH:mm:ss"（UTC+8，与 RadarView 显示一致）
 QString formatBeijingTime(qint64 ms);
+// MATLAB datenum（北京墙钟）-> Unix 毫秒；航迹与点迹共用，全工程只有这一套换算
+qint64 datenumToMs(double dn);
 
 // "ADS-B" / "Radar" / "RadarRaw" <-> TrackSource（数据库 source 列）
 bool trackSourceFromName(const QString &name, TrackSource *out);

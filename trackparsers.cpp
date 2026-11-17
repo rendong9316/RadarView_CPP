@@ -38,13 +38,7 @@ QString toStr(const char *s, int len)
     return len > 0 ? QString::fromUtf8(s, len).trimmed() : QString();
 }
 
-// MATLAB datenum（北京时间）-> Unix 毫秒；与 RadarView 一致取整到秒
-qint64 datenumToMs(double dn)
-{
-    const qint64 sec = qint64(std::llround((dn - 719529.0) * 86400.0));
-    return sec * 1000 - 8LL * 3600 * 1000;
-}
-
+// 时间换算统一使用 track.cpp 的 datenumToMs（全工程只有一套）
 bool validLatLon(double lat, double lon)
 {
     return std::isfinite(lat) && std::isfinite(lon)
@@ -224,10 +218,22 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
             const double lon = pts.field(QStringLiteral("lon"), j).scalar(0, &okLon);
             if (!okT || !okLat || !okLon || dn <= 0.0 || !validLatLon(lat, lon))
                 continue;
+            // 测量坐标（点云用）：smooth/output/assc 三套点列表字段名一致，
+            // 缺失时保持 NaN，不参与点云绘制
+            bool okR = false, okV = false, okA = false;
+            const double pr = pts.field(QStringLiteral("prange"), j).scalar(0, &okR);
+            const double pv = pts.field(QStringLiteral("pvr"), j).scalar(0, &okV);
+            const double pa = pts.field(QStringLiteral("paz"), j).scalar(0, &okA);
             TrackPoint pt;
             pt.t = datenumToMs(dn);
             pt.lat = lat;
             pt.lon = lon;
+            if (okR && std::isfinite(pr))
+                pt.prange = float(pr);
+            if (okV && std::isfinite(pv))
+                pt.pvr = float(pv);
+            if (okA && std::isfinite(pa))
+                pt.paz = float(pa);
             tr.points.append(pt);
         }
         tr.normalize();

@@ -33,6 +33,7 @@
 #include "theme.h"
 #include "settingspanel.h"
 #include "trackimporter.h"
+#include "point3dparsers.h"
 
 #include <QMouseEvent>
 #include <QDialog>
@@ -52,10 +53,13 @@
 #include <QSettings>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QSqlError>
 
 #include <QFileInfo>
 #include <QDir>
 #include <QFontDatabase>
+#include <QtEndian>
+#include <cstring>
 #include <memory>
 
 namespace {
@@ -143,6 +147,275 @@ int runParseTest(const QString &csv, const QString &mat)
         ++failures;
 
     out << (failures == 0 ? "RESULT OK" : "RESULT FAILED") << "\n";
+    return failures == 0 ? 0 : 1;
+}
+
+// 点迹可视化自检：HelloVscode.exe --pointtest <目录|文件> [--track <航迹.mat>]
+// 校验批量解析、时间换算、连续性评分、视图坐标与航迹测量坐标转换，写 pointtest.log
+int runPointTest(const QString &input, const QString &trackFile)
+{
+    QFile log(QCoreApplication::applicationDirPath() + QStringLiteral("/pointtest.log"));
+    log.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
+    QTextStream out(&log);
+    out.setCodec("UTF-8");
+    out.setRealNumberPrecision(15);
+    int failures = 0;
+    auto check = [&out, &failures](bool ok, const QString &what) {
+        out << (ok ? "PASS " : "FAIL ") << what << "\n";
+        out.flush();
+        if (!ok)
+            ++failures;
+    };
+
+    // ---- 收集输入文件（任意数量，含单个）----
+    QStringList files;
+    const QFileInfo info(input);
+    if (info.isDir()) {
+        const QDir dir(input);
+        files = dir.entryList(QStringList() << QStringLiteral("detPoint_*.mat")
+                                            << QStringLiteral("det_*.mat"),
+                              QDir::Files, QDir::Name);
+        if (files.isEmpty())
+            files = dir.entryList(QStringList() << QStringLiteral("*.mat"), QDir::Files, QDir::Name);
+        for (QString &f : files)
+            f = dir.filePath(f);
+    } else if (info.isFile()) {
+        files << input;
+    }
+    out << "input=" << input << " files=" << files.size() << "\n";
+    check(!files.isEmpty(), QStringLiteral("找到点迹文件"));
+
+    // ---- 批量解析 ----
+    QElapsedTimer clock;
+    clock.start();
+    Point3dDataset data;
+    QStringList errors;
+    const bool parsed = parseDetPointFiles(files, &data, &errors);
+    for (const QString &e : qAsConst(errors))
+        out << "  parse error: " << e << "\n";
+    check(parsed, QStringLiteral("批量解析成功"));
+    check(data.frames.size() + errors.size() == files.size(),
+          QStringLiteral("帧数+失败数等于文件数（%1+%2=%3）")
+              .arg(data.frames.size()).arg(errors.size()).arg(files.size()));
+    out << "frames=" << data.frames.size() << " elapsed=" << clock.elapsed() << " ms\n";
+
+    int totalPoints = 0;
+    bool timesAscending = true;
+    bool fieldsFinite = true;
+    for (int i = 0; i < data.frames.size(); ++i) {
+        const DetPointFrame &f = data.frames.at(i);
+        totalPoints += f.points.size();
+        if (i > 0 && !(f.timeMs > data.frames.at(i - 1).timeMs))
+            timesAscending = false;
+        for (const DetPointItem &p : f.points)
+            if (!std::isfinite(p.range) || !std::isfinite(p.vr) || !std::isfinite(p.az)
+                    || !std::isfinite(p.snr) || p.range < 0.0f)
+                fieldsFinite = false;
+    }
+    check(totalPoints > 0, QStringLiteral("点迹总数 > 0（%1）").arg(totalPoints));
+    check(timesAscending, QStringLiteral("帧按时间严格升序"));
+    check(fieldsFinite, QStringLiteral("点字段有限且 range >= 0"));
+    if (!data.frames.isEmpty()) {
+        out << "time range " << data.minTime << " .. " << data.maxTime << " ("
+            << formatBeijingTime(data.minTime) << " ~ " << formatBeijingTime(data.maxTime) << ")\n";
+        check(data.minTime == data.frames.first().timeMs && data.maxTime == data.frames.last().timeMs,
+              QStringLiteral("数据集时间范围与首末帧一致"));
+    }
+
+    // ---- 时间换算（固定样本，防止回归）----
+    check(datenumToMs(739961.74983796) == 1765360786000LL,
+          QStringLiteral("datenum -> Unix 毫秒固定样本"));
+    check(formatBeijingTime(1765360786000LL) == QStringLiteral("2025 12 10 17:59:46"),
+          QStringLiteral("Unix 毫秒 -> 北京时间固定样本"));
+
+    // ---- 连续性评分 ----
+    clock.restart();
+    ContinuityConfig cfg;
+    computeContinuity(data.frames, cfg);
+    bool continuityOk = true;
+    double globalMax = 0.0;
+    for (const DetPointFrame &f : qAsConst(data.frames)) {
+        if (f.continuity.size() != f.points.size()) {
+            continuityOk = false;
+            continue;
+        }
+        for (float c : f.continuity) {
+            if (!std::isfinite(c) || c < 0.0f || c > 1.0f) {
+                continuityOk = false;
+                break;
+            }
+            globalMax = qMax(globalMax, double(c));
+        }
+    }
+    check(continuityOk, QStringLiteral("连续性长度与值域 0..1"));
+    check(globalMax > 0.0, QStringLiteral("连续性存在非零值"));
+    out << "continuity elapsed=" << clock.elapsed() << " ms max=" << globalMax << "\n";
+
+    // ---- 三种视图坐标映射 ----
+    double x = 0, y = 0;
+    point3dViewCoordinates(Point3dViewMode::RVF, 1000, 12, 33, &x, &y);
+    const bool rvfOk = qFuzzyCompare(x, 1000.0) && qFuzzyCompare(y, 12.0);
+    point3dViewCoordinates(Point3dViewMode::RAF, 1000, 12, 33, &x, &y);
+    const bool rafOk = qFuzzyCompare(x, 1000.0) && qFuzzyCompare(y, 33.0);
+    point3dViewCoordinates(Point3dViewMode::VAF, 1000, 12, 33, &x, &y);
+    const bool vafOk = qFuzzyCompare(x, 12.0) && qFuzzyCompare(y, 33.0);
+    check(rvfOk && rafOk && vafOk, QStringLiteral("RVF/RAF/VAF 坐标映射"));
+
+    // ---- 航迹叠加（可选）----
+    if (!trackFile.isEmpty()) {
+        QVector<Track> tracks;
+        QString err;
+        const bool trackOk = parseRadarMat(trackFile, false, QStringLiteral("Radar"), &tracks, &err);
+        check(trackOk, QStringLiteral("航迹 MAT 解析"));
+        if (trackOk) {
+            bool anyMeasure = false;
+            for (const Track &t : qAsConst(tracks))
+                for (const TrackPoint &p : t.points)
+                    if (std::isfinite(p.prange) && std::isfinite(p.pvr) && std::isfinite(p.paz)) {
+                        anyMeasure = true;
+                        break;
+                    }
+            check(anyMeasure, QStringLiteral("航迹点带测量坐标（prange/pvr/paz）"));
+
+            int overlayTracks = 0, overlayPoints = 0;
+            for (const Track &t : qAsConst(tracks)) {
+                TrackOverlay ov;
+                if (overlayFromTrack(t, data.frames, &ov)) {
+                    ++overlayTracks;
+                    overlayPoints += ov.points.size();
+                }
+            }
+            out << "overlay tracks=" << overlayTracks << " points=" << overlayPoints << "\n";
+            check(overlayTracks > 0 && overlayPoints > 0,
+                  QStringLiteral("航迹可转换为点云叠加数据"));
+        }
+    }
+
+    out << (failures == 0 ? QStringLiteral("RESULT OK")
+                          : QStringLiteral("RESULT FAILED (%1)").arg(failures)) << "\n";
+    out.flush();
+    return failures == 0 ? 0 : 1;
+}
+
+// 数据库迁移自检：HelloVscode.exe --dbtest
+// 造一个 v2 旧库（40 字节点格式）→ 打开触发 v3 迁移 → 校验点数据、测量坐标与版本号，写 dbtest.log
+int runDbMigrationTest()
+{
+    QFile log(QCoreApplication::applicationDirPath() + QStringLiteral("/dbtest.log"));
+    log.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
+    QTextStream out(&log);
+    out.setCodec("UTF-8");
+    int failures = 0;
+    auto check = [&out, &failures](bool ok, const QString &what) {
+        out << (ok ? "PASS " : "FAIL ") << what << "\n";
+        out.flush();
+        if (!ok)
+            ++failures;
+    };
+
+    app::setTestMode(true);                 // 清空并固定使用 exe 旁的临时库（test_radarview.db）
+    const QString path = app::databasePath();
+    QFile::remove(path);
+    const QString conn = QStringLiteral("dbtest_setup");
+
+    // ---- 造 v2 旧库：2 个点 × 40 字节 ----
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+        db.setDatabaseName(path);
+        if (!db.open()) {
+            out << "FAIL 创建测试库: " << db.lastError().text() << "\n";
+            return 1;
+        }
+        QSqlQuery q(db);
+        const char *const stmts[] = {
+            "CREATE TABLE batches (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL,"
+            " source TEXT NOT NULL, track_count INTEGER NOT NULL, imported_at TEXT NOT NULL)",
+            "CREATE TABLE saved_tracks (icao_address TEXT NOT NULL, batch_id INTEGER NOT NULL,"
+            " source TEXT NOT NULL, flight_no TEXT, icao_flight_no TEXT, registration TEXT,"
+            " aircraft_type TEXT, airline TEXT, origin TEXT, destination TEXT,"
+            " min_timestamp TEXT, max_timestamp TEXT, min_ms INTEGER, max_ms INTEGER,"
+            " point_count INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0, points BLOB NOT NULL,"
+            " PRIMARY KEY (icao_address, batch_id))",
+            "INSERT INTO batches (id, file_name, source, track_count, imported_at)"
+            " VALUES (1, 'Radar', 'Radar', 1, '2026-01-01 00:00:00')",
+            "PRAGMA user_version=2",
+        };
+        bool okAll = true;
+        for (const char *s : stmts)
+            if (!q.exec(QLatin1String(s)))
+                okAll = false;
+        check(okAll, QStringLiteral("构造 v2 旧库"));
+
+        QByteArray blob(2 * 40, 0);
+        char *p = blob.data();
+        for (int i = 0; i < 2; ++i) {
+            const qint64 t = 1765360182000LL + i * 10000;
+            qToLittleEndian<qint64>(t, p);
+            double lat = 30.0 + i, lon = 110.0 + i;
+            quint64 u;
+            std::memcpy(&u, &lat, 8);
+            qToLittleEndian<quint64>(u, p + 8);
+            std::memcpy(&u, &lon, 8);
+            qToLittleEndian<quint64>(u, p + 16);
+            const float fs[4] = { 1000.0f, 90.0f, 200.0f, 0.0f };
+            for (int k = 0; k < 4; ++k) {
+                quint32 v;
+                std::memcpy(&v, &fs[k], 4);
+                qToLittleEndian<quint32>(v, p + 24 + 4 * k);
+            }
+            p += 40;
+        }
+        QSqlQuery ins(db);
+        ins.prepare(QStringLiteral(
+            "INSERT INTO saved_tracks (icao_address, batch_id, source, min_timestamp, max_timestamp,"
+            " min_ms, max_ms, point_count, deleted, points)"
+            " VALUES ('RADAR-0001', 1, 'Radar', '', '', 1765360182000, 1765360192000, 2, 0, ?)"));
+        ins.addBindValue(blob);
+        check(ins.exec(), QStringLiteral("写入旧格式航迹"));
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(conn);
+
+    // ---- 打开触发迁移 ----
+    QString err;
+    const bool opened = trackdb::open(&err);
+    check(opened, QStringLiteral("打开数据库并触发 v3 迁移：%1").arg(err));
+    if (opened) {
+        QVector<Track> tracks = trackdb::loadAll(&err);
+        check(tracks.size() == 1, QStringLiteral("迁移后航迹数 = 1（实际 %1）").arg(tracks.size()));
+        if (!tracks.isEmpty()) {
+            const Track &t = tracks.first();
+            check(t.points.size() == 2, QStringLiteral("迁移后点数 = 2（实际 %1）").arg(t.points.size()));
+            if (t.points.size() == 2) {
+                check(qFuzzyCompare(t.points.first().lat, 30.0)
+                          && qFuzzyCompare(t.points.last().lon, 111.0),
+                      QStringLiteral("旧数据经纬度未损坏"));
+                check(!std::isfinite(t.points.first().prange)
+                          && !std::isfinite(t.points.first().pvr)
+                          && !std::isfinite(t.points.first().paz),
+                      QStringLiteral("旧数据测量坐标补为 NaN"));
+            }
+        }
+        const QVector<DbTrackSummary> sums = trackdb::trackSummaries(QString(), &err);
+        check(sums.size() == 1 && !sums.first().hasMeasure,
+              QStringLiteral("has_measure = 0（旧数据不可用于点云叠加）"));
+
+        QSqlDatabase db = QSqlDatabase::database(QStringLiteral("radarview_main"), false);
+        QSqlQuery q(db);
+        if (q.exec(QStringLiteral("PRAGMA user_version")) && q.next())
+            check(q.value(0).toInt() == 3, QStringLiteral("user_version = 3"));
+        else
+            check(false, QStringLiteral("读取 user_version"));
+        if (q.exec(QStringLiteral("SELECT length(points) FROM saved_tracks")) && q.next())
+            check(q.value(0).toInt() == 2 * 52, QStringLiteral("点格式已重编码为 52 字节/点"));
+        else
+            check(false, QStringLiteral("读取点 BLOB 长度"));
+    }
+    trackdb::close();
+
+    out << (failures == 0 ? QStringLiteral("RESULT OK")
+                          : QStringLiteral("RESULT FAILED (%1)").arg(failures)) << "\n";
+    out.flush();
     return failures == 0 ? 0 : 1;
 }
 
@@ -1915,6 +2188,20 @@ int main(int argc, char *argv[])
     const int pt = args.indexOf(QStringLiteral("--parsetest"));
     if (pt >= 0 && pt + 2 < args.size())
         return runParseTest(args.at(pt + 1), args.at(pt + 2));
+
+    // 点迹可视化自检：--pointtest <目录|文件> [--track <航迹.mat>]
+    const int p3t = args.indexOf(QStringLiteral("--pointtest"));
+    if (p3t >= 0 && p3t + 1 < args.size()) {
+        QString trackFile;
+        const int tk = args.indexOf(QStringLiteral("--track"));
+        if (tk >= 0 && tk + 1 < args.size())
+            trackFile = args.at(tk + 1);
+        return runPointTest(args.at(p3t + 1), trackFile);
+    }
+
+    // 数据库迁移自检：--dbtest（造 v2 旧库 → 迁移到 v3）
+    if (args.contains(QStringLiteral("--dbtest")))
+        return runDbMigrationTest();
 
     if (args.contains(QStringLiteral("--statecheck"))) {
         app::setTestMode(true);

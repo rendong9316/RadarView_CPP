@@ -8,12 +8,21 @@
 #include <QSqlQuery>
 #include <QVariant>
 #include <QtEndian>
+#include <cmath>
 #include <cstring>
 
 namespace {
 
 const char *const kMainConn = "radarview_main";
-const int kPointBytes = 40;   // t(8) lat(8) lon(8) alt heading speed vrate(4×4)
+// 点序列格式：v3 起每点 52 字节
+//   t(8) lat(8) lon(8) alt/heading/speed/vrate(4×4) prange/pvr/paz(3×4)
+// v2 及更早为 40 字节（不含测量坐标），迁移时统一补 NaN 重编码
+const int kPointBytes = 52;
+const int kPointBytesOld = 40;
+
+// 点序列编解码（定义在本文件后面；createSchema 的 v3 迁移会用到）
+QByteArray encodePoints(const QVector<TrackPoint> &pts);
+QVector<TrackPoint> decodePointsOld(const QByteArray &blob);
 
 QSqlDatabase mainDb()
 {
@@ -30,7 +39,7 @@ bool exec(QSqlQuery &q, const QString &sql, QString *error)
 }
 
 // 库结构版本（PRAGMA user_version）。加列/加表时 +1，并在下面补一段迁移
-const int kSchemaVersion = 2;
+const int kSchemaVersion = 3;
 
 bool hasColumn(QSqlDatabase db, const QString &table, const QString &column)
 {
@@ -67,6 +76,7 @@ bool createSchema(QSqlDatabase db, QString *error)
         " flight_no TEXT, icao_flight_no TEXT, registration TEXT, aircraft_type TEXT, airline TEXT,"
         " origin TEXT, destination TEXT, min_timestamp TEXT, max_timestamp TEXT,"
         " min_ms INTEGER, max_ms INTEGER, point_count INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0,"
+        " has_measure INTEGER DEFAULT 0,"
         " points BLOB NOT NULL, PRIMARY KEY (icao_address, batch_id))",
         "CREATE INDEX IF NOT EXISTS idx_tracks_source ON saved_tracks(source)",
         "CREATE INDEX IF NOT EXISTS idx_tracks_time ON saved_tracks(min_timestamp, max_timestamp)",
@@ -105,6 +115,72 @@ bool createSchema(QSqlDatabase db, QString *error)
                                     " type TEXT NOT NULL DEFAULT 'string')"), error))
             return false;
     }
+    if (version < 3) {
+        // v3：航迹点增加测量坐标（prange/pvr/paz），点格式 40 -> 52 字节。
+        // 旧行补 NaN 重编码；has_measure 标记该航迹是否带测量坐标（点云叠加用）。
+        // 整个迁移（加列 + 重编码 + 版本号）在一个事务里完成，中途失败全部回滚，可安全重跑。
+        if (!db.transaction()) {
+            if (error)
+                *error = db.lastError().text();
+            return false;
+        }
+        int current = version;
+        QSqlQuery ver(db);
+        if (ver.exec(QStringLiteral("PRAGMA user_version")) && ver.next())
+            current = ver.value(0).toInt();     // 并发连接可能已经迁移过
+        if (current < 3) {
+            if (!hasColumn(db, QStringLiteral("saved_tracks"), QStringLiteral("has_measure"))) {
+                QSqlQuery alter(db);
+                if (!exec(alter, QStringLiteral("ALTER TABLE saved_tracks"
+                                                " ADD COLUMN has_measure INTEGER DEFAULT 0"), error)) {
+                    db.rollback();
+                    return false;
+                }
+            }
+            QVector<qint64> rowIds;
+            {
+                QSqlQuery ids(db);
+                if (!ids.exec(QStringLiteral("SELECT rowid FROM saved_tracks"))) {
+                    if (error)
+                        *error = ids.lastError().text();
+                    db.rollback();
+                    return false;
+                }
+                while (ids.next())
+                    rowIds.append(ids.value(0).toLongLong());
+            }
+            QSqlQuery pick(db), upd(db);
+            for (qint64 rowId : qAsConst(rowIds)) {
+                pick.prepare(QStringLiteral("SELECT points FROM saved_tracks WHERE rowid = ?"));
+                pick.addBindValue(rowId);
+                if (!pick.exec() || !pick.next())
+                    continue;
+                const QByteArray old = pick.value(0).toByteArray();
+                if (old.isEmpty() || old.size() % kPointBytesOld != 0)
+                    continue;                   // 空行或已经是新格式
+                upd.prepare(QStringLiteral("UPDATE saved_tracks SET points = ?, has_measure = 0"
+                                           " WHERE rowid = ?"));
+                upd.addBindValue(encodePoints(decodePointsOld(old)));
+                upd.addBindValue(rowId);
+                if (!upd.exec()) {
+                    if (error)
+                        *error = upd.lastError().text();
+                    db.rollback();
+                    return false;
+                }
+            }
+            if (!exec(q, QStringLiteral("PRAGMA user_version=3"), error)) {
+                db.rollback();
+                return false;
+            }
+        }
+        if (!db.commit()) {
+            if (error)
+                *error = db.lastError().text();
+            return false;
+        }
+        version = 3;
+    }
 
     if (version < kSchemaVersion) {
         if (!exec(q, QStringLiteral("PRAGMA user_version=%1").arg(kSchemaVersion), error))
@@ -124,8 +200,9 @@ QByteArray encodePoints(const QVector<TrackPoint> &pts)
         qToLittleEndian<quint64>(u, p + 8);
         std::memcpy(&u, &tp.lon, 8);
         qToLittleEndian<quint64>(u, p + 16);
-        const float fs[4] = { tp.alt, tp.heading, tp.speed, tp.vrate };
-        for (int k = 0; k < 4; ++k) {
+        const float fs[7] = { tp.alt, tp.heading, tp.speed, tp.vrate,
+                              tp.prange, tp.pvr, tp.paz };
+        for (int k = 0; k < 7; ++k) {
             quint32 v;
             std::memcpy(&v, &fs[k], 4);
             qToLittleEndian<quint32>(v, p + 24 + 4 * k);
@@ -135,12 +212,13 @@ QByteArray encodePoints(const QVector<TrackPoint> &pts)
     return out;
 }
 
-QVector<TrackPoint> decodePoints(const QByteArray &blob)
+// v2 及更早的 40 字节点格式；只用于 schema v3 迁移
+QVector<TrackPoint> decodePointsOld(const QByteArray &blob)
 {
-    const int n = blob.size() / kPointBytes;
+    const int n = blob.size() / kPointBytesOld;
     QVector<TrackPoint> pts(n);
     const char *p = blob.constData();
-    for (int i = 0; i < n; ++i, p += kPointBytes) {
+    for (int i = 0; i < n; ++i, p += kPointBytesOld) {
         TrackPoint &tp = pts[i];
         tp.t = qFromLittleEndian<qint64>(p);
         quint64 u = qFromLittleEndian<quint64>(p + 8);
@@ -156,6 +234,34 @@ QVector<TrackPoint> decodePoints(const QByteArray &blob)
         tp.heading = fs[1];
         tp.speed = fs[2];
         tp.vrate = fs[3];
+    }
+    return pts;
+}
+
+QVector<TrackPoint> decodePoints(const QByteArray &blob)
+{
+    const int n = blob.size() / kPointBytes;
+    QVector<TrackPoint> pts(n);
+    const char *p = blob.constData();
+    for (int i = 0; i < n; ++i, p += kPointBytes) {
+        TrackPoint &tp = pts[i];
+        tp.t = qFromLittleEndian<qint64>(p);
+        quint64 u = qFromLittleEndian<quint64>(p + 8);
+        std::memcpy(&tp.lat, &u, 8);
+        u = qFromLittleEndian<quint64>(p + 16);
+        std::memcpy(&tp.lon, &u, 8);
+        float fs[7];
+        for (int k = 0; k < 7; ++k) {
+            const quint32 v = qFromLittleEndian<quint32>(p + 24 + 4 * k);
+            std::memcpy(&fs[k], &v, 4);
+        }
+        tp.alt = fs[0];
+        tp.heading = fs[1];
+        tp.speed = fs[2];
+        tp.vrate = fs[3];
+        tp.prange = fs[4];
+        tp.pvr = fs[5];
+        tp.paz = fs[6];
     }
     return pts;
 }
@@ -405,6 +511,43 @@ QStringList batchKeys(qint64 batchId)
     while (q.next())
         out << q.value(0).toString() + QStringLiteral("::") + q.value(1).toString() + QStringLiteral("::")
             + q.value(2).toString();
+    return out;
+}
+
+// 点云窗口「从数据库选择航迹」：只取摘要，不读点序列（选中后再按 key 加载）
+QVector<DbTrackSummary> trackSummaries(const QString &sourceFilter, QString *error)
+{
+    QVector<DbTrackSummary> out;
+    QSqlQuery q(mainDb());
+    QString sql = QStringLiteral(
+        "SELECT st.icao_address, st.batch_id, st.source, b.file_name, st.flight_no,"
+        " st.min_ms, st.max_ms, st.point_count, st.has_measure"
+        " FROM saved_tracks st JOIN batches b ON st.batch_id = b.id"
+        " WHERE st.deleted = 0");
+    if (!sourceFilter.isEmpty())
+        sql += QStringLiteral(" AND st.source = ?");
+    sql += QStringLiteral(" ORDER BY b.id DESC, st.rowid");
+    q.prepare(sql);
+    if (!sourceFilter.isEmpty())
+        q.addBindValue(sourceFilter);
+    if (!q.exec()) {
+        if (error)
+            *error = q.lastError().text();
+        return out;
+    }
+    while (q.next()) {
+        DbTrackSummary s;
+        s.icao = q.value(0).toString();
+        s.batchId = q.value(1).toLongLong();
+        trackSourceFromName(q.value(2).toString(), &s.source);
+        s.fileName = q.value(3).toString();
+        s.flightNo = q.value(4).toString();
+        s.minMs = q.value(5).toLongLong();
+        s.maxMs = q.value(6).toLongLong();
+        s.pointCount = q.value(7).toInt();
+        s.hasMeasure = q.value(8).toInt() != 0;
+        out.append(s);
+    }
     return out;
 }
 
@@ -680,7 +823,8 @@ void DbSaveJob::run()
             ins.prepare(QStringLiteral(
                 "INSERT OR REPLACE INTO saved_tracks (icao_address, batch_id, source, flight_no, icao_flight_no,"
                 " registration, aircraft_type, airline, origin, destination, min_timestamp, max_timestamp,"
-                " min_ms, max_ms, point_count, deleted, points) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)"));
+                " min_ms, max_ms, point_count, has_measure, deleted, points)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)"));
             for (int i = 0; okAll && i < m_tracks.size(); ++i) {
                 Track &t = m_tracks[i];
                 if (existing.contains(t.id))
@@ -688,6 +832,12 @@ void DbSaveJob::run()
                 t.normalize();
                 if (t.points.isEmpty())
                     continue;
+                bool hasMeasure = false;
+                for (const TrackPoint &p : qAsConst(t.points))
+                    if (std::isfinite(p.prange) && std::isfinite(p.pvr) && std::isfinite(p.paz)) {
+                        hasMeasure = true;
+                        break;
+                    }
                 ins.addBindValue(t.id);
                 ins.addBindValue(batchId);
                 ins.addBindValue(src);
@@ -703,6 +853,7 @@ void DbSaveJob::run()
                 ins.addBindValue(t.minTime());
                 ins.addBindValue(t.maxTime());
                 ins.addBindValue(t.points.size());
+                ins.addBindValue(hasMeasure ? 1 : 0);
                 ins.addBindValue(encodePoints(t.points));
                 if (!ins.exec()) {
                     m_error = ins.lastError().text();
