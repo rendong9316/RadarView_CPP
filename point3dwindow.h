@@ -49,6 +49,8 @@ public:
 
     // 航迹颜色提供者：与主窗口地图上的文件颜色保持一致
     void setTrackColorProvider(const std::function<QColor(TrackSource, const QString &)> &provider);
+    // 数据源颜色在右键菜单里改了：按新的文件颜色重载叠加航迹（保持地图 ↔ 点迹窗口实时一致）
+    void refreshOverlayColors();
     // 从数据库选择航迹（按 BatchNo 与主窗口联动）
     void chooseTracksFromDb();
 

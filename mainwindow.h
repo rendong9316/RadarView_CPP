@@ -142,6 +142,8 @@ public:
     void toggleLabels();
     void togglePointDots(int index);     // 「显示/隐藏所有对应点迹」
     bool pointDotsShown(int index) const;
+    void setTrackColor(int index);       // 右键「设置颜色」：改该航迹所属数据源（文件）的全部航迹颜色
+    void applyTrackColor(int index, const QColor &color);   // 非交互版（自检 / setTrackColor 共用）
     void clearAllPointDots();            // 「清空所有点迹显示」：所有航迹都不再画点迹
     void setAllSourcesVisible(bool visible);   // 隐藏 / 显示所有数据源
     bool allSourcesHidden() const;             // 当前是否所有数据源都是隐藏态

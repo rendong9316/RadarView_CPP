@@ -305,6 +305,12 @@ void Point3dWindow::setTrackColorProvider(
     m_colorProvider = provider;
 }
 
+void Point3dWindow::refreshOverlayColors()
+{
+    reloadOverlaysFromKeys();       // 颜色在 overlayFromTrack 里由提供者取当前文件色
+    updateStatus();
+}
+
 void Point3dWindow::reloadOverlaysFromKeys()
 {
     m_data.tracks.clear();

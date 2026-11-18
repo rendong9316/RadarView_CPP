@@ -150,6 +150,7 @@ public:
     void clickClearMap();
     void clickResetFilters();
     void clickBatchManage();   // 打开「批量数据管理」：按导入文件永久删除
+    void repaintRows();        // 颜色等外部状态变化后重绘行（来源圆点 / 底色）
     void setPageSize(int n);
     bool exportVisible(const QString &path, QString *error = nullptr);
 

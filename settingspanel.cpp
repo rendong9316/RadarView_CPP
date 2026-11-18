@@ -7,7 +7,7 @@
 #include "trackdb.h"
 #include "uiwidgets.h"
 
-#include <QColorDialog>
+#include <QColor>
 #include <QEvent>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -87,12 +87,6 @@ private:
     QString m_title;
 };
 
-void setSwatch(QPushButton *b, const QColor &c)
-{
-    b->setStyleSheet(QStringLiteral("QPushButton { background: %1; border: 1px solid #555555; border-radius: 2px; }")
-                         .arg(c.name()));
-}
-
 } // namespace
 
 SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent), m_host(host)
@@ -115,69 +109,8 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     app::Settings &s = app::settings();
     TrackLayer *layer = m_host.globe ? m_host.globe->trackLayer() : nullptr;
 
-    // ---- 线条颜色（按数据源覆盖文件色）----
-    QVBoxLayout *g = addGroup(main, int(LucideIcon::Palette), QStringLiteral("线条颜色"),
-                              QStringLiteral("设置各数据源航迹线的颜色。点击色块选择颜色，点击右侧重置按钮恢复为默认颜色。"));
-    for (TrackSource src : kSources) {
-        const QString key = QStringLiteral("display.line_color.%1").arg(trackSourceKey(src));
-        QWidget *row = new QWidget(g->parentWidget());
-        row->setObjectName(QStringLiteral("settingRow"));
-        QHBoxLayout *rl = new QHBoxLayout(row);
-        rl->setContentsMargins(0, 0, 0, 0);
-        rl->setSpacing(8);
-        QLabel *lab = new QLabel(srcLabel(src), row);
-        lab->setObjectName(QStringLiteral("rowLabel"));
-        lab->setStyleSheet(QStringLiteral("color: %1;").arg(trackSourceColor(src).name()));
-        QPushButton *sw = new QPushButton(row);
-        ui::bindSize(sw, ui::SizeKind::Fixed, 26, 18);
-        sw->setCursor(Qt::PointingHandCursor);
-        QLabel *hex = new QLabel(row);
-        hex->setObjectName(QStringLiteral("rowValue"));
-        QPushButton *reset = new QPushButton(row);
-        reset->setObjectName(QStringLiteral("resetBtn"));
-        ui::bindSize(reset, ui::SizeKind::Fixed, 20, 20);
-        auto resetIcon = [reset]() {
-            reset->setIcon(lucideQIcon(LucideIcon::RotateCcw, ui::sz(12), QColor("#888888")));
-            reset->setIconSize(QSize(ui::sz(12), ui::sz(12)));
-        };
-        resetIcon();
-        connect(UiScale::instance(), &UiScale::changed, reset, resetIcon);
-        reset->setToolTip(QStringLiteral("重置 %1 为默认颜色").arg(srcLabel(src)));
-        rl->addWidget(lab);
-        rl->addWidget(sw);
-        rl->addWidget(hex, 1);
-        rl->addWidget(reset);
-        g->addWidget(row);
-
-        auto apply = [layer, sw, hex, src](const QColor &c, bool overrideOn) {
-            setSwatch(sw, c);
-            hex->setText(overrideOn ? c.name().toUpper() : QStringLiteral("默认"));
-            if (layer) {
-                if (overrideOn)
-                    layer->setSourceColorOverride(src, c);
-                else
-                    layer->clearSourceColorOverride(src);
-            }
-        };
-        const QColor saved(s.value(key).toString());
-        apply(saved.isValid() ? saved : trackSourceColor(src), saved.isValid());
-        connect(sw, &QPushButton::clicked, this, [this, key, apply, src]() {
-            const QColor cur(app::settings().value(key, trackSourceColor(src).name()).toString());
-            const QColor c = QColorDialog::getColor(cur, this, QStringLiteral("选择线条颜色"));
-            if (!c.isValid())
-                return;
-            app::setValue(key, c.name());
-            apply(c, true);
-            if (m_host.globe)
-                m_host.globe->update();
-        });
-        connect(reset, &QPushButton::clicked, this, [this, key, apply, src]() {
-            app::removeValue(key);
-            apply(trackSourceColor(src), false);
-            if (m_host.globe)
-                m_host.globe->update();
-        });
-    }
+    // 航迹线颜色不在设置里统一改：同一数据源类别下有很多导入文件，颜色按「数据源文件」各自独立，
+    // 在地图上右键某条航迹 →「设置颜色」里改（改的是该航迹所属文件/数据源的全部航迹）。
 
     // 只升级一次旧默认值，之后保留用户自己选择的线宽。
     if (!s.value(QStringLiteral("display.thicker_lines_v1"), false).toBool()) {
@@ -186,8 +119,8 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
         app::setValue(QStringLiteral("display.thicker_lines_v1"), true);
     }
     // ---- 线宽调节（0.5–8，默认 3）----
-    g = addGroup(main, int(LucideIcon::GripHorizontal), QStringLiteral("线宽调节"),
-                 QStringLiteral("设置航迹线的像素宽度，范围 0.5-8 px。拖动滑块即时生效。"));
+    QVBoxLayout *g = addGroup(main, int(LucideIcon::GripHorizontal), QStringLiteral("线宽调节"),
+                              QStringLiteral("设置航迹线的像素宽度，范围 0.5-8 px。拖动滑块即时生效。"));
     m_lineWidth = addSlider(g, QStringLiteral("线宽"), themeColor("text-primary"), 0.5, 8.0, 0.5,
               s.value(QStringLiteral("display.line_width"), 3.0).toDouble(), QStringLiteral("px"),
               [this, layer](double v) {

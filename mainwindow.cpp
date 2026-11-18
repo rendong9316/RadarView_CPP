@@ -1586,6 +1586,44 @@ void MainWindow::togglePointDots(int index)
     scheduleSaveUiState();
 }
 
+// 右键「设置颜色」：颜色按数据源（导入文件）独立保存，改这一条的同时该文件的全部航迹一起改；
+// 地图图层、状态栏 chip、管理系统来源圆点、已打开的点迹三维窗口同步更新
+void MainWindow::setTrackColor(int index)
+{
+    if (index < 0 || index >= m_store.size())
+        return;
+    const Track &t = m_store.tracks()[index];
+    const QString key = trackSourceName(t.source) + QStringLiteral("::") + t.fileName;
+    const QColor cur = m_store.fileColor(t.source, t.fileName);
+    const QColor c = QColorDialog::getColor(
+        cur, this, tr("设置颜色：%1（该数据源的全部航迹）").arg(t.fileName));
+    if (!c.isValid() || c == cur)
+        return;
+    applyTrackColor(index, c);
+}
+
+void MainWindow::applyTrackColor(int index, const QColor &c)
+{
+    if (index < 0 || index >= m_store.size() || !c.isValid())
+        return;
+    const Track &t = m_store.tracks()[index];
+    const QString key = trackSourceName(t.source) + QStringLiteral("::") + t.fileName;
+    QHash<QString, QColor> colors = m_store.fileColors();
+    colors.insert(key, c);
+    m_store.setFileColors(colors);          // 版本号 +1 → 图层按新颜色重建
+    m_customFileColors.insert(key, c);
+    m_globe->trackLayer()->setFileColorOverride(key, c);
+    saveFileColors();
+    refreshSources();                       // 状态栏数据源 chip 的颜色
+    if (m_managePanel)
+        m_managePanel->repaintRows();
+    m_globe->update();
+    // 点迹三维窗口：叠加航迹颜色来自同一个文件色，立即重载保持联动
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
+        if (win)
+            win->refreshOverlayColors();
+}
+
 // 「详细信息」：高亮该航迹并打开管理面板，按来源 + ICAO 搜索（App.vue onShowTrackDetail）
 void MainWindow::showTrackDetail(int index)
 {
@@ -1630,6 +1668,9 @@ void MainWindow::onTrackContextMenu(int index, const QPoint &globalPos)
         menu.addItem(LucideIcon::Dot, QStringLiteral("显示所有对应点迹"), [this, index]() { togglePointDots(index); });
     else
         menu.addItem(LucideIcon::Circle, QStringLiteral("隐藏所有对应点迹"), [this, index]() { togglePointDots(index); });
+    // 航迹颜色按「数据源（导入文件）」独立设置：改这一条的同时该文件的所有航迹一起改
+    menu.addItem(LucideIcon::Palette, QStringLiteral("设置颜色（本条及该数据源）..."),
+                 [this, index]() { setTrackColor(index); });
     menu.addItem(LucideIcon::FileText, QStringLiteral("详细信息"), [this, index]() { showTrackDetail(index); });
     menu.addItem(LucideIcon::ClipboardList, QStringLiteral("查看点迹数据"), [this, index]() { showTrackPoints(index); });
     menu.addItem(LucideIcon::Trash2, QStringLiteral("删除该航迹"), [this, index]() { deleteTrackFromMap(index); }, true);

@@ -53,6 +53,7 @@
 #include <QDoubleSpinBox>
 #include <QMenu>
 #include <QAction>
+#include <QLabel>
 #include <QToolBar>
 #include <QToolTip>
 #include <QUndoStack>
@@ -2378,6 +2379,45 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
             const QColor c2 = probe.fileColor(TrackSource::Radar, QStringLiteral("Radar2"));
             const QColor c3 = probe.fileColor(TrackSource::Radar, QStringLiteral("Radar3"));
             check(c1 != c2 && c2 != c3 && c1 != c3, QStringLiteral("同源文件轮换颜色 %1 / %2 / %3").arg(c1.name(), c2.name(), c3.name()));
+
+            // 设置面板不再提供「线条颜色」：颜色按数据源文件独立，改在地图右键菜单里
+            {
+                bool hasColorGroup = false;
+                const QList<QLabel *> labels = w->settingsPanel()->findChildren<QLabel *>();
+                for (QLabel *l : labels)
+                    if (l->text() == QStringLiteral("线条颜色"))
+                        hasColorGroup = true;
+                check(!hasColorGroup, QStringLiteral("设置面板已取消「线条颜色」分组"));
+            }
+            // 右键「设置颜色」：改一条 → 该数据源（文件）全部航迹一起变色，并持久化
+            {
+                int ti = -1;
+                for (int i = 0; i < store->size() && ti < 0; ++i)
+                    if (store->tracks()[i].source == TrackSource::Radar)
+                        ti = i;
+                const Track t0 = store->tracks().at(qMax(0, ti));
+                w->applyTrackColor(ti, QColor("#12AB34"));
+                g->grabFramebuffer();               // 触发图层按新颜色重建
+                int sameFile = 0, colored = 0, mixed = 0;
+                for (int i = 0; i < store->size(); ++i) {
+                    const Track &tt = store->tracks()[i];
+                    const bool same = tt.source == t0.source && tt.fileName == t0.fileName;
+                    if (!same)
+                        continue;
+                    ++sameFile;
+                    if (layer->trackColor(i) == QColor("#12AB34"))
+                        ++colored;
+                    else
+                        ++mixed;
+                }
+                check(ti >= 0 && sameFile > 1 && colored == sameFile && mixed == 0
+                          && store->fileColor(t0.source, t0.fileName) == QColor("#12AB34"),
+                      QStringLiteral("右键改色：数据源 %1::%2 的 %3 条航迹一起变色")
+                          .arg(trackSourceName(t0.source), t0.fileName).arg(sameFile));
+                check(app::settings().value(QStringLiteral("display.file_line_color")).toString()
+                          .contains(QStringLiteral("#12ab34")),
+                      QStringLiteral("右键改色已持久化到 display.file_line_color"));
+            }
 
             // 管理面板：统计、分页、搜索、排序
             w->activatePanel(PanelId::Manage);

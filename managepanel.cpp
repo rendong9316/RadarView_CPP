@@ -1278,8 +1278,13 @@ void ManagePanel::applySizes()
     m_table->viewport()->update();
 }
 
-void ManagePanel::clickBatchManage()
+// 数据源颜色等外部状态变化后重绘行（来源圆点 / 行底色取自 rowColor）
+void ManagePanel::repaintRows()
 {
+    m_table->viewport()->update();
+}
+
+void ManagePanel::clickBatchManage(){
     QDialog dlg(this);
     dlg.setObjectName(QStringLiteral("batchDialog"));
     dlg.setWindowTitle(QStringLiteral("批量数据管理"));

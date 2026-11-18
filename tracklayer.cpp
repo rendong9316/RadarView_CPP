@@ -447,8 +447,7 @@ void TrackLayer::rebuildStatic()
             Group grp;
             grp.key = key;
             grp.color = m_fileColor.contains(key) ? m_fileColor.value(key)
-                       : m_sourceColor.contains(int(t.source)) ? m_sourceColor.value(int(t.source))
-                                                          : m_store->fileColor(t.source, t.fileName);
+                                                  : m_store->fileColor(t.source, t.fileName);
             grp.alpha = t.source == TrackSource::RadarRaw ? 0.75f : 0.88f;
             const double base = t.source == TrackSource::RadarRaw ? 3.5 : 6.0;
             grp.radiusPx = float(base * m_dotScale.value(int(t.source), 1.0));

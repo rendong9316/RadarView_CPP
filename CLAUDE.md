@@ -124,6 +124,13 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - **schema v5**：`batches.display_name TEXT`（迁移只加列）。`BatchInfo::label()` = 显示名或文件名；`trackdb::batchDisplayNames()` 按 `来源::文件名` 提供映射给状态栏 chip（`MainWindow::sourceLabel`，启动与 `ManagePanel::batchLabelsChanged` 时刷新）；管理系统批次下拉、点云航迹选择器、批量管理列表都用显示名；`query()` 的搜索同时匹配显示名与原文件名，按文件名列排序用 `COALESCE(NULLIF(b.display_name,''), b.file_name)`。
 - 自检：`--dbtest` 覆盖 v5 迁移、重命名（只改显示名 / 搜索双匹配 / 清空恢复）与「删除全部数据」后库为空；`--tracktest` 覆盖三个视图菜单动作（文件菜单无「清空航迹」、隐藏→显示→手动全隐藏时文字切换、重置后 3522 条全显示、取消全部点迹）。
 
+### 航迹颜色（按数据源文件独立设置）
+
+- **颜色粒度是「数据源文件」**（`来源::文件名`），不是「数据源类别」：同一类别下可以有很多导入文件，各自颜色互不影响。设置面板里原来的「线条颜色」三元组（按 ADS-B / Radar / RadarRaw **整体覆盖**文件色）已删除，`TrackLayer` 的 `m_sourceColor` / `setSourceColorOverride` 一并移除，颜色只认 `m_fileColor[key]`（导入时框选或右键改过的）> `TrackStore::fileColor()`。
+- **地图右键某条航迹 →「设置颜色（本条及该数据源）…」**（`MainWindow::setTrackColor` → `applyTrackColor`）：取当前文件色作默认，选中后写入 `TrackStore::m_fileColors`（持久化 `display.file_line_color` + `display.custom_file_color`）并 `layer->setFileColorOverride`，**该文件（数据源）的全部航迹一起变色**，地图线、点迹颜色、状态栏数据源 chip、管理系统来源圆点同步更新。
+- **点迹三维窗口实时联动**：窗口的 `m_colorProvider` 读的就是 `TrackStore::fileColor()`；改色后主窗口对每个已打开窗口调 `Point3dWindow::refreshOverlayColors()`（内部走 `reloadOverlaysFromKeys`），叠加航迹立刻换成新颜色。不要再另存一套颜色，也不要在窗口里单独调色。
+- 旧库里的 `display.line_color.*` 键可以留着，但已不再生效。
+
 ### OpenGL 约束
 
 Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）；RHEL 涉密机常见 Mesa llvmpipe 软件渲染、VNC/远程桌面或国产显卡。所以只用 **OpenGL ES 2.0 / GLSL ES 1.00 子集**：
