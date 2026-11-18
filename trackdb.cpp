@@ -43,7 +43,8 @@ bool exec(QSqlQuery &q, const QString &sql, QString *error)
 // 库结构版本（PRAGMA user_version）。加列/加表时 +1，并在下面补一段迁移
 // v4：saved_tracks 增加关联点列 raw_points（同一条雷达航迹的 asscPointList），
 //     点云窗口据此在同一条航迹上切换「平滑 / 关联」两种点源
-const int kSchemaVersion = 4;
+// v5：batches 增加 display_name（「批量数据管理」里给数据源重命名；file_name 仍是唯一标识）
+const int kSchemaVersion = 5;
 
 bool hasColumn(QSqlDatabase db, const QString &table, const QString &column)
 {
@@ -74,6 +75,7 @@ bool createSchema(QSqlDatabase db, QString *error)
         "PRAGMA busy_timeout=30000",
         "CREATE TABLE IF NOT EXISTS batches ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL, source TEXT NOT NULL,"
+        " display_name TEXT DEFAULT NULL,"
         " track_count INTEGER NOT NULL, imported_at TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS saved_tracks ("
         " icao_address TEXT NOT NULL, batch_id INTEGER NOT NULL, source TEXT NOT NULL,"
@@ -200,6 +202,13 @@ bool createSchema(QSqlDatabase db, QString *error)
             if (!ensureColumn(db, QStringLiteral("saved_tracks"), QLatin1String(c.name),
                               QLatin1String(c.decl), error))
                 return false;
+    }
+    if (version < 5) {
+        // v5：批次显示名（「批量数据管理」里重命名数据源）。只影响界面文字，
+        // file_name 仍是批次 / 航迹 key 的唯一标识，重命名不会牵动已载入的航迹。
+        if (!ensureColumn(db, QStringLiteral("batches"), QStringLiteral("display_name"),
+                          QStringLiteral("TEXT DEFAULT NULL"), error))
+            return false;
     }
 
     // 以库里的实际版本为准再写一次：各段迁移内部可能已经把 user_version 写成中间值
@@ -497,7 +506,8 @@ QVector<BatchInfo> batches()
 {
     QVector<BatchInfo> out;
     QSqlQuery q(mainDb());
-    q.exec(QStringLiteral("SELECT id, file_name, source, track_count, imported_at FROM batches ORDER BY id DESC"));
+    q.exec(QStringLiteral("SELECT id, file_name, source, track_count, imported_at, display_name"
+                          " FROM batches ORDER BY id DESC"));
     while (q.next()) {
         BatchInfo b;
         b.id = q.value(0).toLongLong();
@@ -505,9 +515,38 @@ QVector<BatchInfo> batches()
         trackSourceFromName(q.value(2).toString(), &b.source);
         b.trackCount = q.value(3).toInt();
         b.importedAt = q.value(4).toString();
+        b.displayName = q.value(5).toString();
         out.append(b);
     }
     return out;
+}
+
+QHash<QString, QString> batchDisplayNames()
+{
+    QHash<QString, QString> out;
+    QSqlQuery q(mainDb());
+    if (!q.exec(QStringLiteral("SELECT source, file_name, display_name FROM batches"
+                               " WHERE display_name IS NOT NULL AND display_name != ''")))
+        return out;
+    while (q.next()) {
+        const QString key = q.value(0).toString() + QStringLiteral("::") + q.value(1).toString();
+        out.insert(key, q.value(2).toString());
+    }
+    return out;
+}
+
+bool setBatchDisplayName(qint64 batchId, const QString &name, QString *error)
+{
+    QSqlQuery q(mainDb());
+    q.prepare(QStringLiteral("UPDATE batches SET display_name = ? WHERE id = ?"));
+    q.addBindValue(name.trimmed().isEmpty() ? QVariant() : QVariant(name.trimmed()));
+    q.addBindValue(batchId);
+    if (!q.exec()) {
+        if (error)
+            *error = q.lastError().text();
+        return false;
+    }
+    return true;
 }
 
 // 统计不含软删除的航迹（RadarView 的统计来自数据库全量，软删除只在前端过滤；这里删可见后统计随之减少更直观）
@@ -546,7 +585,8 @@ QVector<DbTrackSummary> trackSummaries(const QString &sourceFilter, QString *err
     QSqlQuery q(mainDb());
     QString sql = QStringLiteral(
         "SELECT st.icao_address, st.batch_id, st.source, b.file_name, st.flight_no,"
-        " st.min_ms, st.max_ms, st.point_count, st.has_measure, st.has_raw, st.raw_point_count"
+        " st.min_ms, st.max_ms, st.point_count, st.has_measure, st.has_raw, st.raw_point_count,"
+        " b.display_name"
         " FROM saved_tracks st JOIN batches b ON st.batch_id = b.id"
         " WHERE st.deleted = 0");
     if (!sourceFilter.isEmpty())
@@ -573,6 +613,7 @@ QVector<DbTrackSummary> trackSummaries(const QString &sourceFilter, QString *err
         s.hasMeasure = q.value(8).toInt() != 0;
         s.hasRaw = q.value(9).toInt() != 0;
         s.rawCount = q.value(10).toInt();
+        s.displayName = q.value(11).toString();
         out.append(s);
     }
     return out;
@@ -627,7 +668,8 @@ static QString sortColumn(const QString &by)
         {"aircraft_type", "st.aircraft_type"}, {"airline", "st.airline"}, {"origin", "st.origin"},
         {"destination", "st.destination"}, {"point_count", "st.point_count"},
         {"min_timestamp", "st.min_timestamp"}, {"max_timestamp", "st.max_timestamp"},
-        {"batch_file_name", "b.file_name"}, {"batch_imported_at", "b.imported_at"},
+        {"batch_file_name", "COALESCE(NULLIF(b.display_name, ''), b.file_name)"},
+        {"batch_imported_at", "b.imported_at"},
     };
     for (const auto &m : map)
         if (by == QLatin1String(m[0]))
@@ -682,6 +724,11 @@ QVector<ManageRow> query(const ManageFilter &f, int limit, int offset, int *tota
             ors << QStringLiteral("LOWER(%1) LIKE ?").arg(QLatin1String(c));
             binds << like;
         }
+        // 数据源名：改过名按新名匹配，同时保留按原文件名匹配
+        ors << QStringLiteral("LOWER(COALESCE(b.display_name, '')) LIKE ?");
+        binds << like;
+        ors << QStringLiteral("LOWER(b.file_name) LIKE ?");
+        binds << like;
         where << QLatin1Char('(') + ors.join(QStringLiteral(" OR ")) + QLatin1Char(')');
     }
     if (f.spatialActive) {
@@ -794,6 +841,32 @@ bool deleteBatch(qint64 batchId, QString *error)
         return false;
     }
     return db.commit();
+}
+
+// 「删除全部数据」：清空全部航迹与批次。不可撤销；磁盘上的原始文件不受影响。
+bool deleteAllBatches(QString *error)
+{
+    QSqlDatabase db = mainDb();
+    if (!db.transaction()) {
+        if (error)
+            *error = db.lastError().text();
+        return false;
+    }
+    QSqlQuery q(db);
+    for (const char *sql : { "DELETE FROM saved_tracks", "DELETE FROM batches" }) {
+        if (!q.exec(QLatin1String(sql))) {
+            db.rollback();
+            if (error)
+                *error = q.lastError().text();
+            return false;
+        }
+    }
+    if (!db.commit()) {
+        if (error)
+            *error = db.lastError().text();
+        return false;
+    }
+    return true;
 }
 
 } // namespace trackdb

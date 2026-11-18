@@ -423,6 +423,13 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_managePanel, &ManagePanel::spatialQueryClearRequested, this, [this]() {
         m_filterPanel->clickSpatialClear();
     });
+    // 批量数据管理里重命名了数据源：状态栏 chip / 管理系统的批次下拉都要换成新名字
+    connect(m_managePanel, &ManagePanel::batchLabelsChanged, this, [this]() {
+        reloadBatchLabels();
+        refreshSources();
+        m_managePanel->refresh();
+        applyDisplay();
+    });
     connect(m_filterPanel, &FilterPanel::changed, this, &MainWindow::applyDisplay);
     // 套索闭合 → 写入筛选状态并立即生效（只显示经过该区域的航迹）
     connect(m_lasso, &SpatialLasso::closed, this, [this]() {
@@ -531,6 +538,7 @@ void MainWindow::loadPersisted()
             m_store.addTracks(saved);
             saveFileColors();
         }
+        reloadBatchLabels();        // 批量数据管理里改过的数据源显示名
     } else {
         m_statusBar->setError(QStringLiteral("数据库打开失败: %1").arg(err));
     }
@@ -1271,7 +1279,7 @@ void MainWindow::refreshSources()
         if (i == list.size()) {
             AppStatusBar::SourceItem it;
             it.key = key;
-            it.label = t.fileName;
+            it.label = sourceLabel(t.source, t.fileName);
             it.color = m_store.fileColor(t.source, t.fileName);
             it.visible = layer->isGroupVisible(key);
             list.append(it);
@@ -1282,6 +1290,92 @@ void MainWindow::refreshSources()
     m_statusBar->setSources(items);
     m_sourceStrip->setItems(items);
     m_statusBar->setTrackCount(m_store.size());
+    updateHideAllSourcesAction();
+}
+
+// 数据源显示名：批量数据管理里可以重命名；file_name 仍是唯一标识
+QString MainWindow::sourceLabel(TrackSource s, const QString &fileName) const
+{
+    const QString key = trackSourceName(s) + QStringLiteral("::") + fileName;
+    const auto it = m_batchLabels.constFind(key);
+    return it == m_batchLabels.constEnd() || it.value().isEmpty() ? fileName : it.value();
+}
+
+void MainWindow::reloadBatchLabels()
+{
+    m_batchLabels = trackdb::batchDisplayNames();
+    updateHideAllSourcesAction();
+}
+
+// 「隐藏所有数据源」按钮的文字由真实显隐状态推导：全部隐藏时变成「显示所有数据源」
+bool MainWindow::allSourcesHidden() const
+{
+    if (m_store.size() == 0)
+        return false;
+    TrackLayer *layer = m_globe->trackLayer();
+    for (const Track &t : m_store.tracks()) {
+        if (t.source == TrackSource::Adsb) {
+            if (m_adsbVisible)
+                return false;           // 还有可见的 ADS-B 数据
+            continue;
+        }
+        if (layer->isGroupVisible(trackSourceName(t.source) + QStringLiteral("::") + t.fileName))
+            return false;
+    }
+    return true;
+}
+
+void MainWindow::updateHideAllSourcesAction()
+{
+    if (!m_hideAllSourcesAction)
+        return;
+    m_hideAllSourcesAction->setEnabled(m_store.size() > 0);
+    m_hideAllSourcesAction->setText(allSourcesHidden() ? tr("显示所有数据源") : tr("隐藏所有数据源"));
+}
+
+void MainWindow::setAllSourcesVisible(bool visible)
+{
+    m_adsbVisible = visible;
+    TrackLayer *layer = m_globe->trackLayer();
+    QSet<QString> groups;
+    for (const Track &t : m_store.tracks())
+        groups.insert(trackSourceName(t.source) + QStringLiteral("::") + t.fileName);
+    for (const QString &key : qAsConst(groups))
+        layer->setGroupVisible(key, visible);
+    refreshSources();                   // chip 状态 + 「隐藏/显示所有数据源」文字
+    m_globe->update();
+    scheduleSaveUiState();
+}
+
+// 「清空所有点迹显示」：所有航迹都不再画小圆点
+void MainWindow::clearAllPointDots()
+{
+    m_dotKeys.clear();
+    m_overviewDotKeys.clear();
+    m_haveOverviewDots = false;
+    applyDisplay();
+    scheduleSaveUiState();
+}
+
+// 「重置所有筛选」：长度 / 时间 / 空间套索 / 单独显示 / 管理系统可见集合与查询条件，
+// 并恢复显示被隐藏的数据源，让画面回到全部数据原样显示
+void MainWindow::resetAllFilters()
+{
+    if (m_filterPanel) {
+        m_filterPanel->clickClear();                                // 时间
+        for (TrackSource s : { TrackSource::Adsb, TrackSource::Radar, TrackSource::RadarRaw })
+            m_filterPanel->setPointCount(s, false, -1, -1);         // 航迹点长度
+        m_filterPanel->clickSpatialClear();                         // 空间套索
+        m_filterPanel->refreshUi();
+    }
+    m_isoKey.clear();                       // 地图单独显示
+    m_manage->clearVisible();               // 管理系统可见集合（单独显示）
+    m_manage->clearHighlights();
+    if (m_managePanel)
+        m_managePanel->clickResetFilters(); // 管理系统的查询条件 + 分页
+    setAllSourcesVisible(true);             // 数据源显隐也恢复到全部显示
+    applyDisplay();
+    scheduleSaveUiState();
 }
 
 // 展开 / 收起状态栏上方的数据源条（展开时地图高度相应压缩，不遮挡地图）
@@ -1936,20 +2030,6 @@ void MainWindow::buildMenuBar()
                                  [pick]() { pick(TrackSource::Radar); });
     QAction *aImportRaw = item(mFile, tr("导入雷达原始测量数据..."), QKeySequence(), [pick]() { pick(TrackSource::RadarRaw); });
     m_importActions = { aImportAdsb, aImportRadar, aImportRaw };
-    item(mFile, tr("清空航迹"), QKeySequence(), [this]() {
-        if (m_importer)
-            return;
-        m_globe->resetInteraction();
-        m_isoKey.clear();
-        m_dotKeys.clear();
-        m_overviewDotKeys.clear();
-        m_haveOverviewDots = false;
-        m_replay->stop();
-        m_store.clear();
-        m_manage->clearVisible();
-        refreshSources();
-        applyDisplay();
-    });
     mFile->addSeparator();
     item(mFile, tr("打开瓦片 (.mbtiles)..."), QKeySequence(), [this]() { openTileFile(); });
     QMenu *mSource = mFile->addMenu(tr("底图源"));
@@ -2049,6 +2129,17 @@ void MainWindow::buildMenuBar()
     m_labelAction->setCheckable(true);
     item(mView, tr("放大"), QKeySequence::ZoomIn, [this]() { m_globe->zoomBy(1.0); });
     item(mView, tr("缩小"), QKeySequence::ZoomOut, [this]() { m_globe->zoomBy(-1.0); });
+    mView->addSeparator();
+    // 整体显示开关：文字由当前真实显隐状态决定（全部隐藏时变成「显示所有数据源」）
+    m_hideAllSourcesAction = item(mView, tr("隐藏所有数据源"), QKeySequence(),
+                                  [this]() { setAllSourcesVisible(allSourcesHidden()); });
+    m_hideAllSourcesAction->setToolTip(tr("隐藏全部数据源（ADS-B 与每个导入文件）；全部隐藏后此处变成「显示所有数据源」"));
+    m_resetFiltersAction = item(mView, tr("重置所有筛选"), QKeySequence(),
+                                [this]() { resetAllFilters(); });
+    m_resetFiltersAction->setToolTip(tr("清除长度 / 时间 / 空间套索 / 单独显示 / 管理系统可见集合与查询条件，"
+                                        "并恢复显示被隐藏的数据源，让画面回到全部数据原样显示"));
+    m_clearDotsAction = item(mView, tr("清空所有点迹显示"), QKeySequence(), [this]() { clearAllPointDots(); });
+    m_clearDotsAction->setToolTip(tr("取消所有航迹的「显示所有对应点迹」"));
     mView->addSeparator();
     item(mView, tr("新建点迹三维窗口"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_P),
          [this]() { showPoint3dWindow(); });

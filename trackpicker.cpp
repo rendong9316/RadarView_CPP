@@ -104,7 +104,8 @@ void TrackPicker::reload()
             currentBatch = s.batchId;
             batchItem = new QTreeWidgetItem(m_tree);
             batchItem->setText(0, QStringLiteral("%1  ·  %2")
-                                      .arg(s.fileName, trackSourceName(s.source)));
+                                      .arg(s.displayName.isEmpty() ? s.fileName : s.displayName,
+                                           trackSourceName(s.source)));
             batchItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
             batchItem->setCheckState(0, Qt::Unchecked);
             batchItem->setExpanded(true);

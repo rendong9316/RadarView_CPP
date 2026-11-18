@@ -104,11 +104,25 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
   - **强连续阈值**（`point3d.strong_threshold`，`StrongContinuityThreshold`）只用于状态栏/标题里的"强连续"计数（与 MATLAB 一致：`sum(continuity >= threshold)`），不影响点的大小/透明度；
   - 变量名 / 方位字段 / 文件匹配模式 / 最多帧数在下次导入时生效；「启动时恢复」下次启动生效。
 
-- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/区域筛选/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v4 迁移与重导补列）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
+- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/区域筛选/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v5 迁移、重导补列、数据源重命名与清空全部数据）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
 
 ### 主窗口数据源条（SourceStrip）
 
 - 数据源 chip 行整体重建（`SourceStrip::setItems`）时必须**保住横向滚动位置**：切换某个数据源的显示/隐藏会走重建，旧实现无条件 `setValue(0)`，用户滚到中间/末尾后一开关显示就跳回开头。重建前后读取/恢复 `horizontalScrollBar()->value()`（按新的 maximum 夹一下）。
+
+### 主窗口整体开关与批量数据管理
+
+- 「文件 → 清空航迹」已**取消**（只清内存不动库，纯鸡肋，用户要求删掉），不要再加回来。
+- 「视图」菜单自下而上三组整体操作（`m_hideAllSourcesAction` / `m_resetFiltersAction` / `m_clearDotsAction`）：
+  - **隐藏所有数据源 / 显示所有数据源**（同一个 QAction，文字由真实显隐状态推导）：点一下把 ADS-B 与每个导入文件组全部隐藏；**当实际状态是"全部隐藏"时**（不管按钮干的还是用户一个个点 chip 点出来的）文字变成「显示所有数据源」，再点恢复全部。文字统一由 `refreshSources() → updateHideAllSourcesAction()` 刷新，不要记"上次点了什么"；没有数据时该动作禁用。
+  - **重置所有筛选**：清掉筛选面板的时间 / 航迹点长度 / 空间套索（含套索状态与本状态）、地图单独显示（`m_isoKey`）、管理系统的可见集合与高亮、管理系统自己的查询条件（来源/航司/机型/批次/搜索/点数）与分页，**并把被隐藏的数据源恢复显示**（用户明确要求"画面原封不动显示所有数据"），最后 `applyDisplay()`。管理面板里原有的「清空地图」「重置筛选」保留，只作用它自己那份状态。
+  - **清空所有点迹显示**：右键航迹「显示所有对应点迹」选过的集合（`m_dotKeys`、`m_overviewDotKeys`、`m_haveOverviewDots`）一次清空，地图上不再画任何航迹点迹。
+- **批量数据管理**（管理面板入口按钮 → QDialog，每次重建列表）：
+  - 每行左侧有**圆圈多选**（`#batchSel`，选中集合 `QSet<qint64>` 在列表重建时按存活批次裁剪保留），底部「删除选中（N）」一次确认后逐个删；
+  - 每行有**重命名**按钮（`ui::prompt`，留空恢复文件名），只改显示名，`file_name` 仍是批次 / 航迹 key 的唯一标识；
+  - 底部还有「删除全部数据」（红色危险按钮）：`ManageState::deleteAllData` → `trackdb::deleteAllBatches` 清空 `saved_tracks` + `batches`，同时清内存航迹、可见集合、撤销栈、高亮；已打开的点迹三维窗口保持现状（它们的数据不归数据库管）。
+- **schema v5**：`batches.display_name TEXT`（迁移只加列）。`BatchInfo::label()` = 显示名或文件名；`trackdb::batchDisplayNames()` 按 `来源::文件名` 提供映射给状态栏 chip（`MainWindow::sourceLabel`，启动与 `ManagePanel::batchLabelsChanged` 时刷新）；管理系统批次下拉、点云航迹选择器、批量管理列表都用显示名；`query()` 的搜索同时匹配显示名与原文件名，按文件名列排序用 `COALESCE(NULLIF(b.display_name,''), b.file_name)`。
+- 自检：`--dbtest` 覆盖 v5 迁移、重命名（只改显示名 / 搜索双匹配 / 清空恢复）与「删除全部数据」后库为空；`--tracktest` 覆盖三个视图菜单动作（文件菜单无「清空航迹」、隐藏→显示→手动全隐藏时文字切换、重置后 3522 条全显示、取消全部点迹）。
 
 ### OpenGL 约束
 

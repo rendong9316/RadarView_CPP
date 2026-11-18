@@ -45,6 +45,8 @@ public:
 
     // 批次级硬删除（RadarView handleDeleteBatch）：从数据库彻底移除，不可撤销
     bool hardDeleteBatch(qint64 batchId, QString *error = nullptr);
+    // 「删除全部数据」：清空数据库 + 内存航迹 + 可见集合 / 撤销栈，不可撤销
+    bool deleteAllData(QString *error = nullptr);
 
     // 空间套索查询范围：套索闭合后由主窗口算出命中航迹，管理系统据此只列出区域内的航迹。
     // 这是查询条件（列表/统计/分页），与地图可见集合 m_visible 是两回事，不要混用。
@@ -154,6 +156,7 @@ public:
 signals:
     void viewPointsRequested(const QString &trackKey);
     void spatialQueryClearRequested();   // 点空间查询标签上的 ✕：清除套索与空间查询
+    void batchLabelsChanged();           // 批量数据管理里重命名了数据源（状态栏 chip / 列表要跟着改）
 
 protected:
     bool eventFilter(QObject *obj, QEvent *e) override;

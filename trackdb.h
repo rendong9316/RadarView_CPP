@@ -1,6 +1,7 @@
 #ifndef TRACKDB_H
 #define TRACKDB_H
 
+#include <QHash>
 #include <QJsonObject>
 #include <QMap>
 #include <QSet>
@@ -19,9 +20,11 @@
 struct BatchInfo {
     qint64 id = 0;
     QString fileName;
+    QString displayName;         // 用户在「批量数据管理」里改的显示名（v5）；空 = 用 fileName
     TrackSource source = TrackSource::Adsb;
     int trackCount = 0;
     QString importedAt;
+    QString label() const { return displayName.isEmpty() ? fileName : displayName; }
 };
 
 // 点云窗口「从数据库选择航迹」用的摘要（不含点序列）
@@ -30,6 +33,7 @@ struct DbTrackSummary {
     qint64 batchId = 0;
     TrackSource source = TrackSource::Radar;
     QString fileName;
+    QString displayName;        // 批次的显示名（空 = 用 fileName）
     QString flightNo;
     qint64 minMs = 0, maxMs = 0;
     int pointCount = 0;
@@ -101,6 +105,12 @@ QSet<QString> deletedKeys();
 
 // 批次级硬删除（RadarView db.rs::delete_batch）：从数据库彻底移除某批次的全部航迹。不可撤销。
 bool deleteBatch(qint64 batchId, QString *error = nullptr);
+// 清空数据库里的全部航迹与批次（「删除全部数据」），不可撤销
+bool deleteAllBatches(QString *error = nullptr);
+// 批次显示名（v5，「批量数据管理」里重命名）：空名恢复成文件名
+bool setBatchDisplayName(qint64 batchId, const QString &name, QString *error = nullptr);
+// key = 来源::文件名 → 显示名（只含改过名的批次）
+QHash<QString, QString> batchDisplayNames();
 
 } // namespace trackdb
 

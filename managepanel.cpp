@@ -6,6 +6,7 @@
 #include "uiwidgets.h"
 
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDateTime>
 #include <QEvent>
 #include <QFile>
@@ -259,6 +260,25 @@ bool ManageState::hardDeleteBatch(qint64 batchId, QString *error)
         emit storeChanged();
     }
     saveSettings();
+    emit displayChanged();
+    emit dataChanged();
+    return true;
+}
+
+// 「删除全部数据」：清空数据库里的全部航迹与批次，同时清内存、可见集合与撤销栈
+bool ManageState::deleteAllData(QString *error)
+{
+    if (!trackdb::deleteAllBatches(error))
+        return false;
+    m_visible.clear();
+    m_highlight.clear();
+    m_undo.clear();
+    emit aboutToChangeStore();
+    m_store->clear();
+    emit storeChanged();
+    saveSettings();
+    emit undoChanged();
+    emit highlightChanged();
     emit displayChanged();
     emit dataChanged();
     return true;
@@ -531,9 +551,9 @@ void ManagePanel::buildUi()
     m_batchEntry = new QPushButton(entryBox);
     m_batchEntry->setObjectName(QStringLiteral("batchEntry"));
     m_batchEntry->setCursor(Qt::PointingHandCursor);
-    m_batchEntry->setToolTip(QStringLiteral("批量数据管理：按导入文件从数据库永久删除数据"));
+    m_batchEntry->setToolTip(QStringLiteral("批量数据管理：给数据源重命名、按文件多选删除，或清空全部数据"));
     m_batchEntry->setProperty("_icon", int(LucideIcon::Database));
-    m_batchEntry->setText(QStringLiteral("批量数据管理 · 按文件删除导入数据"));
+    m_batchEntry->setText(QStringLiteral("批量数据管理 · 重命名 / 删除导入数据"));
     eh->addWidget(m_batchEntry);
     v->addWidget(entryBox);
     connect(m_batchEntry, &QPushButton::clicked, this, &ManagePanel::clickBatchManage);
@@ -951,7 +971,7 @@ void ManagePanel::reloadOptions()
         } else {
             m_source->addItem(filterSourceLabel(s) + QStringLiteral("（全部）"), trackSourceKey(s));
             for (const BatchInfo &b : list)
-                m_source->addItem(QStringLiteral("   · ") + b.fileName, trackSourceKey(s) + QStringLiteral("::") + QString::number(b.id));
+                m_source->addItem(QStringLiteral("   · ") + b.label(), trackSourceKey(s) + QStringLiteral("::") + QString::number(b.id));
         }
     }
     QString cur = f.source;
@@ -977,7 +997,7 @@ void ManagePanel::reloadOptions()
     const bool bySrc = trackSourceFromKey(f.source, &fs);
     for (const BatchInfo &b : batches)
         if (!bySrc || b.source == fs)
-            m_batch->addItem(b.fileName, b.id);
+            m_batch->addItem(b.label(), b.id);
     m_batch->setCurrentIndex(f.batchId >= 0 ? qMax(0, m_batch->findData(f.batchId)) : 0);
     applyFilterToUi();
 }
@@ -1263,7 +1283,7 @@ void ManagePanel::clickBatchManage()
     QDialog dlg(this);
     dlg.setObjectName(QStringLiteral("batchDialog"));
     dlg.setWindowTitle(QStringLiteral("批量数据管理"));
-    dlg.resize(ui::sz(560), ui::sz(380));
+    dlg.resize(ui::sz(660), ui::sz(440));
     QVBoxLayout *dv = new QVBoxLayout(&dlg);
     dv->setContentsMargins(ui::sz(14), ui::sz(12), ui::sz(14), ui::sz(12));
     dv->setSpacing(ui::sz(8));
@@ -1271,8 +1291,9 @@ void ManagePanel::clickBatchManage()
     QLabel *title = new QLabel(&dlg);
     title->setObjectName(QStringLiteral("batchTitle"));
     dv->addWidget(title);
-    QLabel *hint = new QLabel(QStringLiteral("每个导入的数据文件对应一行。点击「删除」会把该文件的全部航迹从数据库中永久移除，"
-                                             "地图上同步消失，不可撤销（磁盘上的原文件不受影响）。"), &dlg);
+    QLabel *hint = new QLabel(QStringLiteral("每个导入的数据文件对应一行。勾选左侧圆圈可多选后一起删除；「重命名」只改显示名，"
+                                             "不改磁盘上的文件名。删除会把数据从数据库中永久移除，地图上同步消失，不可撤销"
+                                             "（磁盘上的原文件不受影响）。"), &dlg);
     hint->setObjectName(QStringLiteral("batchHint"));
     hint->setWordWrap(true);
     dv->addWidget(hint);
@@ -1289,7 +1310,18 @@ void ManagePanel::clickBatchManage()
     scroll->setWidget(list);
     dv->addWidget(scroll, 1);
 
+    QSet<qint64> selected;            // 圆圈勾选的数据源（重建列表时保留）
     QHBoxLayout *bottom = new QHBoxLayout;
+    QPushButton *delSel = new QPushButton(QStringLiteral("删除选中"), &dlg);
+    delSel->setObjectName(QStringLiteral("batchDelSelected"));
+    delSel->setCursor(Qt::PointingHandCursor);
+    delSel->setEnabled(false);
+    QPushButton *delAll = new QPushButton(QStringLiteral("删除全部数据"), &dlg);
+    delAll->setObjectName(QStringLiteral("batchDelAll"));
+    delAll->setCursor(Qt::PointingHandCursor);
+    delAll->setToolTip(QStringLiteral("清空数据库里的全部航迹（不可撤销，磁盘上的原始文件不受影响）"));
+    bottom->addWidget(delSel);
+    bottom->addWidget(delAll);
     bottom->addStretch(1);
     QPushButton *closeBtn = new QPushButton(QStringLiteral("关闭"), &dlg);
     closeBtn->setObjectName(QStringLiteral("batchClose"));
@@ -1300,7 +1332,7 @@ void ManagePanel::clickBatchManage()
 
     std::function<void()> rebuild;
     rebuild = [&]() {
-        // 旧行延后销毁：当前正在响应的「删除」按钮也在其中
+        // 旧行延后销毁：当前正在响应的按钮也在其中
         while (QLayoutItem *it = ll->takeAt(0)) {
             if (QWidget *w = it->widget()) {
                 w->hide();
@@ -1309,9 +1341,22 @@ void ManagePanel::clickBatchManage()
             delete it;
         }
         const QVector<BatchInfo> batches = trackdb::batches();
+        QSet<qint64> alive;
         int tracks = 0;
-        for (const BatchInfo &b : batches)
+        for (const BatchInfo &b : batches) {
+            alive.insert(b.id);
             tracks += b.trackCount;
+        }
+        // 列表重建后去掉已不存在的批次，其余勾选保留
+        for (auto it = selected.begin(); it != selected.end();) {
+            if (alive.contains(*it))
+                ++it;
+            else
+                it = selected.erase(it);
+        }
+        delSel->setText(selected.isEmpty() ? QStringLiteral("删除选中")
+                                           : QStringLiteral("删除选中（%1）").arg(selected.size()));
+        delSel->setEnabled(!selected.isEmpty());
         title->setText(QStringLiteral("已导入 %1 个文件 · 共 %2 条航迹").arg(batches.size()).arg(tracks));
         if (batches.isEmpty()) {
             QLabel *e = new QLabel(QStringLiteral("暂无已保存的数据"), list);
@@ -1326,29 +1371,70 @@ void ManagePanel::clickBatchManage()
             QHBoxLayout *rl = new QHBoxLayout(row);
             rl->setContentsMargins(ui::sz(8), ui::sz(5), ui::sz(8), ui::sz(5));
             rl->setSpacing(ui::sz(8));
+            QCheckBox *pick = new QCheckBox(row);
+            pick->setObjectName(QStringLiteral("batchSel"));
+            pick->setCursor(Qt::PointingHandCursor);
+            pick->setChecked(selected.contains(b.id));
+            pick->setToolTip(QStringLiteral("勾选后可批量删除"));
+            pick->setFixedWidth(ui::sz(18));
+            connect(pick, &QCheckBox::toggled, &dlg, [&selected, delSel, id = b.id](bool on) {
+                if (on)
+                    selected.insert(id);
+                else
+                    selected.remove(id);
+                delSel->setText(selected.isEmpty() ? QStringLiteral("删除选中")
+                                                   : QStringLiteral("删除选中（%1）").arg(selected.size()));
+                delSel->setEnabled(!selected.isEmpty());
+            });
             QLabel *src = new QLabel(filterSourceLabel(b.source), row);
             src->setObjectName(QStringLiteral("batchSrc"));
             src->setStyleSheet(Theme::scalePx(QStringLiteral("color: %1; font-weight: 600; min-width: 46px;")
                                                   .arg(trackSourceColor(b.source).name())));
             QVBoxLayout *texts = new QVBoxLayout;
             texts->setSpacing(ui::sz(1));
-            QLabel *file = new QLabel(b.fileName, row);
+            QLabel *file = new QLabel(b.label(), row);
             file->setObjectName(QStringLiteral("batchFile"));
-            QLabel *meta = new QLabel(QStringLiteral("%1 条航迹 · 导入于 %2").arg(b.trackCount).arg(b.importedAt), row);
+            file->setToolTip(b.displayName.isEmpty() ? b.fileName
+                                                     : QStringLiteral("%1（原名 %2）").arg(b.displayName, b.fileName));
+            QLabel *meta = new QLabel(b.displayName.isEmpty()
+                                          ? QStringLiteral("%1 条航迹 · 导入于 %2").arg(b.trackCount).arg(b.importedAt)
+                                          : QStringLiteral("%1 条航迹 · 导入于 %2 · 原名 %3")
+                                                .arg(b.trackCount).arg(b.importedAt).arg(b.fileName),
+                                      row);
             meta->setObjectName(QStringLiteral("batchMeta"));
             texts->addWidget(file);
             texts->addWidget(meta);
+            QPushButton *ren = new QPushButton(QStringLiteral("重命名"), row);
+            ren->setObjectName(QStringLiteral("batchRename"));
+            ren->setCursor(Qt::PointingHandCursor);
+            ren->setToolTip(QStringLiteral("改数据源的显示名（留空恢复为文件名）"));
+            ren->setIcon(lucideQIcon(LucideIcon::Pencil, ui::sz(12), themeColor("text-secondary"), QColor(Qt::white)));
+            ren->setIconSize(QSize(ui::sz(12), ui::sz(12)));
             QPushButton *del = new QPushButton(QStringLiteral("删除"), row);
             del->setObjectName(QStringLiteral("batchDel"));
             del->setCursor(Qt::PointingHandCursor);
             del->setToolTip(QStringLiteral("从数据库中永久删除此文件的全部航迹"));
             del->setIcon(lucideQIcon(LucideIcon::Trash2, ui::sz(12), themeColor("error"), QColor(Qt::white)));
             del->setIconSize(QSize(ui::sz(12), ui::sz(12)));
+            rl->addWidget(pick, 0, Qt::AlignVCenter);
             rl->addWidget(src);
             rl->addLayout(texts, 1);
+            rl->addWidget(ren, 0, Qt::AlignVCenter);
             rl->addWidget(del, 0, Qt::AlignVCenter);
             ll->addWidget(row);
-            connect(del, &QPushButton::clicked, &dlg, [&, id = b.id, name = b.fileName, n = b.trackCount]() {
+            connect(ren, &QPushButton::clicked, &dlg, [&, id = b.id, cur = b.label()]() {
+                QString name;
+                if (!ui::prompt(&dlg, QStringLiteral("数据源显示名（留空恢复为文件名）："), cur, &name))
+                    return;
+                QString err;
+                if (!trackdb::setBatchDisplayName(id, name, &err)) {
+                    ui::confirm(&dlg, QStringLiteral("重命名失败：%1").arg(err), QStringLiteral("重命名数据源"));
+                    return;
+                }
+                emit batchLabelsChanged();
+                rebuild();
+            });
+            connect(del, &QPushButton::clicked, &dlg, [&, id = b.id, name = b.label(), n = b.trackCount]() {
                 if (!ui::confirm(&dlg,
                                  QStringLiteral("确定从数据库中删除 \"%1\"（%2 条航迹）？\n\n该操作不可撤销。").arg(name).arg(n),
                                  QStringLiteral("删除文件数据"), true))
@@ -1356,12 +1442,58 @@ void ManagePanel::clickBatchManage()
                 QString err;
                 if (!m_state->hardDeleteBatch(id, &err))   // 成功时发 dataChanged，管理面板随之刷新
                     ui::confirm(&dlg, QStringLiteral("删除失败：%1").arg(err), QStringLiteral("删除文件数据"));
+                selected.remove(id);
                 rebuild();
             });
         }
         ll->addStretch(1);
     };
     rebuild();
+
+    // 批量删除：只确认一次，逐个删掉勾选的数据源
+    connect(delSel, &QPushButton::clicked, &dlg, [&]() {
+        if (selected.isEmpty())
+            return;
+        QStringList names;
+        for (const BatchInfo &b : trackdb::batches())
+            if (selected.contains(b.id))
+                names << QStringLiteral("· %1（%2 条航迹）").arg(b.label()).arg(b.trackCount);
+        if (!ui::confirm(&dlg,
+                         QStringLiteral("确定删除选中的 %1 个数据源？\n\n%2\n\n该操作不可撤销。")
+                             .arg(selected.size()).arg(names.join(QLatin1Char('\n'))),
+                         QStringLiteral("删除所选数据源"), true))
+            return;
+        const QSet<qint64> ids = selected;
+        QString err;
+        for (qint64 id : ids) {
+            if (!m_state->hardDeleteBatch(id, &err)) {
+                ui::confirm(&dlg, QStringLiteral("删除失败：%1").arg(err), QStringLiteral("删除所选数据源"));
+                break;
+            }
+        }
+        selected.clear();
+        rebuild();
+    });
+    // 删除全部数据：清空数据库 + 内存，地图同步清空
+    connect(delAll, &QPushButton::clicked, &dlg, [&]() {
+        const QVector<BatchInfo> batches = trackdb::batches();
+        if (batches.isEmpty())
+            return;
+        if (!ui::confirm(&dlg,
+                         QStringLiteral("确定清空数据库中的全部数据？\n\n共 %1 个数据源，删除后不可撤销"
+                                        "（磁盘上的原始文件不受影响）。").arg(batches.size()),
+                         QStringLiteral("删除全部数据"), true))
+            return;
+        QString err;
+        if (!m_state->deleteAllData(&err)) {
+            ui::confirm(&dlg, QStringLiteral("删除失败：%1").arg(err), QStringLiteral("删除全部数据"));
+            rebuild();
+            return;
+        }
+        selected.clear();
+        emit batchLabelsChanged();
+        rebuild();
+    });
 
     setThemedStyle(&dlg, QStringLiteral(
         "#batchDialog, #batchScroll, #batchList { background: var(--bg-primary); }"
@@ -1371,12 +1503,27 @@ void ManagePanel::clickBatchManage()
         "#batchEmpty { color: var(--text-tertiary); font-size: 12px; padding: 24px; }"
         "#batchRow { background: var(--bg-secondary); border: 1px solid var(--border-secondary); border-radius: 4px; }"
         "#batchRow:hover { border-color: var(--accent-primary); }"
+        "#batchSel { background: transparent; }"
+        "#batchSel::indicator { width: 13px; height: 13px; border-radius: 7px;"
+        " border: 1px solid var(--border-primary); background: transparent; }"
+        "#batchSel::indicator:hover { border-color: var(--accent-primary); }"
+        "#batchSel::indicator:checked { background: var(--accent-primary); border-color: var(--accent-primary); }"
         "#batchSrc { font-size: 11px; }"
         "#batchFile { color: var(--text-primary); font-size: 12px; font-weight: 600; }"
         "#batchMeta { color: var(--text-tertiary); font-size: 10px; }"
+        "#batchRename { font-family: %1; font-size: 11px; padding: 4px 10px; color: var(--text-secondary);"
+        " background: transparent; border: 1px solid var(--border-primary); border-radius: 3px; }"
+        "#batchRename:hover { color: var(--accent-primary); border-color: var(--accent-primary); }"
         "#batchDel { font-family: %1; font-size: 11px; padding: 4px 12px; color: var(--error); background: transparent;"
         " border: 1px solid var(--error); border-radius: 3px; }"
         "#batchDel:hover { background: #d32f2f; color: #ffffff; border-color: #d32f2f; }"
+        "#batchDelSelected { font-family: %1; font-size: 11px; padding: 4px 12px; color: var(--error);"
+        " background: transparent; border: 1px solid var(--error); border-radius: 3px; }"
+        "#batchDelSelected:hover { background: #d32f2f; color: #ffffff; border-color: #d32f2f; }"
+        "#batchDelSelected:disabled { color: var(--text-tertiary); border-color: var(--border-secondary); }"
+        "#batchDelAll { font-family: %1; font-size: 11px; padding: 4px 12px; color: #ffffff;"
+        " background: var(--error); border: 1px solid var(--error); border-radius: 3px; }"
+        "#batchDelAll:hover { background: #d32f2f; border-color: #d32f2f; }"
         "#batchClose { font-family: %1; font-size: 11px; padding: 4px 16px; background: var(--button-bg); color: var(--button-fg);"
         " border: 1px solid var(--border-primary); border-radius: 3px; }"
         "#batchClose:hover { background: var(--button-hover); }"

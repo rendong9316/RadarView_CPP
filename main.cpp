@@ -52,6 +52,7 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QMenu>
+#include <QAction>
 #include <QToolBar>
 #include <QToolTip>
 #include <QUndoStack>
@@ -407,7 +408,8 @@ int runPointTest(const QString &input, const QString &trackFile)
                   QStringLiteral("只显示选中批次（%1 条）").arg(canvas.visibleTrackCount()));
             canvas.setIsolatedBatches(QSet<int>());
             canvas.grab();
-            check(canvas.visibleTrackCount() == data.tracks.size(),
+            // 当前点源是「关联」：清空隔离后应恢复到该点源下的全部航迹（部分批次没有关联点列）
+            check(canvas.visibleTrackCount() == assocTracks,
                   QStringLiteral("清空隔离后恢复显示全部叠加航迹（%1 条）")
                       .arg(canvas.visibleTrackCount()));
 
@@ -937,7 +939,7 @@ int runDbMigrationTest()
         QSqlDatabase db = QSqlDatabase::database(QStringLiteral("radarview_main"), false);
         QSqlQuery q(db);
         if (q.exec(QStringLiteral("PRAGMA user_version")) && q.next())
-            check(q.value(0).toInt() == 4, QStringLiteral("user_version = 4"));
+            check(q.value(0).toInt() == 5, QStringLiteral("user_version = 5"));
         else
             check(false, QStringLiteral("读取 user_version"));
         if (q.exec(QStringLiteral("SELECT length(points) FROM saved_tracks")) && q.next())
@@ -1081,6 +1083,52 @@ int runDbMigrationTest()
             check(up.size() == 1 && up.first().rawPoints.size() == 1
                       && std::isfinite(up.first().points.first().prange),
                   QStringLiteral("旧航迹升级后同时带平滑与关联点列"));
+        }
+
+        // 数据源重命名（schema v5）：只改显示名，file_name 不变；搜索按新名与原名都能命中
+        {
+            qint64 batchId = -1;
+            for (const BatchInfo &b : trackdb::batches())
+                if (b.fileName == QStringLiteral("Radar"))
+                    batchId = b.id;
+            QString rerr;
+            check(batchId >= 0 && trackdb::setBatchDisplayName(batchId, QStringLiteral("雷达主站"), &rerr),
+                  QStringLiteral("数据源重命名：%1").arg(rerr));
+            const QVector<BatchInfo> bs = trackdb::batches();
+            check(bs.size() == 1 && bs.first().label() == QStringLiteral("雷达主站")
+                      && bs.first().fileName == QStringLiteral("Radar"),
+                  QStringLiteral("重命名只改显示名（显示 %1，文件名仍是 %2）")
+                      .arg(bs.isEmpty() ? QString() : bs.first().label(),
+                           bs.isEmpty() ? QString() : bs.first().fileName));
+            const QHash<QString, QString> names = trackdb::batchDisplayNames();
+            check(names.value(QStringLiteral("Radar::Radar")) == QStringLiteral("雷达主站"),
+                  QStringLiteral("显示名按 来源::文件名 提供（状态栏 chip 用）"));
+            const QVector<DbTrackSummary> renamed = trackdb::trackSummaries();
+            check(!renamed.isEmpty() && renamed.first().displayName == QStringLiteral("雷达主站"),
+                  QStringLiteral("点云航迹选择器拿到新显示名"));
+            ManageFilter f;
+            f.searchText = QStringLiteral("雷达主站");
+            int totalNew = 0;
+            trackdb::query(f, 10, 0, &totalNew);
+            f.searchText = QStringLiteral("Radar");
+            int totalOld = 0;
+            trackdb::query(f, 10, 0, &totalOld);
+            check(totalNew == 2 && totalOld == 2,
+                  QStringLiteral("搜索同时匹配新名与原名（新名 %1 / 原名 %2）").arg(totalNew).arg(totalOld));
+            trackdb::setBatchDisplayName(batchId, QString(), &rerr);
+            check(trackdb::batches().first().label() == QStringLiteral("Radar"),
+                  QStringLiteral("清空显示名恢复为文件名"));
+        }
+
+        // 「删除全部数据」：清空批次与航迹
+        {
+            QString derr;
+            const bool ok = trackdb::deleteAllBatches(&derr);
+            const ManageStats st = trackdb::stats();
+            check(ok && st.totalBatches == 0 && st.totalTracks == 0 && trackdb::batches().isEmpty()
+                      && trackdb::loadAll().isEmpty(),
+                  QStringLiteral("删除全部数据后库为空（批次 %1 / 航迹 %2）%3")
+                      .arg(st.totalBatches).arg(st.totalTracks).arg(derr));
         }
     }
     trackdb::close();
@@ -2649,6 +2697,92 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                                     }
                                     sp->setFontValue(14);
                                     check(ui::px(0.786) == 11, QStringLiteral("字号还原 14：0.786rem=%1px").arg(ui::px(0.786)));
+                                    // ---- 视图菜单的整体开关：隐藏/显示所有数据源、重置所有筛选、清空点迹 ----
+                                    {
+                                        QMenu *fileMenu = nullptr, *viewMenu = nullptr;
+                                        for (QAction *a : w->menuBar()->actions()) {
+                                            if (a->text() == QStringLiteral("文件"))
+                                                fileMenu = a->menu();
+                                            else if (a->text() == QStringLiteral("视图"))
+                                                viewMenu = a->menu();
+                                        }
+                                        auto findAct = [](QMenu *m, const QString &t) -> QAction * {
+                                            if (!m)
+                                                return nullptr;
+                                            const QList<QAction *> acts = m->actions();
+                                            for (QAction *a : acts)
+                                                if (a->text() == t)
+                                                    return a;
+                                            return nullptr;
+                                        };
+                                        check(fileMenu && viewMenu,
+                                              QStringLiteral("菜单栏有「文件」「视图」菜单"));
+                                        check(!findAct(fileMenu, QStringLiteral("清空航迹")),
+                                              QStringLiteral("文件菜单已取消「清空航迹」"));
+                                        QAction *hideAll = findAct(viewMenu, QStringLiteral("隐藏所有数据源"));
+                                        QAction *resetAll = findAct(viewMenu, QStringLiteral("重置所有筛选"));
+                                        QAction *clearDots = findAct(viewMenu, QStringLiteral("清空所有点迹显示"));
+                                        check(hideAll && resetAll && clearDots,
+                                              QStringLiteral("视图菜单有隐藏数据源 / 重置筛选 / 清空点迹三项"));
+                                        auto shownChips = [sb]() {
+                                            int n = 0;
+                                            const QStringList chips = sb->sourceTexts();
+                                            for (const QString &s : chips)
+                                                if (!s.startsWith(QStringLiteral("off ")))
+                                                    ++n;
+                                            return n;
+                                        };
+                                        if (hideAll) {
+                                            const int chipTotal = sb->sourceTexts().size();
+                                            hideAll->trigger();
+                                            check(shownChips() == 0
+                                                      && hideAll->text() == QStringLiteral("显示所有数据源"),
+                                                  QStringLiteral("隐藏所有数据源：%1 个 chip 全部隐藏，按钮变为「显示所有数据源」")
+                                                      .arg(chipTotal));
+                                            hideAll->trigger();
+                                            check(shownChips() == chipTotal
+                                                      && hideAll->text() == QStringLiteral("隐藏所有数据源"),
+                                                  QStringLiteral("显示所有数据源：%1 个 chip 全部恢复").arg(chipTotal));
+                                            // 手动逐个点掉 chip 到全部隐藏，文字也要跟着变
+                                            for (int i = 0; i < chipTotal; ++i)
+                                                sb->clickSource(i);
+                                            check(shownChips() == 0
+                                                      && hideAll->text() == QStringLiteral("显示所有数据源"),
+                                                  QStringLiteral("手动隐藏全部数据源后按钮同样变为「显示所有数据源」"));
+                                            hideAll->trigger();     // 恢复全部显示
+                                        }
+                                        if (clearDots) {
+                                            w->togglePointDots(0);
+                                            const bool on = w->pointDotsShown(0);
+                                            clearDots->trigger();
+                                            check(on && !w->pointDotsShown(0),
+                                                  QStringLiteral("清空所有点迹显示：右键显示的航迹点迹被全部取消"));
+                                        }
+                                        if (resetAll) {
+                                            w->filterPanel()->setPointCount(TrackSource::Adsb, true, 100, -1);
+                                            w->isolateTrack(1);
+                                            QStringList visKeys;
+                                            for (int i = 0; i < qMin(5, store->size()); ++i)
+                                                visKeys << store->tracks().at(i).key();
+                                            w->manageState()->showAll(visKeys);
+                                            if (hideAll)
+                                                hideAll->trigger();     // 再全部隐藏
+                                            resetAll->trigger();
+                                            int shownChipsNow = 0;
+                                            const QStringList chipsNow = sb->sourceTexts();
+                                            for (const QString &s : chipsNow)
+                                                if (!s.startsWith(QStringLiteral("off ")))
+                                                    ++shownChipsNow;
+                                            check(w->displayedTrackCount() == store->size()
+                                                      && w->isolatedTrack() < 0
+                                                      && w->manageState()->visibleKeys().isEmpty()
+                                                      && !w->filterPanelState()->pc[0].enabled
+                                                      && shownChipsNow == chipsNow.size()
+                                                      && (!hideAll || hideAll->text() == QStringLiteral("隐藏所有数据源")),
+                                                  QStringLiteral("重置所有筛选：%1 条全部显示、单独显示/可见集合/点数筛选清空、数据源恢复显示")
+                                                      .arg(w->displayedTrackCount()));
+                                        }
+                                    }
                                     // 批量数据管理：按批次从数据库硬删除 Radar 批次
                                     qint64 radarId = -1;
                                     int radarCount = 0;

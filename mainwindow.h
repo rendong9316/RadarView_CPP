@@ -126,6 +126,7 @@ public:
     ManageState *manageState() const { return m_manage; }
     ManagePanel *managePanel() const { return m_managePanel; }
     FilterPanel *filterPanel() const { return m_filterPanel; }
+    TrackFilterState *filterPanelState() { return &m_filter; }   // 自检用：读筛选状态
     FlagPanel *flagPanel() const { return m_flagPanel; }
     FlagStore *flagStore() const { return m_flags; }
     RulerState *ruler() const { return m_ruler; }
@@ -141,6 +142,10 @@ public:
     void toggleLabels();
     void togglePointDots(int index);     // 「显示/隐藏所有对应点迹」
     bool pointDotsShown(int index) const;
+    void clearAllPointDots();            // 「清空所有点迹显示」：所有航迹都不再画点迹
+    void setAllSourcesVisible(bool visible);   // 隐藏 / 显示所有数据源
+    bool allSourcesHidden() const;             // 当前是否所有数据源都是隐藏态
+    void resetAllFilters();              // 「重置所有筛选」：回到全部数据原样显示
     void showTrackDetail(int index);     // 「详细信息」：高亮并在管理面板里搜索
     void deleteTrackFromMap(int index);  // 「删除该航迹」
     void onEscape();
@@ -239,6 +244,10 @@ private:
     QSet<QString> m_overviewDotKeys;        // 进入单条查看前的点迹选择
     bool m_haveOverviewDots = false;
     QAction *m_labelAction = nullptr;
+    QAction *m_hideAllSourcesAction = nullptr;   // 视图 → 隐藏所有数据源 / 显示所有数据源（文字随状态变）
+    QAction *m_resetFiltersAction = nullptr;     // 视图 → 重置所有筛选
+    QAction *m_clearDotsAction = nullptr;        // 视图 → 清空所有点迹显示
+    QHash<QString, QString> m_batchLabels;       // 来源::文件名 → 数据源显示名（批量数据管理里重命名）
     QAction *m_srcOffline = nullptr;
     QAction *m_srcTdt = nullptr;
     QAction *m_srcAmap = nullptr;
@@ -254,6 +263,9 @@ private:
     void placeBackAllButton();
     void resetReplayRange();
     void refreshSources();                  // 状态栏数据源项与航迹数
+    void reloadBatchLabels();               // 从数据库读取数据源显示名
+    void updateHideAllSourcesAction();      // 按当前显隐状态切换「隐藏/显示所有数据源」文字
+    QString sourceLabel(TrackSource s, const QString &fileName) const;   // 数据源显示名（重命名后用它）
     void toggleSource(const QString &key);
     void applyAdsbVisibility();
 
