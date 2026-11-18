@@ -100,6 +100,9 @@ public:
     // 旗标整体缩放（RadarView useFlagScale，默认 1.2，范围 0.5–3.0）
     void setFlagScale(double s) { m_flagScale = s; m_flagIcon = QPixmap(); update(); }
     double flagScale() const { return m_flagScale; }
+    // 空间套索顶点小圆球的半径（px @1x，默认 3；设置面板「套索顶点」可调）
+    void setLassoVertexPx(double px) { m_lassoVertexPx = qBound(1.0, px, 16.0); update(); }
+    double lassoVertexPx() const { return m_lassoVertexPx; }
 
     // 经纬度（WGS84）在当前视角下的屏幕位置；在地球背面或相机后方返回 false
     bool visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos);
@@ -269,6 +272,7 @@ private:
 
     QVector4D m_northCap, m_southCap, m_baseColor;
     double m_flagScale = 1.2;     // 旗标整体缩放（RadarView useFlagScale）
+    double m_lassoVertexPx = 3.0; // 套索顶点小圆球半径（默认很小，不挡地图）
 
     // 相机：星下点经纬度（弧度）+ 离地高度（单位：赤道半径），始终俯视星下点
     double m_camLon = 0.0, m_camLat = 0.0, m_alt = 2.5;

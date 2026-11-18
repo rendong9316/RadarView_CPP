@@ -1807,6 +1807,14 @@ void runSelfTest(MainWindow *w)
                 (*waitFrames)(2, [=]() {
                     check(g->lassoVerticesDrawn() >= 3,
                           QStringLiteral("套索：叠加层画出 %1 个顶点").arg(g->lassoVerticesDrawn()));
+                    // 顶点小圆球：默认很小，且可在设置面板「套索顶点」里调
+                    check(qAbs(g->lassoVertexPx() - 3.0) < 1e-9,
+                          QStringLiteral("套索顶点圆球默认半径 %1 px（很小）").arg(g->lassoVertexPx()));
+                    g->setLassoVertexPx(9.0);
+                    check(qAbs(g->lassoVertexPx() - 9.0) < 1e-9,
+                          QStringLiteral("套索顶点圆球半径可调（9 px）"));
+                    g->setLassoVertexPx(app::settings()
+                                            .value(QStringLiteral("display.lasso_vertex_px"), 3.0).toDouble());
                     // 清理测试多边形，避免写进用户设置
                     w->filterPanel()->clickSpatialClear();
                     lasso->clearAll();
@@ -2382,12 +2390,16 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
 
             // 设置面板不再提供「线条颜色」：颜色按数据源文件独立，改在地图右键菜单里
             {
-                bool hasColorGroup = false;
+                bool hasColorGroup = false, hasLassoGroup = false;
                 const QList<QLabel *> labels = w->settingsPanel()->findChildren<QLabel *>();
-                for (QLabel *l : labels)
+                for (QLabel *l : labels) {
                     if (l->text() == QStringLiteral("线条颜色"))
                         hasColorGroup = true;
+                    else if (l->text() == QStringLiteral("套索顶点"))
+                        hasLassoGroup = true;
+                }
                 check(!hasColorGroup, QStringLiteral("设置面板已取消「线条颜色」分组"));
+                check(hasLassoGroup, QStringLiteral("设置面板有「套索顶点」圆球大小设置"));
             }
             // 右键「设置颜色」：改一条 → 该数据源（文件）全部航迹一起变色，并持久化
             {

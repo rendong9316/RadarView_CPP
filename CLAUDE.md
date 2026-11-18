@@ -131,6 +131,12 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 - **点迹三维窗口实时联动**：窗口的 `m_colorProvider` 读的就是 `TrackStore::fileColor()`；改色后主窗口对每个已打开窗口调 `Point3dWindow::refreshOverlayColors()`（内部走 `reloadOverlaysFromKeys`），叠加航迹立刻换成新颜色。不要再另存一套颜色，也不要在窗口里单独调色。
 - 旧库里的 `display.line_color.*` 键可以留着，但已不再生效。
 
+### 空间套索顶点大小
+
+- 套索边界上顶点小圆球的半径默认 **3 px**（不要再写死 `ui::sz(9)`，太大会挡住地图），由 `GlobeWidget::setLassoVertexPx()` 控制，设置键 `display.lasso_vertex_px`（1–16 px，setter 里夹紧）。
+- 设置面板新增「套索顶点」分组（圆球半径滑块，默认 3），面板构造时 `addSlider` 会按保存值立即应用。
+- 圆球半径 ≥ 6 px 时才在球里画顶点序号；更小就只画小圆点，避免数字糊成一团。描边宽度随半径缩放（最小 1 px）。
+
 ### OpenGL 约束
 
 Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）；RHEL 涉密机常见 Mesa llvmpipe 软件渲染、VNC/远程桌面或国产显卡。所以只用 **OpenGL ES 2.0 / GLSL ES 1.00 子集**：

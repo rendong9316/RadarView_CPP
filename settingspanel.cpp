@@ -161,6 +161,18 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
                       m_host.globe->update();
               });
 
+    // ---- 套索顶点大小（1–16 px，默认 3，默认很小不挡地图）----
+    g = addGroup(main, int(LucideIcon::Circle), QStringLiteral("套索顶点"),
+                 QStringLiteral("空间套索边界上每个顶点小圆球的半径，范围 1-16 px。默认 3 px；"
+                                "调到 6 px 以上时圆球里会显示顶点序号。"));
+    addSlider(g, QStringLiteral("圆球半径"), themeColor("accent-primary"), 1.0, 16.0, 0.5,
+              s.value(QStringLiteral("display.lasso_vertex_px"), 3.0).toDouble(), QStringLiteral("px"),
+              [this](double v) {
+                  app::setValue(QStringLiteral("display.lasso_vertex_px"), v);
+                  if (m_host.globe)
+                      m_host.globe->setLassoVertexPx(v);
+              });
+
     // ---- 旗标大小（0.5–3.0，默认 1.2）----
     g = addGroup(main, int(LucideIcon::Flag), QStringLiteral("旗标大小"),
                  QStringLiteral("设置旗标图标和文字标签的整体缩放比例，范围 0.5-3.0 倍。"));

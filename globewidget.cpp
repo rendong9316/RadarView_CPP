@@ -898,19 +898,22 @@ void GlobeWidget::drawLasso(QPainter &p)
             dashLine(m_lasso->mouseLat(), m_lasso->mouseLon(), v[0].lat, v[0].lon);
     }
 
-    // 顶点：绿色圆、黑色描边、白色序号
+    // 顶点：绿色圆、黑色描边、白色序号（默认半径很小，圆太小时不画序号，免得糊成一团）
     const QFont f = remFont(0.857, true);
     p.setFont(f);
+    const double r = ui::sz(m_lassoVertexPx);
+    const bool showIndex = r >= ui::sz(6);
     for (int i = 0; i < n; ++i) {
         if (!vvis[i])
             continue;
-        p.setPen(QPen(Qt::black, 1.5));
+        p.setPen(QPen(Qt::black, qMax(1.0, r / 6.0)));
         p.setBrush(kLassoColor);
-        const double r = ui::sz(9);
         p.drawEllipse(vp[i], r, r);
-        p.setPen(Qt::white);
-        p.drawText(QRectF(vp[i].x() - r, vp[i].y() - r, 2 * r, 2 * r),
-                   Qt::AlignCenter, QString::number(i + 1));
+        if (showIndex) {
+            p.setPen(Qt::white);
+            p.drawText(QRectF(vp[i].x() - r, vp[i].y() - r, 2 * r, 2 * r),
+                       Qt::AlignCenter, QString::number(i + 1));
+        }
         ++m_lassoVerticesDrawn;
     }
     p.setBrush(Qt::NoBrush);
