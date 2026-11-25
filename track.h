@@ -27,6 +27,8 @@ struct TrackPoint {
     float prange = std::numeric_limits<float>::quiet_NaN();  // 距离，米
     float pvr = std::numeric_limits<float>::quiet_NaN();     // 多普勒径向速度，m/s
     float paz = std::numeric_limits<float>::quiet_NaN();     // 方位角，度
+    // 信噪比，dB。只有关联点列（asscPointList）带这个字段，平滑/输出点列为 NaN
+    float snr = std::numeric_limits<float>::quiet_NaN();
 };
 
 struct Track {

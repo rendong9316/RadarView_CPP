@@ -78,7 +78,7 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
   - 画布侧用 `setIsolatedBatches(QSet<int>)`（空=全部）实现"只显示所选"，`m_tracks` 只装画出来的，悬停/双击自然只命中隔离后的航迹。
 - **一致性校验**：叠加航迹的点只有在"离最近检测帧不超过最大帧间隔"时才会被采用（`appendOverlayPoints` 的 `tol`），时间窗完全对不上的航迹整条判为不可叠加（不会被硬贴到首/末帧画一条假航迹），窗口记录 `m_skippedTracks` 并在状态栏/选择航迹后弹窗提示。
 - **点迹窗口的回放是窗口自带的，与主窗口时间轴完全独立**（用户明确要求，不要再接 `ReplayController`）：只回放本窗口的点迹/航迹，**不做时间插值**，而是按相邻帧的时间差逐帧切换（每帧停留 = `frames[i+1].timeMs - frames[i].timeMs` / 倍速，倍速存 `point3d.play_speed`，默认 100）。进度条绑定**帧序号**（有级），拖动只能落在某一帧上；拖拽时暂停、松手恢复；播到最后一帧自动停，再点播放从头开始。主窗口的 `resetReplayRange` 只统计地图航迹，不再并入点迹窗口。
-- 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
+- 航迹叠加**只从数据库挑选**（`TrackPicker`），不单独导入 track MAT。数据库点格式 v3 起每点 52 字节（t/lat/lon + 7 个 float），包含 `prange/pvr/paz`；**v4 起同一行还存关联点列 `raw_points`**（同一 MAT 的 `asscPointList`，`has_raw`/`raw_point_count` 标记）；**v6 起每点 56 字节再追加 `snr`（dB，只有关联点列有），并加 `has_snr` 列**，老库迁移时补 NaN，重导同一 MAT 会原地补值。`has_measure=0` 的旧航迹不能叠加，需重新导入雷达 MAT。
 - 航迹点源（v4 起是"同一条航迹的两套点列"，不是两个批次）：**平滑**=主点列（`smoothPointList`/`outputPointList`）、**关联**=关联点列（`asscPointList`）。`RadarRaw` 批次（单独"导入雷达原始测量数据"产生）的主点列本身就是关联点列。判定统一走 `point3dOverlayPointsFor()` / `point3dOverlayHasColumn()`（`point3dtypes.h`），画布与窗口共用，不要再各写一套。
 - **点源只用一个按钮切平滑/关联（在侧栏「显示」分组里）**（库里就这两套点列，不要下拉框）：`m_sourceBtn` 弹起=平滑、按下=关联，按钮文字同步显示当前点列；取值持久化到 `point3d.track_source`（`smooth`/`associated`，老值 `auto`/`predicted` 一律按平滑处理）。不允许出现"选了却看不见"：用户在「选择航迹…」里选中的航迹若当前点源取不到点列，窗口要自动切到另一列。
 - **画布鼠标交互**：左键拖拽=旋转视角（空白处双击 `resetCamera()`），**右键拖拽=平移视图**（拖动中鼠标为闭合手爪；不要再做「平移」按钮/模式开关）。偏移以屏幕像素叠加在投影中心（`m_panX/m_panY`），随相机持久化（`point3d.camera_pan_x/y`、会话 JSON `camera.pan_x/pan_y`）。**左键单击某条航迹**（按下与松开位移 < 3px）= 本窗口只显示这一条并通知主窗口让地图也单独显示它（`trackClicked` → `trackActivated`）。
@@ -104,7 +104,15 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
   - **强连续阈值**（`point3d.strong_threshold`，`StrongContinuityThreshold`）只用于状态栏/标题里的"强连续"计数（与 MATLAB 一致：`sum(continuity >= threshold)`），不影响点的大小/透明度；
   - 变量名 / 方位字段 / 文件匹配模式 / 最多帧数在下次导入时生效；「启动时恢复」下次启动生效。
 
-- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/区域筛选/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v5 迁移、重导补列、数据源重命名与清空全部数据）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
+- 自检：`--pointtest <目录|文件> [--track <mat>]`（解析/连续性/画布/多窗口/独立逐帧回放/联动匹配/区域筛选/窗口缩放与设置栏/会话恢复）与 `--dbtest`（v2→v6 迁移、重导补列、数据源重命名与清空全部数据）都必须 `RESULT OK`。端到端冒烟（走主窗口菜单外的真实创建/导入路径并截图）：`--testmode --pointdemo "<detPoint 目录>" --point-shot <png>`。
+
+### 点迹数据对话框（右键航迹 →「显示点迹数据」）
+
+- 列随数据源变化（`TrackPointModel` 内部维护显示列列表，`columnCount()` 不是固定枚举数）：
+  - **ADS-B**：序号 / 时间戳 / 纬度 / 经度 / 高度(ft) / 航向(°) / 地速(kn) / 垂直率(ft/min)；
+  - **雷达与雷达原始测量（Radar / RadarRaw）**：序号 / 时间戳 / 纬度 / 经度 / `prange(m)` / `paz(°)` / `pvr(m/s)` / `snr(dB)`——雷达点没有高度/速度，不要把这些列加回来。
+- SNR 只有关联点列（`asscPointList`）有：平滑/输出点列的 snr 为 NaN 时，对话框按**同一帧时间**取 `Track::rawPoints` 里的值补上（表头 tooltip 有说明）；仍缺失显示「—」。
+- 数值排序走 `Qt::UserRole`（缺失的测量量给无效值）；导出的 CSV 与表格用同一套列与文本（`TrackPointModel::text`），格式变化要同步 `--tracktest` 里的列名断言。
 
 ### 主窗口数据源条（SourceStrip）
 

@@ -200,11 +200,15 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
             if (!okT || !okLat || !okLon || dn <= 0.0 || !validLatLon(lat, lon))
                 continue;
             // 测量坐标（点云用）：smooth/output/assc 三套点列表字段名一致，
-            // 缺失时保持 NaN，不参与点云绘制
-            bool okR = false, okV = false, okA = false;
+            // 缺失时保持 NaN，不参与点云绘制。SNR 只有 asscPointList 带，字段名小写，
+            // 个别数据源会写成大写 SNR，两种都试
+            bool okR = false, okV = false, okA = false, okS = false;
             const double pr = pts.field(QStringLiteral("prange"), j).scalar(0, &okR);
             const double pv = pts.field(QStringLiteral("pvr"), j).scalar(0, &okV);
             const double pa = pts.field(QStringLiteral("paz"), j).scalar(0, &okA);
+            double sn = pts.field(QStringLiteral("snr"), j).scalar(0, &okS);
+            if (!okS)
+                sn = pts.field(QStringLiteral("SNR"), j).scalar(0, &okS);
             TrackPoint pt;
             pt.t = datenumToMs(dn);
             pt.lat = lat;
@@ -215,6 +219,8 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
                 pt.pvr = float(pv);
             if (okA && std::isfinite(pa))
                 pt.paz = float(pa);
+            if (okS && std::isfinite(sn))
+                pt.snr = float(sn);
             dst->append(pt);
         }
     };

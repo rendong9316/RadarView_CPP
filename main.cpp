@@ -835,7 +835,8 @@ int runPointTest(const QString &input, const QString &trackFile)
 }
 
 // 数据库迁移自检：HelloVscode.exe --dbtest
-// 造一个 v2 旧库（40 字节点格式）→ 打开触发 v3 迁移 → 校验点数据、测量坐标与版本号，写 dbtest.log
+// 造一个 v2 旧库（40 字节点格式）→ 打开触发 v3~v6 迁移 → 校验点数据、测量坐标、SNR
+// 与版本号，写 dbtest.log
 int runDbMigrationTest()
 {
     QFile log(QCoreApplication::applicationDirPath() + QStringLiteral("/dbtest.log"));
@@ -929,8 +930,9 @@ int runDbMigrationTest()
                       QStringLiteral("旧数据经纬度未损坏"));
                 check(!std::isfinite(t.points.first().prange)
                           && !std::isfinite(t.points.first().pvr)
-                          && !std::isfinite(t.points.first().paz),
-                      QStringLiteral("旧数据测量坐标补为 NaN"));
+                          && !std::isfinite(t.points.first().paz)
+                          && !std::isfinite(t.points.first().snr),
+                      QStringLiteral("旧数据测量坐标与 SNR 补为 NaN"));
             }
         }
         const QVector<DbTrackSummary> sums = trackdb::trackSummaries(QString(), &err);
@@ -940,11 +942,11 @@ int runDbMigrationTest()
         QSqlDatabase db = QSqlDatabase::database(QStringLiteral("radarview_main"), false);
         QSqlQuery q(db);
         if (q.exec(QStringLiteral("PRAGMA user_version")) && q.next())
-            check(q.value(0).toInt() == 5, QStringLiteral("user_version = 5"));
+            check(q.value(0).toInt() == 6, QStringLiteral("user_version = 6"));
         else
             check(false, QStringLiteral("读取 user_version"));
         if (q.exec(QStringLiteral("SELECT length(points) FROM saved_tracks")) && q.next())
-            check(q.value(0).toInt() == 2 * 52, QStringLiteral("点格式已重编码为 52 字节/点"));
+            check(q.value(0).toInt() == 2 * 56, QStringLiteral("点格式已重编码为 56 字节/点"));
         else
             check(false, QStringLiteral("读取点 BLOB 长度"));
         if (q.exec(QStringLiteral("SELECT COUNT(*) FROM saved_tracks"
@@ -954,10 +956,15 @@ int runDbMigrationTest()
                   QStringLiteral("v4 迁移给旧航迹加空关联点列（has_raw=0）"));
         else
             check(false, QStringLiteral("检查 raw_points 列"));
+        if (q.exec(QStringLiteral("SELECT COUNT(*) FROM saved_tracks WHERE has_snr = 0")) && q.next())
+            check(q.value(0).toInt() == 1,
+                  QStringLiteral("v6 迁移给旧航迹加 has_snr=0（重导后可原地补 SNR）"));
+        else
+            check(false, QStringLiteral("检查 has_snr 列"));
 
-        // 再插入一条新格式航迹（带测量坐标），验证选择器能区分新旧数据
+        // 再插入一条新格式航迹（带测量坐标与 SNR），验证选择器能区分新旧数据
         {
-            QByteArray blob(2 * 52, 0);
+            QByteArray blob(2 * 56, 0);
             char *p = blob.data();
             for (int i = 0; i < 2; ++i) {
                 const qint64 t = 1765360182000LL + i * 10000;
@@ -968,24 +975,25 @@ int runDbMigrationTest()
                 qToLittleEndian<quint64>(u, p + 8);
                 std::memcpy(&u, &lon, 8);
                 qToLittleEndian<quint64>(u, p + 16);
-                const float fs[7] = { 1000.0f, 90.0f, 200.0f, 0.0f,
-                                      1000.0f + i * 100.0f, 12.0f, 90.0f };
-                for (int k = 0; k < 7; ++k) {
+                const float fs[8] = { 1000.0f, 90.0f, 200.0f, 0.0f,
+                                      1000.0f + i * 100.0f, 12.0f, 90.0f,
+                                      20.5f + i };
+                for (int k = 0; k < 8; ++k) {
                     quint32 v;
                     std::memcpy(&v, &fs[k], 4);
                     qToLittleEndian<quint32>(v, p + 24 + 4 * k);
                 }
-                p += 52;
+                p += 56;
             }
             QSqlQuery ins(db);
             ins.prepare(QStringLiteral(
                 "INSERT OR REPLACE INTO saved_tracks (icao_address, batch_id, source, min_timestamp,"
-                " max_timestamp, min_ms, max_ms, point_count, has_measure,"
+                " max_timestamp, min_ms, max_ms, point_count, has_measure, has_snr,"
                 " raw_point_count, has_raw, deleted, points, raw_points)"
-                " VALUES ('RADAR-0002', 1, 'Radar', '', '', 1765360182000, 1765360192000, 2, 1, 3, 1, 0, ?, ?)"));
+                " VALUES ('RADAR-0002', 1, 'Radar', '', '', 1765360182000, 1765360192000, 2, 1, 1, 3, 1, 0, ?, ?)"));
             ins.addBindValue(blob);
             // 关联点列（同一 MAT 的 asscPointList）：3 个点，时间落在上面 2 个平滑点之间
-            QByteArray rawBlob(3 * 52, 0);
+            QByteArray rawBlob(3 * 56, 0);
             char *rp = rawBlob.data();
             const qint64 rawTimes[3] = { 1765360183000LL, 1765360190000LL, 1765360191500LL };
             for (int i = 0; i < 3; ++i) {
@@ -996,14 +1004,15 @@ int runDbMigrationTest()
                 qToLittleEndian<quint64>(u, rp + 8);
                 std::memcpy(&u, &lon, 8);
                 qToLittleEndian<quint64>(u, rp + 16);
-                const float fs[7] = { 1000.0f, 90.0f, 200.0f, 0.0f,
-                                      2000.0f + i * 10.0f, 8.0f, 91.0f };
-                for (int k = 0; k < 7; ++k) {
+                const float fs[8] = { 1000.0f, 90.0f, 200.0f, 0.0f,
+                                      2000.0f + i * 10.0f, 8.0f, 91.0f,
+                                      30.0f + i };
+                for (int k = 0; k < 8; ++k) {
                     quint32 v;
                     std::memcpy(&v, &fs[k], 4);
                     qToLittleEndian<quint32>(v, rp + 24 + 4 * k);
                 }
-                rp += 52;
+                rp += 56;
             }
             ins.addBindValue(rawBlob);
             check(ins.exec(), QStringLiteral("写入带测量坐标与关联点列的新格式航迹"));
@@ -1022,9 +1031,14 @@ int runDbMigrationTest()
         check(loadedNew.size() == 1 && !loadedNew.first().points.isEmpty()
                   && std::isfinite(loadedNew.first().points.first().prange),
               QStringLiteral("新格式航迹可读出测量坐标"));
+        check(loadedNew.size() == 1 && !loadedNew.first().points.isEmpty()
+                  && qFuzzyCompare(loadedNew.first().points.first().snr, 20.5f),
+              QStringLiteral("新格式航迹可读出 SNR（snr=%1）")
+                  .arg(loadedNew.isEmpty() ? 0.0 : double(loadedNew.first().points.first().snr)));
         check(loadedNew.size() == 1 && loadedNew.first().rawPoints.size() == 3
-                  && std::isfinite(loadedNew.first().rawPoints.first().prange),
-              QStringLiteral("关联点列随航迹一起读出（%1 点）")
+                  && std::isfinite(loadedNew.first().rawPoints.first().prange)
+                  && qFuzzyCompare(loadedNew.first().rawPoints.first().snr, 30.0f),
+              QStringLiteral("关联点列随航迹一起读出（%1 点，SNR 一并保留）")
                   .arg(loadedNew.isEmpty() ? -1 : loadedNew.first().rawPoints.size()));
 
         // 真实链路：库里的航迹 → 点云叠加（按时间映射到点迹帧的 Z 值）
@@ -1072,7 +1086,7 @@ int runDbMigrationTest()
             t.points << p1 << p2;
             TrackPoint r1;
             r1.t = 1765360185000LL;
-            r1.prange = 900.0f; r1.pvr = 5.0f; r1.paz = 50.0f;
+            r1.prange = 900.0f; r1.pvr = 5.0f; r1.paz = 50.0f; r1.snr = 18.0f;
             t.rawPoints << r1;
             DbSaveJob job(QStringLiteral("Radar"), TrackSource::Radar, QVector<Track>() << t);
             job.start();
@@ -1084,6 +1098,11 @@ int runDbMigrationTest()
             check(up.size() == 1 && up.first().rawPoints.size() == 1
                       && std::isfinite(up.first().points.first().prange),
                   QStringLiteral("旧航迹升级后同时带平滑与关联点列"));
+            check(up.size() == 1 && up.first().rawPoints.size() == 1
+                      && qFuzzyCompare(up.first().rawPoints.first().snr, 18.0f),
+                  QStringLiteral("旧航迹重导后补上 SNR（%1）")
+                      .arg(up.isEmpty() || up.first().rawPoints.isEmpty()
+                               ? 0.0 : double(up.first().rawPoints.first().snr)));
         }
 
         // 数据源重命名（schema v5）：只改显示名，file_name 不变；搜索按新名与原名都能命中
@@ -1131,6 +1150,88 @@ int runDbMigrationTest()
                   QStringLiteral("删除全部数据后库为空（批次 %1 / 航迹 %2）%3")
                       .arg(st.totalBatches).arg(st.totalTracks).arg(derr));
         }
+    }
+    trackdb::close();
+
+    // ---- 728 字节边界：v5 库里 14 个 52 字节点正好 728 字节，也是 13 个 56 字节。
+    // 迁移必须按「库版本 < 6 一律是 52 字节点」处理，不能按长度猜（否则这条航迹会被误读成 13 点）
+    {
+        QFile::remove(path);
+        const QString conn5 = QStringLiteral("dbtest_setup_v5");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn5);
+            db.setDatabaseName(path);
+            if (!db.open()) {
+                out << "FAIL 创建 v5 边界测试库: " << db.lastError().text() << "\n";
+                return 1;
+            }
+            QSqlQuery q(db);
+            const char *const stmts[] = {
+                "CREATE TABLE batches (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT NOT NULL,"
+                " source TEXT NOT NULL, display_name TEXT DEFAULT NULL,"
+                " track_count INTEGER NOT NULL, imported_at TEXT NOT NULL)",
+                "CREATE TABLE saved_tracks (icao_address TEXT NOT NULL, batch_id INTEGER NOT NULL,"
+                " source TEXT NOT NULL, flight_no TEXT, icao_flight_no TEXT, registration TEXT,"
+                " aircraft_type TEXT, airline TEXT, origin TEXT, destination TEXT,"
+                " min_timestamp TEXT, max_timestamp TEXT, min_ms INTEGER, max_ms INTEGER,"
+                " point_count INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0,"
+                " has_measure INTEGER DEFAULT 0, raw_point_count INTEGER DEFAULT 0,"
+                " has_raw INTEGER DEFAULT 0, raw_points BLOB, points BLOB NOT NULL,"
+                " PRIMARY KEY (icao_address, batch_id))",
+                "INSERT INTO batches (id, file_name, source, track_count, imported_at)"
+                " VALUES (1, 'Radar', 'Radar', 1, '2026-01-01 00:00:00')",
+                "PRAGMA user_version=5",
+            };
+            bool okAll = true;
+            for (const char *s : stmts)
+                if (!q.exec(QLatin1String(s)))
+                    okAll = false;
+            check(okAll, QStringLiteral("构造 v5 库（14 点 × 52 字节 = 728 字节）"));
+            QByteArray blob(14 * 52, 0);
+            char *p = blob.data();
+            for (int i = 0; i < 14; ++i) {
+                qToLittleEndian<qint64>(1765360182000LL + i * 1000, p);
+                double lat = 30.0 + i, lon = 110.0 + i;
+                quint64 u;
+                std::memcpy(&u, &lat, 8);
+                qToLittleEndian<quint64>(u, p + 8);
+                std::memcpy(&u, &lon, 8);
+                qToLittleEndian<quint64>(u, p + 16);
+                const float fs[7] = { 1000.0f, 90.0f, 200.0f, 0.0f,
+                                      1000.0f + i, 12.0f, 90.0f };
+                for (int k = 0; k < 7; ++k) {
+                    quint32 v;
+                    std::memcpy(&v, &fs[k], 4);
+                    qToLittleEndian<quint32>(v, p + 24 + 4 * k);
+                }
+                p += 52;
+            }
+            QSqlQuery ins(db);
+            ins.prepare(QStringLiteral(
+                "INSERT INTO saved_tracks (icao_address, batch_id, source, point_count,"
+                " deleted, min_ms, max_ms, points) VALUES ('RADAR-0014', 1, 'Radar', 14, 0,"
+                " 1765360182000, 1765360195000, ?)"));
+            ins.addBindValue(blob);
+            check(ins.exec(), QStringLiteral("写入 728 字节旧格式航迹"));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(conn5);
+        QString e5;
+        const bool opened5 = trackdb::open(&e5);
+        check(opened5, QStringLiteral("打开 v5 库触发 v6 迁移：%1").arg(e5));
+        const QVector<Track> amb = trackdb::loadAll(&e5);
+        check(amb.size() == 1 && amb.first().points.size() == 14,
+              QStringLiteral("728 字节旧点列迁移后仍是 14 点（实际 %1）")
+                  .arg(amb.isEmpty() ? -1 : amb.first().points.size()));
+        check(!amb.isEmpty() && amb.first().points.size() == 14
+                  && qFuzzyCompare(amb.first().points.last().lat, 43.0)
+                  && qFuzzyCompare(amb.first().points.last().prange, 1013.0f),
+              QStringLiteral("边界库经纬度/测量坐标未错位"));
+        QSqlDatabase mdb = QSqlDatabase::database(QStringLiteral("radarview_main"), false);
+        QSqlQuery lq(mdb);
+        check(lq.exec(QStringLiteral("SELECT length(points) FROM saved_tracks")) && lq.next()
+                  && lq.value(0).toInt() == 14 * 56,
+              QStringLiteral("728 字节点列已升级为 14 × 56 字节"));
     }
     trackdb::close();
 
@@ -2358,6 +2459,62 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                 pts += t.points.size();
             check(back.size() == store->size() && pts == store->pointCount(),
                   QStringLiteral("数据库读回 %1 条 %2 点（内存 %3 条 %4 点）").arg(back.size()).arg(pts).arg(store->size()).arg(store->pointCount()));
+            // 点迹表列：雷达/原始测量显示 prange/paz/pvr/snr，ADS-B 保持高度/航速
+            {
+                auto headersOf = [w](int idx) {
+                    QStringList h;
+                    QDialog *dlg = w->showTrackPoints(idx);
+                    if (TrackPointDialog *pd = qobject_cast<TrackPointDialog *>(dlg))
+                        for (int c = 0; c < pd->columnCount(); ++c)
+                            h << pd->headerText(c);
+                    if (dlg)
+                        dlg->close();
+                    return h;
+                };
+                int radar = -1, raw = -1, adsb = -1;
+                for (int i = 0; i < store->size() && (radar < 0 || raw < 0 || adsb < 0); ++i) {
+                    const TrackSource s = store->tracks()[i].source;
+                    if (s == TrackSource::Radar && radar < 0)
+                        radar = i;
+                    if (s == TrackSource::RadarRaw && raw < 0)
+                        raw = i;
+                    if (s == TrackSource::Adsb && adsb < 0)
+                        adsb = i;
+                }
+                const QStringList expectRadar = QStringList()
+                        << QStringLiteral("序号") << QStringLiteral("时间戳")
+                        << QStringLiteral("纬度") << QStringLiteral("经度")
+                        << QStringLiteral("prange(m)") << QStringLiteral("paz(°)")
+                        << QStringLiteral("pvr(m/s)") << QStringLiteral("snr(dB)");
+                const QStringList radarHeads = radar >= 0 ? headersOf(radar) : QStringList();
+                const QStringList rawHeads = raw >= 0 ? headersOf(raw) : QStringList();
+                check(radarHeads == expectRadar && rawHeads == expectRadar,
+                      QStringLiteral("雷达/原始量测点迹表列：%1 | %2")
+                          .arg(radarHeads.join(QLatin1Char('|')), rawHeads.join(QLatin1Char('|'))));
+                const QStringList expectAdsb = QStringList()
+                        << QStringLiteral("序号") << QStringLiteral("时间戳")
+                        << QStringLiteral("纬度") << QStringLiteral("经度")
+                        << QStringLiteral("高度(ft)") << QStringLiteral("航向(°)")
+                        << QStringLiteral("地速(kn)") << QStringLiteral("垂直率(ft/min)");
+                check(adsb >= 0 && headersOf(adsb) == expectAdsb,
+                      QStringLiteral("ADS-B 点迹表列不变"));
+                bool snrRead = false;
+                if (radar >= 0)
+                    for (const TrackPoint &p : store->tracks()[radar].rawPoints)
+                        if (std::isfinite(p.snr)) {
+                            snrRead = true;
+                            break;
+                        }
+                check(snrRead, QStringLiteral("雷达 MAT 的关联点列 SNR 已读入"));
+                bool rawSnr = false;
+                if (raw >= 0)
+                    for (const TrackPoint &p : store->tracks()[raw].points)
+                        if (std::isfinite(p.snr)) {
+                            rawSnr = true;
+                            break;
+                        }
+                check(rawSnr, QStringLiteral("原始测量点迹（asscPointList）自带的 SNR 已读入"));
+            }
             // 同一数据源的不同文件颜色互不相同：Radar 与 RadarRaw 来自同一个 .mat，再导入一个 Radar 文件
             const QColor c1 = store->fileColor(TrackSource::Radar, QStringLiteral("Radar"));
             bool customColorApplied = false;

@@ -16,14 +16,19 @@
 namespace {
 
 const char *const kMainConn = "radarview_main";
-// 点序列格式：v3 起每点 52 字节
-//   t(8) lat(8) lon(8) alt/heading/speed/vrate(4×4) prange/pvr/paz(3×4)
-// v2 及更早为 40 字节（不含测量坐标），迁移时统一补 NaN 重编码
-const int kPointBytes = 52;
+// 点序列格式：v6 起每点 56 字节
+//   t(8) lat(8) lon(8) alt/heading/speed/vrate(4×4) prange/pvr/paz/snr(4×4)
+// v3~v5 为 52 字节（不含 snr），v2 及更早为 40 字节（不含测量坐标），
+// 迁移时统一补 NaN 重编码
+const int kPointBytes = 56;
+const int kPointBytesV5 = 52;
 const int kPointBytesOld = 40;
 
-// 点序列编解码（定义在本文件后面；createSchema 的 v3 迁移会用到）
+// 点序列编解码（定义在本文件后面；createSchema 的迁移会用到）
 QByteArray encodePoints(const QVector<TrackPoint> &pts);
+// v3~v5 的 52 字节点格式：v3 迁移固定写这种，v6 迁移再统一升到 56 字节
+QByteArray encodePointsV5(const QVector<TrackPoint> &pts);
+QVector<TrackPoint> decodePointsV5(const QByteArray &blob);
 QVector<TrackPoint> decodePointsOld(const QByteArray &blob);
 
 QSqlDatabase mainDb()
@@ -44,7 +49,9 @@ bool exec(QSqlQuery &q, const QString &sql, QString *error)
 // v4：saved_tracks 增加关联点列 raw_points（同一条雷达航迹的 asscPointList），
 //     点云窗口据此在同一条航迹上切换「平滑 / 关联」两种点源
 // v5：batches 增加 display_name（「批量数据管理」里给数据源重命名；file_name 仍是唯一标识）
-const int kSchemaVersion = 5;
+// v6：航迹点增加 SNR（雷达关联点列 asscPointList 的 snr），点格式 52 -> 56 字节，
+//     saved_tracks 增加 has_snr（重导同一 MAT 时据此原地补值）
+const int kSchemaVersion = 6;
 
 bool hasColumn(QSqlDatabase db, const QString &table, const QString &column)
 {
@@ -82,7 +89,7 @@ bool createSchema(QSqlDatabase db, QString *error)
         " flight_no TEXT, icao_flight_no TEXT, registration TEXT, aircraft_type TEXT, airline TEXT,"
         " origin TEXT, destination TEXT, min_timestamp TEXT, max_timestamp TEXT,"
         " min_ms INTEGER, max_ms INTEGER, point_count INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0,"
-        " has_measure INTEGER DEFAULT 0,"
+        " has_measure INTEGER DEFAULT 0, has_snr INTEGER DEFAULT 0,"
         " raw_point_count INTEGER DEFAULT 0, has_raw INTEGER DEFAULT 0, raw_points BLOB,"
         " points BLOB NOT NULL, PRIMARY KEY (icao_address, batch_id))",
         "CREATE INDEX IF NOT EXISTS idx_tracks_source ON saved_tracks(source)",
@@ -123,7 +130,8 @@ bool createSchema(QSqlDatabase db, QString *error)
             return false;
     }
     if (version < 3) {
-        // v3：航迹点增加测量坐标（prange/pvr/paz），点格式 40 -> 52 字节。
+        // v3：航迹点增加测量坐标（prange/pvr/paz），点格式 40 字节 -> 新格式
+        // （补 NaN 后由 encodePoints 按当前格式重编码；老库再经 v6 补 snr）。
         // 旧行补 NaN 重编码；has_measure 标记该航迹是否带测量坐标（点云叠加用）。
         // 整个迁移（加列 + 重编码 + 版本号）在一个事务里完成，中途失败全部回滚，可安全重跑。
         if (!db.transaction()) {
@@ -167,7 +175,7 @@ bool createSchema(QSqlDatabase db, QString *error)
                     continue;                   // 空行或已经是新格式
                 upd.prepare(QStringLiteral("UPDATE saved_tracks SET points = ?, has_measure = 0"
                                            " WHERE rowid = ?"));
-                upd.addBindValue(encodePoints(decodePointsOld(old)));
+                upd.addBindValue(encodePointsV5(decodePointsOld(old)));
                 upd.addBindValue(rowId);
                 if (!upd.exec()) {
                     if (error)
@@ -210,6 +218,84 @@ bool createSchema(QSqlDatabase db, QString *error)
                           QStringLiteral("TEXT DEFAULT NULL"), error))
             return false;
     }
+    if (version < 6) {
+        // v6：航迹点增加 SNR（雷达关联点列 asscPointList 的 snr），点格式 52 -> 56 字节。
+        // 老数据原样保留（SNR 补 NaN），has_snr 标记为 0；重导同一 MAT 时 DbSaveJob
+        // 据此原地补上 SNR。整段迁移放在事务里，中途失败全部回滚，可安全重跑。
+        if (!db.transaction()) {
+            if (error)
+                *error = db.lastError().text();
+            return false;
+        }
+        int current = version;
+        QSqlQuery ver(db);
+        if (ver.exec(QStringLiteral("PRAGMA user_version")) && ver.next())
+            current = ver.value(0).toInt();     // 并发连接可能已经迁移过
+        if (current < 6) {
+            if (!hasColumn(db, QStringLiteral("saved_tracks"), QStringLiteral("has_snr"))) {
+                QSqlQuery alter(db);
+                if (!exec(alter, QStringLiteral("ALTER TABLE saved_tracks"
+                                                " ADD COLUMN has_snr INTEGER DEFAULT 0"), error)) {
+                    db.rollback();
+                    return false;
+                }
+            }
+            // 库版本 < 6 时所有点列都还是 52 字节点格式。不能只按字节数猜：
+            // 728 字节既可能是 14 个 52 字节点，也可能是 13 个 56 字节点
+            auto needsUpgrade = [](const QByteArray &blob) {
+                return !blob.isEmpty() && blob.size() % kPointBytesV5 == 0;
+            };
+            QVector<qint64> rowIds;
+            {
+                QSqlQuery ids(db);
+                if (!ids.exec(QStringLiteral("SELECT rowid FROM saved_tracks"))) {
+                    if (error)
+                        *error = ids.lastError().text();
+                    db.rollback();
+                    return false;
+                }
+                while (ids.next())
+                    rowIds.append(ids.value(0).toLongLong());
+            }
+            QSqlQuery pick(db), upd(db);
+            for (qint64 rowId : qAsConst(rowIds)) {
+                pick.prepare(QStringLiteral("SELECT points, raw_points FROM saved_tracks"
+                                            " WHERE rowid = ?"));
+                pick.addBindValue(rowId);
+                if (!pick.exec() || !pick.next())
+                    continue;
+                const QByteArray oldPoints = pick.value(0).toByteArray();
+                const QByteArray oldRaw = pick.value(1).toByteArray();
+                if (!needsUpgrade(oldPoints) && !needsUpgrade(oldRaw))
+                    continue;
+                const QByteArray newPoints = needsUpgrade(oldPoints)
+                        ? encodePoints(decodePointsV5(oldPoints)) : oldPoints;
+                const QByteArray newRaw = needsUpgrade(oldRaw)
+                        ? encodePoints(decodePointsV5(oldRaw)) : oldRaw;
+                upd.prepare(QStringLiteral("UPDATE saved_tracks SET points = ?, raw_points = ?,"
+                                           " has_snr = 0 WHERE rowid = ?"));
+                upd.addBindValue(newPoints);
+                upd.addBindValue(newRaw.isEmpty() ? QByteArray() : newRaw);
+                upd.addBindValue(rowId);
+                if (!upd.exec()) {
+                    if (error)
+                        *error = upd.lastError().text();
+                    db.rollback();
+                    return false;
+                }
+            }
+            if (!exec(q, QStringLiteral("PRAGMA user_version=6"), error)) {
+                db.rollback();
+                return false;
+            }
+        }
+        if (!db.commit()) {
+            if (error)
+                *error = db.lastError().text();
+            return false;
+        }
+        version = 6;
+    }
 
     // 以库里的实际版本为准再写一次：各段迁移内部可能已经把 user_version 写成中间值
     int stored = 0;
@@ -220,6 +306,29 @@ bool createSchema(QSqlDatabase db, QString *error)
             return false;
     }
     return true;
+}
+
+QByteArray encodePointsV5(const QVector<TrackPoint> &pts)
+{
+    QByteArray out(pts.size() * kPointBytesV5, Qt::Uninitialized);
+    char *p = out.data();
+    for (const TrackPoint &tp : pts) {
+        qToLittleEndian<qint64>(tp.t, p);
+        quint64 u;
+        std::memcpy(&u, &tp.lat, 8);
+        qToLittleEndian<quint64>(u, p + 8);
+        std::memcpy(&u, &tp.lon, 8);
+        qToLittleEndian<quint64>(u, p + 16);
+        const float fs[7] = { tp.alt, tp.heading, tp.speed, tp.vrate,
+                              tp.prange, tp.pvr, tp.paz };
+        for (int k = 0; k < 7; ++k) {
+            quint32 v;
+            std::memcpy(&v, &fs[k], 4);
+            qToLittleEndian<quint32>(v, p + 24 + 4 * k);
+        }
+        p += kPointBytesV5;
+    }
+    return out;
 }
 
 QByteArray encodePoints(const QVector<TrackPoint> &pts)
@@ -233,9 +342,9 @@ QByteArray encodePoints(const QVector<TrackPoint> &pts)
         qToLittleEndian<quint64>(u, p + 8);
         std::memcpy(&u, &tp.lon, 8);
         qToLittleEndian<quint64>(u, p + 16);
-        const float fs[7] = { tp.alt, tp.heading, tp.speed, tp.vrate,
-                              tp.prange, tp.pvr, tp.paz };
-        for (int k = 0; k < 7; ++k) {
+        const float fs[8] = { tp.alt, tp.heading, tp.speed, tp.vrate,
+                              tp.prange, tp.pvr, tp.paz, tp.snr };
+        for (int k = 0; k < 8; ++k) {
             quint32 v;
             std::memcpy(&v, &fs[k], 4);
             qToLittleEndian<quint32>(v, p + 24 + 4 * k);
@@ -271,12 +380,13 @@ QVector<TrackPoint> decodePointsOld(const QByteArray &blob)
     return pts;
 }
 
-QVector<TrackPoint> decodePoints(const QByteArray &blob)
+// v3~v5 的 52 字节点格式；只用于 schema v6 迁移
+QVector<TrackPoint> decodePointsV5(const QByteArray &blob)
 {
-    const int n = blob.size() / kPointBytes;
+    const int n = blob.size() / kPointBytesV5;
     QVector<TrackPoint> pts(n);
     const char *p = blob.constData();
-    for (int i = 0; i < n; ++i, p += kPointBytes) {
+    for (int i = 0; i < n; ++i, p += kPointBytesV5) {
         TrackPoint &tp = pts[i];
         tp.t = qFromLittleEndian<qint64>(p);
         quint64 u = qFromLittleEndian<quint64>(p + 8);
@@ -295,6 +405,35 @@ QVector<TrackPoint> decodePoints(const QByteArray &blob)
         tp.prange = fs[4];
         tp.pvr = fs[5];
         tp.paz = fs[6];
+    }
+    return pts;
+}
+
+QVector<TrackPoint> decodePoints(const QByteArray &blob)
+{
+    const int n = blob.size() / kPointBytes;
+    QVector<TrackPoint> pts(n);
+    const char *p = blob.constData();
+    for (int i = 0; i < n; ++i, p += kPointBytes) {
+        TrackPoint &tp = pts[i];
+        tp.t = qFromLittleEndian<qint64>(p);
+        quint64 u = qFromLittleEndian<quint64>(p + 8);
+        std::memcpy(&tp.lat, &u, 8);
+        u = qFromLittleEndian<quint64>(p + 16);
+        std::memcpy(&tp.lon, &u, 8);
+        float fs[8];
+        for (int k = 0; k < 8; ++k) {
+            const quint32 v = qFromLittleEndian<quint32>(p + 24 + 4 * k);
+            std::memcpy(&fs[k], &v, 4);
+        }
+        tp.alt = fs[0];
+        tp.heading = fs[1];
+        tp.speed = fs[2];
+        tp.vrate = fs[3];
+        tp.prange = fs[4];
+        tp.pvr = fs[5];
+        tp.paz = fs[6];
+        tp.snr = fs[7];
     }
     return pts;
 }
@@ -898,7 +1037,9 @@ void DbSaveJob::run()
                 batchId = q.value(0).toLongLong();
                 m_appended = true;
             }
-            QHash<QString, QPair<bool, bool>> existing;   // icao -> (has_measure, has_raw)
+            // icao -> 该行已有的列（测量坐标 / 关联点列 / SNR）
+            struct ExistingFlags { bool measure = false; bool raw = false; bool snr = false; };
+            QHash<QString, ExistingFlags> existing;
             bool okAll = true;
             if (batchId < 0) {
                 q.prepare(QStringLiteral("INSERT INTO batches (file_name, source, track_count, imported_at) VALUES (?, ?, ?, ?)"));
@@ -913,20 +1054,25 @@ void DbSaveJob::run()
                 q.prepare(QStringLiteral("UPDATE saved_tracks SET deleted = 0 WHERE batch_id = ?"));
                 q.addBindValue(batchId);
                 q.exec();
-                q.prepare(QStringLiteral("SELECT icao_address, has_measure, has_raw"
+                q.prepare(QStringLiteral("SELECT icao_address, has_measure, has_raw, has_snr"
                                          " FROM saved_tracks WHERE batch_id = ?"));
                 q.addBindValue(batchId);
                 if (q.exec())
-                    while (q.next())
-                        existing.insert(q.value(0).toString(),
-                                        qMakePair(q.value(1).toInt() != 0, q.value(2).toInt() != 0));
+                    while (q.next()) {
+                        ExistingFlags f;
+                        f.measure = q.value(1).toInt() != 0;
+                        f.raw = q.value(2).toInt() != 0;
+                        f.snr = q.value(3).toInt() != 0;
+                        existing.insert(q.value(0).toString(), f);
+                    }
             }
             QSqlQuery ins(db);
             ins.prepare(QStringLiteral(
                 "INSERT OR REPLACE INTO saved_tracks (icao_address, batch_id, source, flight_no, icao_flight_no,"
                 " registration, aircraft_type, airline, origin, destination, min_timestamp, max_timestamp,"
-                " min_ms, max_ms, point_count, has_measure, raw_point_count, has_raw, deleted, points, raw_points)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)"));
+                " min_ms, max_ms, point_count, has_measure, has_snr, raw_point_count, has_raw, deleted,"
+                " points, raw_points)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)"));
             int inserted = 0;
             for (int i = 0; okAll && i < m_tracks.size(); ++i) {
                 Track &t = m_tracks[i];
@@ -945,14 +1091,25 @@ void DbSaveJob::run()
                             return true;
                     return false;
                 }();
-                // 已存在的航迹默认跳过；只有新数据补上了旧行没有的列（测量坐标/关联点列）
+                // SNR 只有关联点列带（如实测的 asscPointList），平滑点列也可能有
+                const bool hasSnr = [&t]() {
+                    for (const TrackPoint &p : qAsConst(t.points))
+                        if (std::isfinite(p.snr))
+                            return true;
+                    for (const TrackPoint &p : qAsConst(t.rawPoints))
+                        if (std::isfinite(p.snr))
+                            return true;
+                    return false;
+                }();
+                // 已存在的航迹默认跳过；只有新数据补上了旧行没有的列（测量坐标/关联点列/SNR）
                 // 才覆盖，这样老库重导同一 MAT 即可原地升级，也不会重复计数
                 const bool existed = existing.contains(t.id);
                 if (existed) {
-                    const QPair<bool, bool> flags = existing.value(t.id);
-                    const bool needMeasure = hasMeasure && !flags.first;
-                    const bool needRaw = hasRaw && !flags.second;
-                    if (!needMeasure && !needRaw)
+                    const ExistingFlags flags = existing.value(t.id);
+                    const bool needMeasure = hasMeasure && !flags.measure;
+                    const bool needRaw = hasRaw && !flags.raw;
+                    const bool needSnr = hasSnr && !flags.snr;
+                    if (!needMeasure && !needRaw && !needSnr)
                         continue;
                 }
                 ins.addBindValue(t.id);
@@ -971,6 +1128,7 @@ void DbSaveJob::run()
                 ins.addBindValue(t.maxTime());
                 ins.addBindValue(t.points.size());
                 ins.addBindValue(hasMeasure ? 1 : 0);
+                ins.addBindValue(hasSnr ? 1 : 0);
                 ins.addBindValue(t.rawPoints.size());
                 ins.addBindValue(hasRaw ? 1 : 0);
                 ins.addBindValue(encodePoints(t.points));
