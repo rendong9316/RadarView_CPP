@@ -6,12 +6,12 @@
 
 | 分层 | 核心模块 | 职责 |
 |---|---|---|
-| 应用外壳 | `main`、`mainwindow`、`apppaths`、`splashscreen`、`theme`、`uiwidgets`、`lucide` | 启动入口、VSCode 风格活动栏/侧栏外壳、路径与设置持久化、主题与矢量图标 |
+| 应用外壳 | `main`、`mainwindow`、`appshellwidgets`、`drawingcontroller`、`mapsourcecontroller`、`point3dcoordinator`、`trackimportcoordinator`、`apppaths`、`splashscreen`、`theme`、`uiwidgets`、`lucide` | 启动入口、VSCode 风格活动栏/侧栏外壳、绘图/底图/三维/导入协调器、路径迁移与设置持久化、主题与矢量图标 |
 | 地理与航迹核心 | `geo`、`crs`、`geocalc`、`track`、`replaycontroller` | WGS84 ⇄ GCJ-02 纠偏、Vincenty 正反算与大圆加密、内存航迹存储与回放状态机 |
 | 解析与持久化 | `matfile`、`trackparsers`、`trackimporter`、`trackdb` | 自研 MATLAB MAT v5 读取器、雷达/ADS-B 解析、异步导入与 SQLite 航迹库 |
-| 3D 地球与标绘 | `globewidget`、`tracklayer`、`tilesource`、`netmap`、`maptools`、`spatiallasso`、`drawingmanager`、`drawcommands` | OpenGL ES 2.0 椭球与宽线渲染、离线/在线瓦片源、旗标/标尺、套索与贴地绘图撤销栈 |
+| 3D 地球与标绘 | `globewidget`、`globecamera`、`globesurface`、`globedrawcontroller`、`globeoverlay`、`tracklayer`、`tilesource`、`netmap`、`maptools`、`spatiallasso`、`drawingmanager`、`drawcommands` | OpenGL ES 2.0 椭球与宽线渲染、相机/投影、地表着色器、2D 叠加层、离线/在线瓦片源、旗标/标尺、套索与贴地绘图撤销栈 |
 | 业务面板与弹窗 | `appstatusbar`、`sidepanels`、`managepanel`、`settingspanel`、`trackpointdialog`、`trackpicker` | 状态栏数据源条、筛选/管理/设置侧栏、点迹明细表、航迹选择器 |
-| 点迹三维可视化 | `point3dtypes`、`point3dparsers`、`point3dimportjob`、`point3dcanvas`、`point3dwindow` | 可多开独立点云窗口（`QPainter` 正交投影、SNR 色标、区域裁剪、独立逐帧回放） |
+| 点迹三维可视化 | `point3dtypes`、`point3dparsers`、`point3dimportjob`、`point3dcanvas`、`point3dsidepanel`、`point3dadvancedpanel`、`point3dwindow` | 可多开独立点云窗口（`QPainter` 正交投影、侧栏设置/高级参数页、SNR 色标、区域裁剪、独立逐帧回放） |
 
 ## 三方联动机制（地图 ↔ 点迹三维窗口 ↔ 数据库管理）
 
