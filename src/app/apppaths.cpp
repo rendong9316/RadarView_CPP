@@ -4,6 +4,7 @@
 #include <QDataStream>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSettings>
@@ -28,11 +29,58 @@ QString testDir()
     return QCoreApplication::applicationDirPath();
 }
 
+bool copyFileAtomic(const QString &src, const QString &dst)
+{
+    if (!QFileInfo::exists(src) || QFileInfo::exists(dst))
+        return true;
+    const QString tmp = dst + QStringLiteral(".migrating");
+    QFile::remove(tmp);
+    if (!QFile::copy(src, tmp)) {
+        qWarning("[apppaths] 复制旧文件失败: %s -> %s", qPrintable(src), qPrintable(dst));
+        return false;
+    }
+    if (!QFile::rename(tmp, dst)) {
+        QFile::remove(tmp);
+        qWarning("[apppaths] 落盘迁移文件失败: %s", qPrintable(dst));
+        return false;
+    }
+    return true;
+}
+
+bool copyDirRecursive(const QString &srcPath, const QString &dstPath)
+{
+    QDir srcDir(srcPath);
+    if (!srcDir.exists())
+        return true;
+    if (!QDir().mkpath(dstPath))
+        return false;
+    bool ok = true;
+    const QFileInfoList entries = srcDir.entryInfoList(
+        QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
+    for (const QFileInfo &entry : entries) {
+        const QString dstEntry = dstPath + QLatin1Char('/') + entry.fileName();
+        if (entry.isDir()) {
+            if (!copyDirRecursive(entry.absoluteFilePath(), dstEntry))
+                ok = false;
+        } else {
+            if (!copyFileAtomic(entry.absoluteFilePath(), dstEntry))
+                ok = false;
+        }
+    }
+    return ok;
+}
+
 QString dataDir()
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                      + QStringLiteral("/RadarView/HelloVscode");
-    QDir().mkpath(dir);
+                      + QStringLiteral("/RadarView/RadarView");
+    static bool migrated = false;
+    if (!migrated) {
+        migrated = true;
+        migrateLegacyDataDir(legacyDataDir(), dir);
+    } else {
+        QDir().mkpath(dir);
+    }
     return dir;
 }
 
@@ -149,12 +197,71 @@ void setTestMode(bool on)
             QFile::remove(db + suffix);
         QFile::remove(testDir() + QStringLiteral("/test_settings.ini"));
         QFile::remove(testDir() + QStringLiteral("/test_drawings.json"));
+        QDir(testDir() + QStringLiteral("/test_tilecache")).removeRecursively();
     }
 }
 
 bool testMode()
 {
     return g_test;
+}
+
+QString legacyDataDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+         + QStringLiteral("/RadarView/HelloVscode");
+}
+
+bool migrateLegacyDataDir(const QString &legacyDir, const QString &newDir)
+{
+    if (newDir.isEmpty())
+        return false;
+    QDir().mkpath(newDir);
+    if (legacyDir.isEmpty() || QDir::cleanPath(legacyDir) == QDir::cleanPath(newDir))
+        return true;
+    if (!QDir(legacyDir).exists())
+        return true;
+
+    bool ok = true;
+
+    // 1) 航迹与设置数据库（含 SQLite WAL 附属文件）：先迁 -wal/-shm 再原子落盘主库，旧文件保留不动
+    const QString legacyDb = legacyDir + QStringLiteral("/radarview.db");
+    const QString newDb = newDir + QStringLiteral("/radarview.db");
+    if (QFileInfo::exists(legacyDb) && !QFileInfo::exists(newDb)) {
+        for (const QString &suffix : { QStringLiteral("-wal"), QStringLiteral("-shm") }) {
+            if (!copyFileAtomic(legacyDb + suffix, newDb + suffix))
+                ok = false;
+        }
+        if (copyFileAtomic(legacyDb, newDb))
+            qInfo("[apppaths] 已从旧目录迁移数据库到 %s", qPrintable(newDb));
+        else
+            ok = false;
+    }
+
+    // 2) 绘图内容 GeoJSON：仅当新目录尚无时复制，保留旧文件
+    const QString legacyDraw = legacyDir + QStringLiteral("/drawings.json");
+    const QString newDraw = newDir + QStringLiteral("/drawings.json");
+    if (QFileInfo::exists(legacyDraw) && !QFileInfo::exists(newDraw)) {
+        if (copyFileAtomic(legacyDraw, newDraw))
+            qInfo("[apppaths] 已从旧目录迁移绘图到 %s", qPrintable(newDraw));
+        else
+            ok = false;
+    }
+
+    // 3) 在线瓦片缓存：同卷优先原子重命名（避免海量 PNG 拷贝），失败则递归复制
+    const QString legacyCache = legacyDir + QStringLiteral("/tilecache");
+    const QString newCache = newDir + QStringLiteral("/tilecache");
+    if (QDir(legacyCache).exists() && !QDir(newCache).exists()) {
+        if (QDir().rename(legacyCache, newCache)) {
+            qInfo("[apppaths] 已从旧目录迁移瓦片缓存到 %s", qPrintable(newCache));
+        } else if (copyDirRecursive(legacyCache, newCache)) {
+            qInfo("[apppaths] 已从旧目录复制瓦片缓存到 %s", qPrintable(newCache));
+        } else {
+            ok = false;
+        }
+    }
+
+    return ok;
 }
 
 QString databasePath()
@@ -169,6 +276,13 @@ QString drawingPath()
     if (g_test)
         return testDir() + QStringLiteral("/test_drawings.json");
     return dataDir() + QStringLiteral("/drawings.json");
+}
+
+QString tileCacheDir()
+{
+    if (g_test)
+        return testDir() + QStringLiteral("/test_tilecache");
+    return dataDir() + QStringLiteral("/tilecache");
 }
 
 // ---------------------------------------------------------------

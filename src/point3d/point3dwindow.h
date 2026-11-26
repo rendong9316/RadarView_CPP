@@ -2,29 +2,28 @@
 #define POINT3DWINDOW_H
 
 #include <QElapsedTimer>
+#include <QJsonObject>
+#include <QSet>
 #include <QStringList>
 #include <QWidget>
-#include <QJsonObject>
 
 #include <functional>
 
 #include "point3dtypes.h"
 
+class QAction;
 class QComboBox;
-class QDoubleSpinBox;
 class QLabel;
 class QProgressBar;
 class QPushButton;
 class QSlider;
-class QSpinBox;
-class QTimer;
-class QAction;
-class QCheckBox;
-class QLineEdit;
 class QStackedWidget;
+class QTimer;
 
+class Point3dAdvancedPanel;
 class Point3dCanvas;
 class Point3dImportJob;
+class Point3dSidePanel;
 
 // 点迹三维可视化独立窗口（可多开；每个窗口承载一组点迹数据）
 class Point3dWindow : public QWidget
@@ -95,24 +94,13 @@ protected:
     void closeEvent(QCloseEvent *e) override;
 
 private:
-    // 区域筛选的三行 = 当前视图的三个轴；每个视图各存一套
-    struct ViewRegion {
-        Point3dRegion region;
-        bool applied = false;
-    };
-
     void buildUi();
-    QWidget *buildSidePanel();          // 左侧「显示」侧栏（设置页）
-    QWidget *buildAdvancedPanel();      // 左侧「高级」页（原来的高级参数对话框）
     void setSidePanelPage(int page, bool show);   // 0=设置 1=高级
-    void persistAdvanced();        // 高级页所有控件即时写设置
-    void recomputeContinuityNow(); // 连续性参数防抖后重算当前数据
+    void syncViewMenuChecks(Point3dViewMode mode);
+    void recomputeContinuityNow(const ContinuityConfig &cfg);
     void importDetections();
     void onImportDone();
     void exportCanvasImage();
-    void onViewModeChanged();
-    void onWindowLengthChanged();
-    void applyWindowLength(int len);
     void setLoadingUi(bool loading, int percent);
     void updateStatus();
     void saveSettings();
@@ -121,68 +109,20 @@ private:
     void setFrameInternal(int index);
     void syncPlaybackUi();               // 把当前帧同步到进度条/时间标签
     void updatePlaybackUi();             // 播放/暂停按钮文字
-    int nearestFrame(qint64 ms) const;
     void reloadOverlaysFromKeys();
     void applyLinkedSelection();
-    void applySnrRange();          // 按设置把色标 SNR 映射范围推给画布
-    void syncSnrControls();        // 把 SNR 设置同步到侧栏控件
-    void loadRegionForCurrentView();   // 三行标签/数值 + 画布框/筛选
-    void onRegionSpinEdited();
-    void applyRegion();
-    void resetRegion();
-    void persistRegion(int mode);
-    void revalidateRegions();      // 数据变化后按新量程夹紧各视图的区间
-    void updateRegionButtons();
-    bool regionBoxVisible() const;
     void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
-    QWidget *m_sidePanel = nullptr;     // 左侧停靠区（QStackedWidget：设置页 / 高级页）
+    QWidget *m_sidePanel = nullptr;      // 左侧停靠区（QStackedWidget：设置页 / 高级页）
     QStackedWidget *m_sideStack = nullptr;
+    Point3dSidePanel *m_sideSettings = nullptr;
+    Point3dAdvancedPanel *m_sideAdvanced = nullptr;
     QPushButton *m_settingsBtn = nullptr;   // 顶部「设置」按钮：切换设置侧栏
     QPushButton *m_advancedBtn = nullptr;   // 顶部「高级」按钮：切换高级参数侧栏
     QAction *m_viewActions[3] = { nullptr, nullptr, nullptr };
-    QAction *m_importAction = nullptr;  // 文件 → 导入点迹（导入中禁用）
+    QAction *m_importAction = nullptr;   // 文件 → 导入点迹（导入中禁用）
     QWidget *m_statusBar = nullptr;
-    QComboBox *m_viewCombo = nullptr;
-    QComboBox *m_windowCombo = nullptr;
-    QSpinBox *m_windowSpin = nullptr;
-    // 高级参数页控件
-    QLineEdit *m_detVarEdit = nullptr;
-    QLineEdit *m_sysVarEdit = nullptr;
-    QComboBox *m_azFieldCombo = nullptr;
-    QLineEdit *m_trackVarEdit = nullptr;
-    QLineEdit *m_patternEdit = nullptr;
-    QSpinBox *m_maxFramesSpin = nullptr;
-    QSpinBox *m_minTrackLenSpin = nullptr;
-    QDoubleSpinBox *m_rangeScaleSpin = nullptr;
-    QSpinBox *m_gapSpin = nullptr;
-    QDoubleSpinBox *m_rangeCSpin = nullptr;
-    QDoubleSpinBox *m_dopplerCSpin = nullptr;
-    QDoubleSpinBox *m_azimuthCSpin = nullptr;
-    QDoubleSpinBox *m_thresholdSpin = nullptr;
-    QCheckBox *m_autoReloadCheck = nullptr;
-    QTimer *m_advTimer = nullptr;   // 高级页连续性参数防抖
-    QPushButton *m_importBtn = nullptr;
-    QPushButton *m_sourceBtn = nullptr;   // 点源切换：弹起=平滑，按下=关联
-    QPushButton *m_pointBtn = nullptr;
-    QPushButton *m_trackBtn = nullptr;
-    QPushButton *m_labelBtn = nullptr;
-    QDoubleSpinBox *m_pointSizeSpin = nullptr;
-    QDoubleSpinBox *m_lineWidthSpin = nullptr;
-    QDoubleSpinBox *m_labelSizeSpin = nullptr;
-    QDoubleSpinBox *m_hoverSizeSpin = nullptr;
-    QCheckBox *m_snrAuto = nullptr;      // 色标 SNR 自动
-    QDoubleSpinBox *m_snrLoSpin = nullptr;
-    QDoubleSpinBox *m_snrHiSpin = nullptr;
-    // 区域筛选栏
-    QLabel *m_regionAxisLabel[3] = { nullptr, nullptr, nullptr };
-    QDoubleSpinBox *m_regionMinSpin[3] = { nullptr, nullptr, nullptr };
-    QDoubleSpinBox *m_regionMaxSpin[3] = { nullptr, nullptr, nullptr };
-    QPushButton *m_regionApplyBtn = nullptr;
-    QPushButton *m_regionResetBtn = nullptr;
-    ViewRegion m_viewRegions[3];
-    bool m_regionLoading = false;
     QLabel *m_status = nullptr;
     QProgressBar *m_progress = nullptr;
 
@@ -202,8 +142,8 @@ private:
     Point3dImportJob *m_job = nullptr;
     QStringList m_pendingFiles;
     QStringList m_files;
-    QStringList m_trackKeys;      // 已选航迹的 Track::key()（从数据库选择）
-    int m_skippedTracks = 0;      // 与点迹时间窗对不上、被忽略的航迹条数（一致性校验结果）
+    QStringList m_trackKeys;             // 已选航迹的 Track::key()（从数据库选择）
+    int m_skippedTracks = 0;             // 与点迹时间窗对不上、被忽略的航迹条数（一致性校验结果）
     QVector<LinkedTrackRef> m_linkedSelection;   // 地图当前的选中/筛选（重载数据后重新套用）
     std::function<QColor(TrackSource, const QString &)> m_colorProvider;
     int m_number = 1;

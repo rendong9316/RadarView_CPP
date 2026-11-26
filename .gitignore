@@ -1,4 +1,4 @@
-# 构建产物（用 build_win7.sh 重新生成）
+# 构建产物（用 build_win7.sh / build_linux.sh 重新生成）
 build/
 debug/
 release/
@@ -14,6 +14,8 @@ qrc_*.cpp
 ui_*.h
 *.exe
 *.dll
+*.so
+*.so.*
 *.a
 *.lib
 
@@ -23,11 +25,21 @@ ui_*.h
 *.autosave
 CMakeLists.txt.user*
 
-# 运行时生成
-selftest.log
+# 运行时与自检日志
+*test.log
+statecheck.log
 
-# 瓦片数据体积大，从 RadarView 项目拷贝，不入库
+# 瓦片与原始雷达/ADS-B 数据（体积大或涉密，不入库）
 *.mbtiles
+*.csv
+*.mat
+tools/tiletmp_all/
+tools/tilelist_gap.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
 
 # 临时/备份文件
 *.bak

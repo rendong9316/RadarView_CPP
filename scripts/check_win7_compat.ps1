@@ -1,11 +1,31 @@
 ﻿# 检查发布目录里所有 exe/dll 的导入表，是否直接引用了 Win7 上不存在的 API
 # 返回 0 = 可安全分发到 Win7(64位), 1 = 存在不兼容 API
-# 用法: powershell -ExecutionPolicy Bypass -File check_win7_compat.ps1 [产物目录]
+# 用法: powershell -ExecutionPolicy Bypass -File scripts/check_win7_compat.ps1 [产物目录]
 
 param(
-    [string]$Dir = "D:\software\Qt\Qt5.14.2\HelloVscode\build\win7\release",
-    [string]$ObjDump = "D:\software\mingw730_clean\Tools\mingw730_64\bin\objdump.exe"
+    [string]$Dir = "",
+    [string]$ObjDump = ""
 )
+
+if ([string]::IsNullOrWhiteSpace($Dir)) {
+    $Dir = Join-Path $PSScriptRoot "..\build\win7\release"
+}
+
+if ([string]::IsNullOrWhiteSpace($ObjDump)) {
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:MINGW)) {
+        $winMingw = $env:MINGW -replace '^/([a-zA-Z])/', '$1:\' -replace '/', '\'
+        $candidates += (Join-Path $winMingw "objdump.exe")
+    }
+    $candidates += "D:\software\mingw730_clean\Tools\mingw730_64\bin\objdump.exe"
+    $candidates += "H:\software\mingw730_clean\Tools\mingw730_64\bin\objdump.exe"
+    foreach ($c in $candidates) {
+        if (Test-Path $c) {
+            $ObjDump = $c
+            break
+        }
+    }
+}
 
 # Win8+ 才有的 Win32 API（静态导入它们 = Win7 上启动即报“找不到入口点”）
 # 注: GetFileInformationByHandleEx / SetFileInformationByHandle / InitializeCriticalSectionEx 是 Vista 起就有的，不在此列
@@ -19,8 +39,16 @@ $win8Apis = @(
 # Win7 上不存在的系统 DLL（api-ms-win-core-* 等 API Set 在 Win7 上缺失）
 $badDllPattern = '^(api-ms-win-|ext-ms-win-|ucrtbase\.dll|vcruntime14|msvcp14)'
 
-if (!(Test-Path $ObjDump)) { Write-Host "找不到 objdump: $ObjDump" -ForegroundColor Red; exit 2 }
+if ([string]::IsNullOrWhiteSpace($ObjDump) -or !(Test-Path $ObjDump)) {
+    Write-Host "找不到 objdump: $ObjDump（可通过 -ObjDump 或环境变量 MINGW 指定）" -ForegroundColor Red
+    exit 2
+}
+if (!(Test-Path $Dir)) {
+    Write-Host "找不到产物目录: $Dir" -ForegroundColor Red
+    exit 2
+}
 
+$Dir = (Resolve-Path $Dir).Path
 Write-Host "=== Win7 兼容性导入表检查: $Dir ===" -ForegroundColor Cyan
 $failed = @()
 $files = Get-ChildItem -Path $Dir -Recurse -Include *.exe, *.dll

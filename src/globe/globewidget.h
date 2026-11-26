@@ -3,27 +3,22 @@
 
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
-#include <QOpenGLBuffer>
-#include <QMatrix4x4>
-#include <QVector3D>
-#include <QVector4D>
-#include <QVector>
-#include <QHash>
-#include <QSet>
+#include <QColor>
 #include <QPoint>
+#include <QPointF>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QVector>
 #include <memory>
 
-#include <QPixmap>
-#include <QPolygonF>
-
 #include "drawingmanager.h"
+#include "globecamera.h"
+#include "globedrawcontroller.h"
+#include "globesurface.h"
 #include "tilesource.h"
 #include "tracklayer.h"
 
-class QOpenGLShaderProgram;
-class QPainter;
+class GlobeOverlay;
 class NetTileSource;
 class FlagStore;
 class RulerState;
@@ -53,12 +48,12 @@ public:
     // 场景（球面经纬度）用的坐标系由当前底图决定：高德瓦片是 GCJ-02，其余是 WGS84。
     // 数据（航迹/旗标/标尺/数据库/导出）永远是 WGS84，只有往球面上摆的时候才转换。
     bool sceneIsGcj() const;
-    QString coordSystemName() const { return m_sceneCrs ? QStringLiteral("GCJ-02") : QStringLiteral("WGS84"); }
+    QString coordSystemName() const { return m_camera.coordSystemName(); }
     void toScene(double lonWgs, double latWgs, double *lonScene, double *latScene) const;
     void fromScene(double lonScene, double latScene, double *lonWgs, double *latWgs) const;
 
     void resetView();
-    void zoomBy(double steps);                          // 正数拉近，负数拉远
+    void zoomBy(double steps);                            // 正数拉近，负数拉远
     void panPixels(const QPoint &from, const QPoint &to); // 把 from 处的地面拖到 to
     QString debugInfo() const;
     // 相机对准某经纬度（度），altKm 为离地高度
@@ -82,37 +77,37 @@ public:
     // ---- 绘图状态机 ----
     // 工具在工具栏切换；左键归画笔，右键拖拽旋转，滚轮始终缩放
     void setDrawTool(DrawTool t);
-    DrawTool drawTool() const { return m_tool; }
-    void setDrawColor(const QColor &c) { m_drawColor = c; }
-    QColor drawColor() const { return m_drawColor; }
+    DrawTool drawTool() const { return m_drawCtrl.tool(); }
+    void setDrawColor(const QColor &c) { m_drawCtrl.setColor(c); }
+    QColor drawColor() const { return m_drawCtrl.color(); }
     bool cancelDrawing();                    // 丢弃未完成的笔画/选框；返回是否有东西被丢弃
     // 选择工具：选中一个要素后高亮，Delete 删除、双击改属性
-    int selectedFeature() const { return m_selectedFeature; }
+    int selectedFeature() const { return m_drawCtrl.selectedFeature(); }
     void setSelectedFeature(int id);         // 0 = 取消选择
     bool deleteSelected();                   // 删除选中的要素（Delete 键 / 菜单）
-    int hoverFeature() const { return m_hoverFeature; }
-    int strokePointCount() const { return m_stroke.size(); }
-    bool boxSelecting() const { return m_bandActive; }
-    int drawPreviewSegments() const { return m_drawPreviewSegments; }
+    int hoverFeature() const { return m_drawCtrl.hoverFeature(); }
+    int strokePointCount() const { return m_drawCtrl.strokePointCount(); }
+    bool boxSelecting() const { return m_drawCtrl.boxSelecting(); }
+    int drawPreviewSegments() const;
     // 航迹标签（RadarView Ctrl+T）
     void setShowLabels(bool on);
-    bool showLabels() const { return m_showLabels; }
+    bool showLabels() const;
     // 旗标整体缩放（RadarView useFlagScale，默认 1.2，范围 0.5–3.0）
-    void setFlagScale(double s) { m_flagScale = s; m_flagIcon = QPixmap(); update(); }
-    double flagScale() const { return m_flagScale; }
+    void setFlagScale(double s);
+    double flagScale() const;
     // 空间套索顶点小圆球的半径（px @1x，默认 3；设置面板「套索顶点」可调）
-    void setLassoVertexPx(double px) { m_lassoVertexPx = qBound(1.0, px, 16.0); update(); }
-    double lassoVertexPx() const { return m_lassoVertexPx; }
+    void setLassoVertexPx(double px);
+    double lassoVertexPx() const;
 
     // 经纬度（WGS84）在当前视角下的屏幕位置；在地球背面或相机后方返回 false
     bool visiblePos(double lonDeg, double latDeg, double altM, QPointF *pos);
     QString flagAt(const QPointF &pos);          // 屏幕位置处的旗标 id
     // ---- 自检用 ----
-    int labelsDrawn() const { return m_labelsDrawn; }
-    int flagsDrawn() const { return m_flagsDrawn; }
-    int rulerMarkersDrawn() const { return m_rulerMarkersDrawn; }
-    int lassoVerticesDrawn() const { return m_lassoVerticesDrawn; }
-    int featuresDrawn() const { return m_featuresDrawn; }   // 叠加层实际画出的绘图要素数
+    int labelsDrawn() const;
+    int flagsDrawn() const;
+    int rulerMarkersDrawn() const;
+    int lassoVerticesDrawn() const;
+    int featuresDrawn() const;   // 叠加层实际画出的绘图要素数
     bool pointHover(int *track, int *point) const;
     // 航迹下标即将失效（删除 / 重新加载）时清掉悬停状态
     void resetInteraction();
@@ -128,13 +123,13 @@ public:
     // 保证「看到的边界」就是「查询用的边界」）。pts/vis 一一对应，vis=false 表示该点在地球背面。
     void sampleLonLatLine(double lat1, double lon1, double lat2, double lon2,
                           QVector<QPointF> *pts, QVector<bool> *vis);
-    bool isLoading() const { return m_pending > 0 || onlineBusy(); }
-    int drawnMaxZoom() const { return m_lastMaxZ; }
+    bool isLoading() const { return m_surface.pendingCount() > 0 || onlineBusy(); }
+    int drawnMaxZoom() const { return m_surface.lastMaxZ(); }
     int tileMaxZoom() const;
-    int drawnTileCount() const { return m_lastDrawn; }
+    int drawnTileCount() const { return m_surface.lastDrawn(); }
     int glErrorCount() const { return m_glErrors; }
     quint64 frameCount() const { return m_frame; }
-    bool isGlReady() const { return m_prog != nullptr && m_trackLayer.isReady(); }
+    bool isGlReady() const { return m_surface.isReady() && m_trackLayer.isReady(); }
     double altitudeKm() const;
     int fps() const;                  // 与 RadarView setupFpsTracking 相同的平滑帧率
 
@@ -169,117 +164,34 @@ protected:
     void leaveEvent(QEvent *e) override;
 
 private:
-    struct TileId { int z, x, y; };
-    struct CachedTexture { GLuint tex; quint64 lastUsed; };
-
     void cleanupGL();
-    void clearTextures();
-    void updateMatrices();
-    void collectTiles(int z, int x, int y, QVector<TileId> &out) const;
-    GLuint textureFor(const TileId &t, QVector4D *xform);   // 0 = 无可用纹理
-    void loadTexture(int z, int x, int y);
-    void uploadTexture(quint64 key, const QImage &img);
-    int mapMinZoom() const;
-    int mapMaxZoom() const;
-    void uploadPendingTiles();
-    void evictTextures();
-    void updateCapColors();
-    bool pick(const QPointF &pos, double *lon, double *lat);   // 场景坐标（弧度）
-    // 场景经纬度（度）→ 屏幕，不做任何坐标转换
-    bool sceneVisiblePos(double lonDeg, double latDeg, double altM, QPointF *pos);
-    bool sceneScreenPos(double lonDeg, double latDeg, double altM, QPointF *pos);
-    // 底图换了以后同步场景坐标系（会重建航迹几何）
     void applySceneCrs();
-    void drawPatch(const QVector4D &range);
+    void syncOverlayContext();
     void emitStatus();
     void trackFps();
     void updateHover(const QPoint &pos, const QPoint &globalPos);
     QString trackTooltip(int index) const;
-    friend class GlobeOverlay;
-    void paintOverlay(QPainter &p);
-    void drawRuler(QPainter &p);
-    void drawFlags(QPainter &p);
-    void drawLabels(QPainter &p);
-    void drawLasso(QPainter &p);
-    void drawFeatures(QPainter &p);
-    void drawInProgress(QPainter &p);
-    void drawBand(QPainter &p);
-    // 吸附：鼠标离已有图形的顶点不到 10px 就把当前点吸过去，保证图形能闭合
-    bool snapToFeature(const QPointF &pos, double *lonDeg, double *latDeg, QPointF *screen);
-    bool snappingTool() const;
-    // 绘图交互辅助
-    void finishDrawStroke(double lat, double lon);
-    void closeDrawPolygon();
-    void applyBoxSelect();
-    QPolygonF projectedRing(const DrawingFeature &f, bool *complete);
-    int featureAtScreen(const QPointF &pos, double tolPx);
-    int closedFeatureAt(const QPointF &pos);
-    bool featureHitsRect(const DrawingFeature &f, const QRectF &rect);
-    void drawPointTip(QPainter &p);
-    // 两点间沿大圆插值的屏幕折线（背面部分断开）
-    QVector<QPolygonF> geodesicLines(double lat1, double lon1, double lat2, double lon2);
-    QRectF flagIconRect(const QPointF &anchor) const;
 
-    QWidget *m_overlay = nullptr;            // 叠加层（透明子控件）
-    bool m_overlayWanted = false;
+    GlobeCamera m_camera;
+    GlobeSurface m_surface;
+    GlobeDrawController m_drawCtrl;
+    GlobeOverlay *m_overlay = nullptr;       // 叠加层（透明子控件）
+
     FlagStore *m_flags = nullptr;
     RulerState *m_ruler = nullptr;
     SpatialLasso *m_lasso = nullptr;
     DrawingManager *m_draw = nullptr;
-    bool m_showLabels = false;
-    int m_labelsDrawn = 0, m_flagsDrawn = 0, m_rulerMarkersDrawn = 0, m_lassoVerticesDrawn = 0;
-    int m_featuresDrawn = 0;
-    DrawTool m_tool = DrawTool::None;
-    QColor m_drawColor = QColor(0xf5, 0x9e, 0x0b);
-    QVector<QPointF> m_stroke;              // 正在画的顶点（WGS84 度）
-    bool m_strokeActive = false;
-    double m_pressLat = 0.0, m_pressLon = 0.0;
-    bool m_bandActive = false;
-    QRect m_bandRect;
-    int m_hoverFeature = 0;
-    int m_selectedFeature = 0;
-    int m_drawPreviewSegments = 0;
-    bool m_snapActive = false;              // 当前光标点吸附到了已有顶点
-    QPointF m_snapPos;                      // 吸附到的屏幕位置（画小方块提示）
-    QColor m_snapColor = QColor(0x10, 0xb9, 0x81);
     int m_tipTrack = -1, m_tipPoint = -1;
-    QHash<QString, QPixmap> m_labelCache;          // 标签文字 + 颜色 -> 带描边的位图
-    QPixmap m_flagIcon;
 
     std::unique_ptr<TileSource> m_tiles;
-    bool m_sceneCrs = false;        // 当前场景是否 GCJ-02（已生效的那个，不是配置值）
-    NetTileSource *m_online = nullptr;      // 在线底图（天地图），为空表示离线模式
-    QHash<quint64, QImage> m_pendingTiles;  // 网络已到、等着在 GL 线程上传
+    NetTileSource *m_online = nullptr;       // 在线底图（天地图），为空表示离线模式
     TrackLayer m_trackLayer;
     const TrackStore *m_trackStore = nullptr;
 
-    QOpenGLShaderProgram *m_prog = nullptr;
-    QOpenGLBuffer m_vbo{QOpenGLBuffer::VertexBuffer};
-    QOpenGLBuffer m_ibo{QOpenGLBuffer::IndexBuffer};
-    int m_indexCount = 0;
     bool m_glReady = false;
     QString m_glInfo;
     int m_glErrors = 0;
-    int m_uMvp = -1, m_uEye = -1, m_uRange = -1, m_uLinearLat = -1, m_uSkirt = -1;
-    int m_uTexXform = -1, m_uUseTex = -1, m_uColor = -1, m_uTex = -1;
-
-    QHash<quint64, CachedTexture> m_textures;
-    QSet<quint64> m_missing;   // mbtiles 里不存在的瓦片，不再重复查询
     quint64 m_frame = 0;
-    int m_lastDrawn = 0;
-    int m_lastMaxZ = 0;
-    int m_pending = 0;
-
-    QVector4D m_northCap, m_southCap, m_baseColor;
-    double m_flagScale = 1.2;     // 旗标整体缩放（RadarView useFlagScale）
-    double m_lassoVertexPx = 3.0; // 套索顶点小圆球半径（默认很小，不挡地图）
-
-    // 相机：星下点经纬度（弧度）+ 离地高度（单位：赤道半径），始终俯视星下点
-    double m_camLon = 0.0, m_camLat = 0.0, m_alt = 2.5;
-    QMatrix4x4 m_view, m_proj, m_mvp;
-    QVector3D m_eye;
-    QVector4D m_planes[6];
-    float m_focalPx = 1.0f;
 
     bool m_dragging = false;
     QPoint m_lastPos;
