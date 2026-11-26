@@ -11,55 +11,65 @@
 
 namespace {
 
-// RadarView src/themes/dark.ts
+// 统一深色主题：中性暗炭色系（主窗口 / 点迹窗口 / 弹窗 / 状态栏一致）
 const char *const kDark[][2] = {
-    {"titlebar-bg", "#2d2d2d"}, {"titlebar-fg", "#cccccc"}, {"titlebar-border", "#3c3c3c"},
-    {"menu-bg", "#252526"}, {"menu-fg", "#cccccc"}, {"menu-hover", "#094771"},
-    {"menu-separator", "#454545"}, {"menu-shortcut", "#888888"},
-    {"activitybar-bg", "#333333"}, {"activitybar-fg", "#858585"},
+    {"titlebar-bg", "#252526"}, {"titlebar-fg", "#d4d4d4"}, {"titlebar-border", "#383838"},
+    {"menu-bg", "#252526"}, {"menu-fg", "#d4d4d4"}, {"menu-hover", "#094771"},
+    {"menu-separator", "#3e3e42"}, {"menu-shortcut", "#888888"},
+    {"activitybar-bg", "#2c2c2d"}, {"activitybar-fg", "#858585"},
     {"activitybar-active", "#ffffff"}, {"activitybar-active-border", "#007acc"},
-    {"sidebar-bg", "#252526"}, {"sidebar-fg", "#cccccc"}, {"sidebar-border", "#3c3c3c"}, {"sidebar-header", "#cccccc"},
-    {"statusbar-bg", "#1f2330"}, {"statusbar-fg", "#e0e0e0"}, {"statusbar-border", "#2d3240"},
+    {"sidebar-bg", "#252526"}, {"sidebar-fg", "#cccccc"}, {"sidebar-border", "#383838"}, {"sidebar-header", "#d4d4d4"},
+    {"statusbar-bg", "#252526"}, {"statusbar-fg", "#d4d4d4"}, {"statusbar-border", "#383838"},
     {"editor-bg", "#1e1e1e"},
-    {"bg-primary", "#1e1e1e"}, {"bg-secondary", "#252526"}, {"bg-tertiary", "#2d2d2d"},
-    {"text-primary", "#cccccc"}, {"text-secondary", "#a0a0a0"}, {"text-tertiary", "#6a6a6a"},
-    {"border-primary", "#3e3e3e"}, {"border-secondary", "#2d2d2d"},
-    {"accent-primary", "#007acc"}, {"accent-hover", "#1a8ad4"},
-    {"button-bg", "#3c3c3c"}, {"button-hover", "#4c4c4c"}, {"button-fg", "#cccccc"},
-    {"input-bg", "#3c3c3c"}, {"input-border", "#555555"}, {"input-fg", "#cccccc"},
-    {"dropdown-bg", "#252526"}, {"dropdown-hover", "#094771"}, {"dropdown-fg", "#cccccc"},
-    {"scrollbar-bg", "#1e1e1e"}, {"scrollbar-thumb", "#424242"},
-    {"error", "#f44747"}, {"error-bg", "rgba(244,71,71,0.15)"}, {"warning", "#cca700"}, {"info", "#3794ff"},
+    {"bg-primary", "#1e1e1e"}, {"bg-secondary", "#252526"}, {"bg-tertiary", "#2d2d30"},
+    {"surface-preview", "#181a1f"},
+    {"text-primary", "#d4d4d4"}, {"text-secondary", "#a6a6a6"}, {"text-tertiary", "#787878"}, {"text-muted", "#6e6e6e"},
+    {"border-primary", "#3e3e42"}, {"border-secondary", "#323236"},
+    {"accent-primary", "#007acc"}, {"accent-hover", "#1a8ad4"}, {"accent-fg", "#ffffff"},
+    {"accent-subtle", "rgba(0,122,204,0.18)"}, {"accent-subtle-hover", "rgba(0,122,204,0.28)"},
+    {"accent-subtle-border", "rgba(0,122,204,0.55)"},
+    {"button-bg", "#333337"}, {"button-hover", "#424247"}, {"button-fg", "#d4d4d4"},
+    {"input-bg", "#1e1e1e"}, {"input-border", "#45454a"}, {"input-fg", "#e0e0e0"}, {"input-disabled-bg", "#28282b"},
+    {"dropdown-bg", "#252526"}, {"dropdown-hover", "#094771"}, {"dropdown-fg", "#d4d4d4"},
+    {"scrollbar-bg", "#1e1e1e"}, {"scrollbar-thumb", "#4a4a50"}, {"scrollbar-thumb-hover", "#606068"},
+    {"error", "#f14c4c"}, {"error-bg", "rgba(241,76,76,0.16)"}, {"danger-hover", "#d32f2f"},
+    {"warning", "#e5a50a"}, {"warning-bg", "rgba(229,165,10,0.16)"}, {"warning-border", "rgba(229,165,10,0.45)"},
+    {"info", "#3794ff"},
     {"source-adsb", "#00d4ff"}, {"source-radar", "#00ff88"}, {"source-radar_raw", "#ff8800"},
     {"source-simulation", "#aa88ff"},
     {"cesium-bg", "#1a1a2e"}, {"cesium-globe-base", "#1a1a2e"},
 };
 
-// RadarView src/themes/light.ts
+// 统一浅色主题：清爽中性灰白系（主窗口与点迹窗口状态栏/标题栏一致）
 const char *const kLight[][2] = {
-    {"titlebar-bg", "#dddddd"}, {"titlebar-fg", "#333333"}, {"titlebar-border", "#c8c8c8"},
-    {"menu-bg", "#f0f0f0"}, {"menu-fg", "#333333"}, {"menu-hover", "#cce5ff"},
-    {"menu-separator", "#d4d4d4"}, {"menu-shortcut", "#888888"},
-    {"activitybar-bg", "#dddddd"}, {"activitybar-fg", "#666666"},
-    {"activitybar-active", "#333333"}, {"activitybar-active-border", "#005fb8"},
-    {"sidebar-bg", "#f3f3f3"}, {"sidebar-fg", "#333333"}, {"sidebar-border", "#e5e5e5"}, {"sidebar-header", "#333333"},
-    {"statusbar-bg", "#005fb8"}, {"statusbar-fg", "#ffffff"}, {"statusbar-border", "#004c9a"},
+    {"titlebar-bg", "#e8e8ea"}, {"titlebar-fg", "#242424"}, {"titlebar-border", "#d0d0d4"},
+    {"menu-bg", "#ffffff"}, {"menu-fg", "#242424"}, {"menu-hover", "#dbeafe"},
+    {"menu-separator", "#e2e2e6"}, {"menu-shortcut", "#767676"},
+    {"activitybar-bg", "#e8e8ea"}, {"activitybar-fg", "#616161"},
+    {"activitybar-active", "#1f1f1f"}, {"activitybar-active-border", "#005fb8"},
+    {"sidebar-bg", "#f3f3f5"}, {"sidebar-fg", "#242424"}, {"sidebar-border", "#dadade"}, {"sidebar-header", "#242424"},
+    {"statusbar-bg", "#e8e8ea"}, {"statusbar-fg", "#242424"}, {"statusbar-border", "#d0d0d4"},
     {"editor-bg", "#ffffff"},
-    {"bg-primary", "#ffffff"}, {"bg-secondary", "#f3f3f3"}, {"bg-tertiary", "#ececec"},
-    {"text-primary", "#333333"}, {"text-secondary", "#555555"}, {"text-tertiary", "#888888"},
-    {"border-primary", "#e5e5e5"}, {"border-secondary", "#d4d4d4"},
-    {"accent-primary", "#005fb8"}, {"accent-hover", "#0068cd"},
-    {"button-bg", "#e0e0e0"}, {"button-hover", "#d0d0d0"}, {"button-fg", "#333333"},
-    {"input-bg", "#ffffff"}, {"input-border", "#c8c8c8"}, {"input-fg", "#333333"},
-    {"dropdown-bg", "#f0f0f0"}, {"dropdown-hover", "#cce5ff"}, {"dropdown-fg", "#333333"},
-    {"scrollbar-bg", "#f3f3f3"}, {"scrollbar-thumb", "#c1c1c1"},
-    {"error", "#e51400"}, {"error-bg", "rgba(229,20,0,0.1)"}, {"warning", "#bf8803"}, {"info", "#0066cc"},
+    {"bg-primary", "#ffffff"}, {"bg-secondary", "#f3f3f5"}, {"bg-tertiary", "#e8e8ec"},
+    {"surface-preview", "#23272e"},
+    {"text-primary", "#242424"}, {"text-secondary", "#525258"}, {"text-tertiary", "#76767e"}, {"text-muted", "#909098"},
+    {"border-primary", "#d0d0d6"}, {"border-secondary", "#e2e2e6"},
+    {"accent-primary", "#005fb8"}, {"accent-hover", "#0068cd"}, {"accent-fg", "#ffffff"},
+    {"accent-subtle", "rgba(0,95,184,0.12)"}, {"accent-subtle-hover", "rgba(0,95,184,0.20)"},
+    {"accent-subtle-border", "rgba(0,95,184,0.45)"},
+    {"button-bg", "#e6e6ea"}, {"button-hover", "#d8d8de"}, {"button-fg", "#242424"},
+    {"input-bg", "#ffffff"}, {"input-border", "#c4c4cc"}, {"input-fg", "#242424"}, {"input-disabled-bg", "#ededf0"},
+    {"dropdown-bg", "#ffffff"}, {"dropdown-hover", "#dbeafe"}, {"dropdown-fg", "#242424"},
+    {"scrollbar-bg", "#f3f3f5"}, {"scrollbar-thumb", "#c0c0c8"}, {"scrollbar-thumb-hover", "#a0a0aa"},
+    {"error", "#d1242f"}, {"error-bg", "rgba(209,36,47,0.10)"}, {"danger-hover", "#b41d26"},
+    {"warning", "#b4690e"}, {"warning-bg", "rgba(180,105,14,0.12)"}, {"warning-border", "rgba(180,105,14,0.45)"},
+    {"info", "#005fb8"},
     {"source-adsb", "#0078d4"}, {"source-radar", "#00885a"}, {"source-radar_raw", "#d47300"},
     {"source-simulation", "#7744aa"},
     {"cesium-bg", "#d6e0ea"}, {"cesium-globe-base", "#d6e0ea"},
 };
 
-// RadarView src/themes/highContrast.ts
+// 统一高对比度主题
 const char *const kHc[][2] = {
     {"titlebar-bg", "#000000"}, {"titlebar-fg", "#ffffff"}, {"titlebar-border", "#6fc3df"},
     {"menu-bg", "#0a0a0a"}, {"menu-fg", "#ffffff"}, {"menu-hover", "#1aebff"},
@@ -69,15 +79,20 @@ const char *const kHc[][2] = {
     {"sidebar-bg", "#0a0a0a"}, {"sidebar-fg", "#ffffff"}, {"sidebar-border", "#6fc3df"}, {"sidebar-header", "#ffffff"},
     {"statusbar-bg", "#000000"}, {"statusbar-fg", "#ffffff"}, {"statusbar-border", "#6fc3df"},
     {"editor-bg", "#000000"},
-    {"bg-primary", "#000000"}, {"bg-secondary", "#0a0a0a"}, {"bg-tertiary", "#111111"},
-    {"text-primary", "#ffffff"}, {"text-secondary", "#e0e0e0"}, {"text-tertiary", "#a0a0a0"},
+    {"bg-primary", "#000000"}, {"bg-secondary", "#0a0a0a"}, {"bg-tertiary", "#141414"},
+    {"surface-preview", "#000000"},
+    {"text-primary", "#ffffff"}, {"text-secondary", "#e0e0e0"}, {"text-tertiary", "#b0b0b0"}, {"text-muted", "#999999"},
     {"border-primary", "#6fc3df"}, {"border-secondary", "#444444"},
-    {"accent-primary", "#1aebff"}, {"accent-hover", "#6fc3df"},
-    {"button-bg", "#111111"}, {"button-hover", "#1aebff"}, {"button-fg", "#ffffff"},
-    {"input-bg", "#0a0a0a"}, {"input-border", "#6fc3df"}, {"input-fg", "#ffffff"},
-    {"dropdown-bg", "#0a0a0a"}, {"dropdown-hover", "#1aebff"}, {"dropdown-fg", "#ffffff"},
-    {"scrollbar-bg", "#000000"}, {"scrollbar-thumb", "#6fc3df"},
-    {"error", "#f44747"}, {"error-bg", "rgba(244,71,71,0.2)"}, {"warning", "#ffcc00"}, {"info", "#1aebff"},
+    {"accent-primary", "#1aebff"}, {"accent-hover", "#6fc3df"}, {"accent-fg", "#000000"},
+    {"accent-subtle", "rgba(26,235,255,0.18)"}, {"accent-subtle-hover", "rgba(26,235,255,0.32)"},
+    {"accent-subtle-border", "#1aebff"},
+    {"button-bg", "#141414"}, {"button-hover", "#263840"}, {"button-fg", "#ffffff"},
+    {"input-bg", "#0a0a0a"}, {"input-border", "#6fc3df"}, {"input-fg", "#ffffff"}, {"input-disabled-bg", "#141414"},
+    {"dropdown-bg", "#0a0a0a"}, {"dropdown-hover", "#263840"}, {"dropdown-fg", "#ffffff"},
+    {"scrollbar-bg", "#000000"}, {"scrollbar-thumb", "#6fc3df"}, {"scrollbar-thumb-hover", "#1aebff"},
+    {"error", "#f44747"}, {"error-bg", "rgba(244,71,71,0.22)"}, {"danger-hover", "#ff6666"},
+    {"warning", "#ffcc00"}, {"warning-bg", "rgba(255,204,0,0.20)"}, {"warning-border", "#ffcc00"},
+    {"info", "#1aebff"},
     {"source-adsb", "#1aebff"}, {"source-radar", "#00ff88"}, {"source-radar_raw", "#ffaa00"},
     {"source-simulation", "#cc88ff"},
     {"cesium-bg", "#000000"}, {"cesium-globe-base", "#000000"},
@@ -218,6 +233,40 @@ QString Theme::scalePx(const QString &css)
     return out;
 }
 
+void Theme::installGlobalStyle()
+{
+    if (!m_globalInstalled) {
+        m_globalInstalled = true;
+        connect(this, &Theme::changed, this, &Theme::applyGlobalStyle);
+        connect(UiScale::instance(), &UiScale::changed, this, &Theme::applyGlobalStyle);
+    }
+    applyGlobalStyle();
+}
+
+void Theme::applyGlobalStyle()
+{
+    if (!qApp)
+        return;
+    const QString tmpl = QStringLiteral(
+        "QToolTip { background: var(--menu-bg); color: var(--text-primary);"
+        " border: 1px solid var(--border-primary); border-radius: 4px; padding: 4px 8px;"
+        " font-family: %1; font-size: 11px; }"
+        "QMessageBox { background: var(--bg-primary); color: var(--text-primary); font-family: %1; }"
+        "QMessageBox QLabel { color: var(--text-primary); background: transparent; font-family: %1; font-size: 12px; }"
+        "QMessageBox QPushButton { padding: 5px 16px; min-width: 64px; background: var(--button-bg);"
+        " color: var(--button-fg); border: 1px solid var(--border-primary); border-radius: 4px;"
+        " font-family: %1; font-size: 12px; }"
+        "QMessageBox QPushButton:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "QMessageBox QPushButton:default { background: var(--accent-primary); color: var(--accent-fg);"
+        " border-color: var(--accent-primary); }"
+        "QMessageBox QPushButton:default:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
+        "QProgressBar { background: var(--bg-tertiary); border: 1px solid var(--border-primary);"
+        " border-radius: 3px; height: 8px; text-align: center; }"
+        "QProgressBar::chunk { background: var(--accent-primary); border-radius: 2px; }")
+        .arg(ui::uiFamilies()) + ui::scrollbarQss();
+    qApp->setStyleSheet(qss(tmpl));
+}
+
 void setThemedStyle(QWidget *w, const QString &tmpl)
 {
     const bool first = !w->property("_themeQss").isValid();
@@ -261,6 +310,81 @@ QString monoFamilies()
 {
     return QStringLiteral("\"Cascadia Code\", \"JetBrains Mono\", Consolas, \"DejaVu Sans Mono\", "
                           "\"Liberation Mono\", \"Courier New\", monospace");
+}
+
+QString menuBarQss()
+{
+    return QStringLiteral(
+        "QMenuBar { background: var(--titlebar-bg); color: var(--titlebar-fg); font-family: %1; font-size: 12px;"
+        " border-bottom: 1px solid var(--titlebar-border); spacing: 2px; }"
+        "QMenuBar::item { padding: 5px 10px; background: transparent; border-radius: 3px; }"
+        "QMenuBar::item:selected, QMenuBar::item:pressed { background: var(--menu-hover); color: var(--text-primary); }"
+        "QMenu { min-width: 200px; background: var(--menu-bg); color: var(--menu-fg);"
+        " border: 1px solid var(--border-primary); border-radius: 4px; padding: 4px 0px;"
+        " font-family: %1; font-size: 12px; }"
+        "QMenu::item { padding: 5px 20px; min-height: 18px; }"
+        "QMenu::item:selected { background: var(--menu-hover); color: var(--text-primary); }"
+        "QMenu::item:disabled { color: var(--menu-shortcut); }"
+        "QMenu::separator { height: 1px; margin: 4px 10px; background: var(--menu-separator); }")
+        .arg(uiFamilies());
+}
+
+QString scrollbarQss()
+{
+    return QStringLiteral(
+        "QScrollBar:vertical { background: var(--scrollbar-bg); width: 8px; margin: 0px; border: none; }"
+        "QScrollBar::handle:vertical { background: var(--scrollbar-thumb); min-height: 24px; border-radius: 4px; }"
+        "QScrollBar::handle:vertical:hover { background: var(--scrollbar-thumb-hover); }"
+        "QScrollBar:horizontal { background: var(--scrollbar-bg); height: 8px; margin: 0px; border: none; }"
+        "QScrollBar::handle:horizontal { background: var(--scrollbar-thumb); min-width: 24px; border-radius: 4px; }"
+        "QScrollBar::handle:horizontal:hover { background: var(--scrollbar-thumb-hover); }"
+        "QScrollBar::add-line, QScrollBar::sub-line { width: 0px; height: 0px; border: none; background: none; }"
+        "QScrollBar::add-page, QScrollBar::sub-page { background: none; }");
+}
+
+QString dialogQss()
+{
+    return QStringLiteral(
+        "QDialog { background: var(--bg-primary); color: var(--text-primary); font-family: %1; }"
+        "QLabel { color: var(--text-primary); background: transparent; font-family: %1; font-size: 12px; }"
+        "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: var(--input-bg); color: var(--input-fg);"
+        " padding: 6px 8px; border: 1px solid var(--input-border); border-radius: 4px;"
+        " font-family: %1; font-size: 12px; }"
+        "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: var(--accent-primary); }"
+        "QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {"
+        " background: var(--input-disabled-bg); color: var(--text-muted); border-color: var(--border-secondary); }"
+        "QComboBox QAbstractItemView { background: var(--dropdown-bg); color: var(--dropdown-fg);"
+        " border: 1px solid var(--border-primary); selection-background-color: var(--dropdown-hover);"
+        " selection-color: var(--text-primary); }"
+        "QSlider::groove:horizontal { height: 4px; background: var(--bg-tertiary); border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: var(--accent-primary); border-radius: 2px; }"
+        "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0px; border-radius: 6px;"
+        " background: var(--accent-primary); }"
+        "QPushButton { padding: 6px 14px; background: var(--button-bg); color: var(--button-fg);"
+        " border: 1px solid var(--border-primary); border-radius: 4px; font-family: %1; font-size: 12px; }"
+        "QPushButton:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "QPushButton:disabled { color: var(--text-muted); border-color: var(--border-secondary); }"
+        "QDialogButtonBox QPushButton { padding: 6px 18px; min-height: 24px; min-width: 72px; }"
+        "QDialogButtonBox QPushButton:default { background: var(--accent-primary); color: var(--accent-fg);"
+        " border-color: var(--accent-primary); font-weight: 600; }"
+        "QDialogButtonBox QPushButton:default:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
+        "QDialogButtonBox QPushButton:default:disabled { background: var(--button-bg); color: var(--text-muted);"
+        " border-color: var(--border-secondary); }")
+        .arg(uiFamilies()) + scrollbarQss();
+}
+
+QString segmentedQss()
+{
+    return QStringLiteral(
+        "QWidget[segmented=\"true\"] { background: var(--bg-tertiary); border: 1px solid var(--border-primary);"
+        " border-radius: 4px; }"
+        "QWidget[segmented=\"true\"] QPushButton { background: transparent; color: var(--text-secondary);"
+        " border: none; border-radius: 3px; padding: 3px 10px; font-family: %1; font-size: 11px; }"
+        "QWidget[segmented=\"true\"] QPushButton:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "QWidget[segmented=\"true\"] QPushButton:checked { background: var(--accent-primary); color: var(--accent-fg);"
+        " font-weight: 600; }"
+        "QWidget[segmented=\"true\"] QPushButton:disabled { color: var(--text-muted); background: transparent; }")
+        .arg(uiFamilies());
 }
 
 } // namespace ui

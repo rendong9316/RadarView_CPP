@@ -440,18 +440,27 @@ void ManageDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const Q
     const bool hl = m_state->highlighted().contains(r.icao);
     const QRect rc = opt.rect;
 
-    // 行底色，层叠顺序同 ManageDataTable.vue 的 CSS
+    // 行底色（跟随当前主题色，避免深浅主题割裂）
     QColor bg(Qt::transparent);
     if (even) bg = themeColor("bg-tertiary");
     if (hover) bg = themeColor("button-hover");
-    if (visible) bg = QColor(0, 122, 204, 31);
-    if (hl) bg = QColor(255, 200, 0, 38);
-    if (visible && even) bg = QColor(0, 122, 204, 41);
+    const QColor accent = themeColor("accent-primary");
+    const QColor warn = themeColor("warning");
+    if (visible) {
+        bg = accent;
+        bg.setAlpha(even ? 44 : 32);
+    }
+    if (hl) {
+        bg = warn;
+        bg.setAlpha(42);
+    }
     p->save();
     if (bg.alpha() > 0)
         p->fillRect(rc, bg);
     if (hl) {
-        p->setPen(QColor(255, 200, 0, 102));
+        QColor border = warn;
+        border.setAlpha(120);
+        p->setPen(border);
         p->drawLine(rc.topLeft(), rc.topRight());
         p->drawLine(rc.bottomLeft(), rc.bottomRight());
     }
@@ -752,10 +761,10 @@ void ManagePanel::buildUi()
             const char *var = b->objectName() == QLatin1String("tbDanger") ? "error"
                             : b->objectName() == QLatin1String("tbHighlight") ? nullptr
                             : b->objectName() == QLatin1String("pbtnReset") ? nullptr : "text-secondary";
-            const QColor c = entry ? QColor(Qt::white)
-                           : b == m_spatialChip ? QColor(0x4f, 0xa8, 0xff)
+            const QColor c = entry ? themeColor("accent-fg")
+                           : b == m_spatialChip ? themeColor("accent-primary")
                            : var ? themeColor(var)
-                           : b->objectName() == QLatin1String("tbHighlight") ? QColor(0xe8, 0xa0, 0x20) : QColor(0xe8, 0xa0, 0x40);
+                           : themeColor("warning");
             const int px = ui::sz(entry ? 15 : 11);
             b->setIcon(lucideQIcon(LucideIcon(ic.toInt()), px, c));
             b->setIconSize(QSize(px, px));
@@ -765,66 +774,65 @@ void ManagePanel::buildUi()
     connect(Theme::instance(), &Theme::changed, this, applyIcons);
     connect(UiScale::instance(), &UiScale::changed, this, applyIcons);
 
-    // ---- 样式（逐项取自 ManagePanel.vue / ManageFilterBar.vue / ManageDataTable.vue / ManagePagination.vue）----
+    // ---- 样式（与其它侧栏面板统一：4px 圆角、input-bg/input-border、全量主题变量）----
     setThemedStyle(this, QStringLiteral(
         "#managePanel { background: transparent; }"
         "QLabel { background: transparent; }"
-        "#batchEntry { font-size: 12px; font-weight: 600; padding: 6px 10px; text-align: left; color: #ffffff;"
+        "#batchEntry { font-size: 12px; font-weight: 600; padding: 6px 10px; text-align: left; color: var(--accent-fg);"
         " background: var(--accent-primary); border: 1px solid var(--accent-primary); border-radius: 4px; }"
         "#batchEntry:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
         "#statsBar, #filterBar, #toolbar { border-bottom: 1px solid var(--border-secondary); }"
-        "#statsBar QLabel { color: var(--text-secondary); font-size: 9px; }"
+        "#statsBar QLabel { color: var(--text-secondary); font-size: 10px; }"
         "#statsBar QLabel[strong=\"true\"] { color: var(--text-primary); font-weight: bold; }"
         "#statsBar QLabel[sep=\"true\"] { color: var(--text-tertiary); }"
-        "#btnMini { font-size: 8px; padding: 0px 4px; border: 1px solid var(--border-secondary); border-radius: 2px;"
-        " background: var(--button-bg); color: var(--text-secondary); }"
+        "#btnMini { font-size: 10px; padding: 1px 6px; border: 1px solid var(--border-primary); border-radius: 3px;"
+        " background: var(--button-bg); color: var(--button-fg); }"
         "#btnMini:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "#search { padding: 3px 6px; font-size: 10px; background: var(--bg-secondary); border: 1px solid var(--border-secondary);"
-        " border-radius: 3px; color: var(--text-primary); }"
+        "#search { padding: 4px 6px; font-size: 11px; background: var(--input-bg); border: 1px solid var(--input-border);"
+        " border-radius: 4px; color: var(--input-fg); }"
         "#search:focus { border-color: var(--accent-primary); }"
-        "QComboBox { padding: 2px 3px; font-size: 9px; background: var(--bg-secondary); border: 1px solid var(--border-secondary);"
-        " border-radius: 3px; color: var(--text-primary); }"
-        "QComboBox::drop-down { border: none; width: 12px; }"
-        "QComboBox QAbstractItemView { background: var(--bg-secondary); color: var(--text-primary);"
-        " selection-background-color: var(--dropdown-hover); font-size: 11px; }"
-        "#flabel { font-size: 9px; color: var(--text-tertiary); }"
-        "#fnum { padding: 2px 3px; font-size: 9px; background: var(--bg-secondary); border: 1px solid var(--border-secondary);"
-        " border-radius: 3px; color: var(--text-primary); }"
-        "#pbtn, #pbtnReset { font-size: 8px; padding: 1px 5px; border: 1px solid var(--border-secondary); border-radius: 3px;"
-        " background: var(--button-bg); color: var(--text-secondary); }"
+        "QComboBox { padding: 3px 5px; font-size: 10px; background: var(--input-bg); border: 1px solid var(--input-border);"
+        " border-radius: 4px; color: var(--input-fg); }"
+        "QComboBox:focus { border-color: var(--accent-primary); }"
+        "QComboBox::drop-down { border: none; width: 14px; }"
+        "QComboBox QAbstractItemView { background: var(--dropdown-bg); color: var(--dropdown-fg);"
+        " border: 1px solid var(--border-primary); selection-background-color: var(--dropdown-hover);"
+        " selection-color: var(--text-primary); font-size: 11px; }"
+        "#flabel { font-size: 10px; color: var(--text-secondary); }"
+        "#fnum { padding: 3px 4px; font-size: 10px; background: var(--input-bg); border: 1px solid var(--input-border);"
+        " border-radius: 4px; color: var(--input-fg); }"
+        "#fnum:focus { border-color: var(--accent-primary); }"
+        "#pbtn, #pbtnReset { font-size: 10px; padding: 2px 6px; border: 1px solid var(--border-primary); border-radius: 4px;"
+        " background: var(--button-bg); color: var(--button-fg); }"
         "#pbtn:hover, #pbtnReset:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "#pbtnReset { color: #e8a040; }"
-        "#tbInfo { font-size: 9px; color: var(--text-secondary); }"
-        "#spatialChip { font-size: 9px; padding: 1px 6px; border-radius: 8px; border: 1px solid #6600a0ff;"
-        " background: #1a00a0ff; color: #4fa8ff; }"
-        "#spatialChip:hover { background: #3300a0ff; color: #7cc0ff; }"
-        "#tbBtn, #tbDanger, #tbHighlight { font-size: 9px; padding: 1px 5px; border: 1px solid var(--border-secondary);"
-        " border-radius: 3px; background: var(--button-bg); color: var(--text-secondary); }"
+        "#pbtnReset { color: var(--warning); border-color: var(--warning-border); }"
+        "#pbtnReset:hover { background: var(--warning-bg); color: var(--warning); }"
+        "#tbInfo { font-size: 10px; color: var(--text-secondary); }"
+        "#spatialChip { font-size: 10px; padding: 2px 8px; border-radius: 9px; border: 1px solid var(--accent-subtle-border);"
+        " background: var(--accent-subtle); color: var(--accent-primary); }"
+        "#spatialChip:hover { background: var(--accent-subtle-hover); }"
+        "#tbBtn, #tbDanger, #tbHighlight { font-size: 10px; padding: 2px 7px; border: 1px solid var(--border-primary);"
+        " border-radius: 4px; background: var(--button-bg); color: var(--button-fg); }"
         "#tbBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "#tbDanger { color: var(--error); }"
-        "#tbDanger:hover { background: #26dc3232; }"
-        "#tbHighlight { color: #e8a020; border-color: #66e8a020; }"
-        "#tbHighlight:hover { background: #1ae8a020; color: #f0c040; }"
+        "#tbDanger { color: var(--error); border-color: var(--error); background: transparent; }"
+        "#tbDanger:hover { background: var(--error-bg); }"
+        "#tbHighlight { color: var(--warning); border-color: var(--warning-border); background: var(--warning-bg); }"
+        "#tbHighlight:hover { background: var(--warning); color: #000000; }"
         "#dataTable { background: transparent; border: none; color: var(--text-primary); }"
         "#dataTable QHeaderView { background: var(--bg-secondary); }"
-        "#dataTable QHeaderView::section { background: var(--bg-secondary); color: var(--text-tertiary); padding: 3px 4px;"
-        " border: none; border-bottom: 1px solid var(--border-secondary); font-size: 9px; font-weight: 600; }"
+        "#dataTable QHeaderView::section { background: var(--bg-secondary); color: var(--text-secondary); padding: 4px 5px;"
+        " border: none; border-bottom: 1px solid var(--border-primary); font-size: 10px; font-weight: 600; }"
         "#dataTable QHeaderView::section:hover { color: var(--text-primary); }"
         "#empty { color: var(--text-tertiary); font-size: 11px; }"
         "#pagination { border-top: 1px solid var(--border-secondary); }"
-        "#pageInfo { font-size: 9px; color: var(--text-secondary); }"
-        "#pageBtn { padding: 2px 6px; font-size: 9px; border: 1px solid var(--border-secondary); border-radius: 3px;"
-        " background: var(--button-bg); color: var(--text-secondary); }"
+        "#pageInfo { font-size: 10px; color: var(--text-secondary); }"
+        "#pageBtn { padding: 3px 8px; font-size: 10px; border: 1px solid var(--border-primary); border-radius: 4px;"
+        " background: var(--button-bg); color: var(--button-fg); }"
         "#pageBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "#pageBtn:disabled { color: #66808080; }"
-        "#psSelect { padding: 1px 3px; }"
-        "QScrollBar:vertical { background: var(--scrollbar-bg); width: 10px; margin: 0; }"
-        "QScrollBar::handle:vertical { background: var(--scrollbar-thumb); min-height: 20px; border-radius: 3px; }"
-        "QScrollBar:horizontal { background: var(--scrollbar-bg); height: 10px; margin: 0; }"
-        "QScrollBar::handle:horizontal { background: var(--scrollbar-thumb); min-width: 20px; border-radius: 3px; }"
-        "QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }"
-        "QScrollBar::add-page, QScrollBar::sub-page { background: none; }")
-        .replace(QStringLiteral("font-size"), QStringLiteral("font-family: ") + ui::uiFamilies() + QStringLiteral("; font-size")));
+        "#pageBtn:disabled { color: var(--text-muted); border-color: var(--border-secondary); }"
+        "#psSelect { padding: 2px 4px; }")
+        .replace(QStringLiteral("font-size"), QStringLiteral("font-family: ") + ui::uiFamilies() + QStringLiteral("; font-size"))
+        + ui::scrollbarQss());
 
     // ---- 交互 ----
     connect(m_search, &QLineEdit::textEdited, this, [this](const QString &t) {
@@ -1382,11 +1390,14 @@ void ManagePanel::clickBatchManage(){
             pick->setChecked(selected.contains(b.id));
             pick->setToolTip(QStringLiteral("勾选后可批量删除"));
             pick->setFixedWidth(ui::sz(18));
-            connect(pick, &QCheckBox::toggled, &dlg, [&selected, delSel, id = b.id](bool on) {
+            const qint64 bid = b.id;
+            const QString bLabel = b.label();
+            const int bCount = b.trackCount;
+            connect(pick, &QCheckBox::toggled, &dlg, [&selected, delSel, bid](bool on) {
                 if (on)
-                    selected.insert(id);
+                    selected.insert(bid);
                 else
-                    selected.remove(id);
+                    selected.remove(bid);
                 delSel->setText(selected.isEmpty() ? QStringLiteral("删除选中")
                                                    : QStringLiteral("删除选中（%1）").arg(selected.size()));
                 delSel->setEnabled(!selected.isEmpty());
@@ -1427,27 +1438,27 @@ void ManagePanel::clickBatchManage(){
             rl->addWidget(ren, 0, Qt::AlignVCenter);
             rl->addWidget(del, 0, Qt::AlignVCenter);
             ll->addWidget(row);
-            connect(ren, &QPushButton::clicked, &dlg, [&, id = b.id, cur = b.label()]() {
+            connect(ren, &QPushButton::clicked, &dlg, [&, bid, bLabel]() {
                 QString name;
-                if (!ui::prompt(&dlg, QStringLiteral("数据源显示名（留空恢复为文件名）："), cur, &name))
+                if (!ui::prompt(&dlg, QStringLiteral("数据源显示名（留空恢复为文件名）："), bLabel, &name))
                     return;
                 QString err;
-                if (!trackdb::setBatchDisplayName(id, name, &err)) {
+                if (!trackdb::setBatchDisplayName(bid, name, &err)) {
                     ui::confirm(&dlg, QStringLiteral("重命名失败：%1").arg(err), QStringLiteral("重命名数据源"));
                     return;
                 }
                 emit batchLabelsChanged();
                 rebuild();
             });
-            connect(del, &QPushButton::clicked, &dlg, [&, id = b.id, name = b.label(), n = b.trackCount]() {
+            connect(del, &QPushButton::clicked, &dlg, [&, bid, bLabel, bCount]() {
                 if (!ui::confirm(&dlg,
-                                 QStringLiteral("确定从数据库中删除 \"%1\"（%2 条航迹）？\n\n该操作不可撤销。").arg(name).arg(n),
+                                 QStringLiteral("确定从数据库中删除 \"%1\"（%2 条航迹）？\n\n该操作不可撤销。").arg(bLabel).arg(bCount),
                                  QStringLiteral("删除文件数据"), true))
                     return;
                 QString err;
-                if (!m_state->hardDeleteBatch(id, &err))   // 成功时发 dataChanged，管理面板随之刷新
+                if (!m_state->hardDeleteBatch(bid, &err))   // 成功时发 dataChanged，管理面板随之刷新
                     ui::confirm(&dlg, QStringLiteral("删除失败：%1").arg(err), QStringLiteral("删除文件数据"));
-                selected.remove(id);
+                selected.remove(bid);
                 rebuild();
             });
         }
@@ -1500,41 +1511,32 @@ void ManagePanel::clickBatchManage(){
         rebuild();
     });
 
-    setThemedStyle(&dlg, QStringLiteral(
-        "#batchDialog, #batchScroll, #batchList { background: var(--bg-primary); }"
-        "QLabel { background: transparent; font-family: %1; }"
+    setThemedStyle(&dlg, ui::dialogQss() + QStringLiteral(
+        "#batchScroll, #batchList { background: var(--bg-primary); }"
         "#batchTitle { color: var(--text-primary); font-size: 13px; font-weight: 600; }"
         "#batchHint { color: var(--text-secondary); font-size: 11px; }"
         "#batchEmpty { color: var(--text-tertiary); font-size: 12px; padding: 24px; }"
         "#batchRow { background: var(--bg-secondary); border: 1px solid var(--border-secondary); border-radius: 4px; }"
         "#batchRow:hover { border-color: var(--accent-primary); }"
         "#batchSel { background: transparent; }"
-        "#batchSel::indicator { width: 13px; height: 13px; border-radius: 7px;"
-        " border: 1px solid var(--border-primary); background: transparent; }"
+        "#batchSel::indicator { width: 14px; height: 14px; border-radius: 7px;"
+        " border: 1px solid var(--border-primary); background: var(--input-bg); }"
         "#batchSel::indicator:hover { border-color: var(--accent-primary); }"
         "#batchSel::indicator:checked { background: var(--accent-primary); border-color: var(--accent-primary); }"
         "#batchSrc { font-size: 11px; }"
         "#batchFile { color: var(--text-primary); font-size: 12px; font-weight: 600; }"
         "#batchMeta { color: var(--text-tertiary); font-size: 10px; }"
-        "#batchRename { font-family: %1; font-size: 11px; padding: 4px 10px; color: var(--text-secondary);"
-        " background: transparent; border: 1px solid var(--border-primary); border-radius: 3px; }"
-        "#batchRename:hover { color: var(--accent-primary); border-color: var(--accent-primary); }"
-        "#batchDel { font-family: %1; font-size: 11px; padding: 4px 12px; color: var(--error); background: transparent;"
-        " border: 1px solid var(--error); border-radius: 3px; }"
-        "#batchDel:hover { background: #d32f2f; color: #ffffff; border-color: #d32f2f; }"
-        "#batchDelSelected { font-family: %1; font-size: 11px; padding: 4px 12px; color: var(--error);"
-        " background: transparent; border: 1px solid var(--error); border-radius: 3px; }"
-        "#batchDelSelected:hover { background: #d32f2f; color: #ffffff; border-color: #d32f2f; }"
-        "#batchDelSelected:disabled { color: var(--text-tertiary); border-color: var(--border-secondary); }"
-        "#batchDelAll { font-family: %1; font-size: 11px; padding: 4px 12px; color: #ffffff;"
-        " background: var(--error); border: 1px solid var(--error); border-radius: 3px; }"
-        "#batchDelAll:hover { background: #d32f2f; border-color: #d32f2f; }"
-        "#batchClose { font-family: %1; font-size: 11px; padding: 4px 16px; background: var(--button-bg); color: var(--button-fg);"
-        " border: 1px solid var(--border-primary); border-radius: 3px; }"
-        "#batchClose:hover { background: var(--button-hover); }"
-        "QScrollBar:vertical { background: var(--scrollbar-bg); width: 10px; margin: 0px; }"
-        "QScrollBar::handle:vertical { background: var(--scrollbar-thumb); min-height: 20px; border-radius: 3px; }")
-        .arg(ui::uiFamilies()));
+        "#batchRename { padding: 4px 10px; font-size: 11px; color: var(--text-secondary);"
+        " background: transparent; border: 1px solid var(--border-primary); border-radius: 4px; }"
+        "#batchRename:hover { color: var(--accent-primary); border-color: var(--accent-primary); background: var(--accent-subtle); }"
+        "#batchDel, #batchDelSelected { padding: 4px 12px; font-size: 11px; color: var(--error); background: transparent;"
+        " border: 1px solid var(--error); border-radius: 4px; }"
+        "#batchDel:hover, #batchDelSelected:hover { background: var(--danger-hover); color: #ffffff; border-color: var(--danger-hover); }"
+        "#batchDelSelected:disabled { color: var(--text-muted); border-color: var(--border-secondary); background: transparent; }"
+        "#batchDelAll { padding: 4px 12px; font-size: 11px; color: #ffffff;"
+        " background: var(--error); border: 1px solid var(--error); border-radius: 4px; }"
+        "#batchDelAll:hover { background: var(--danger-hover); border-color: var(--danger-hover); }"
+        "#batchClose { padding: 4px 16px; font-size: 11px; }"));
     dlg.exec();
 }
 

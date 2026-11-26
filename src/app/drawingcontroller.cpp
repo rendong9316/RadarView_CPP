@@ -101,13 +101,14 @@ void DrawingController::setDeleteAction(QAction *action)
 void DrawingController::buildToolBar(QMainWindow *window)
 {
     const QString barQss = QStringLiteral(
-        "QToolBar { background: var(--bg-secondary); border: none;"
-        " border-bottom: 1px solid var(--border-primary); padding: 2px 6px; spacing: 2px; }"
+        "QToolBar { background: var(--titlebar-bg); border: none;"
+        " border-bottom: 1px solid var(--titlebar-border); padding: 3px 6px; spacing: 3px; }"
         "QToolBar::separator { background: var(--border-primary); width: 1px; margin: 4px 8px; }"
-        "QToolButton { color: var(--text-secondary); padding: 4px 10px; border-radius: 3px;"
-        " font-family: %1; font-size: 12px; }"
+        "QToolButton { color: var(--text-secondary); background: transparent; border: 1px solid transparent;"
+        " padding: 4px 10px; border-radius: 4px; font-family: %1; font-size: 12px; }"
         "QToolButton:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "QToolButton:checked { background: var(--accent-primary); color: #ffffff; }"
+        "QToolButton:checked { background: var(--accent-primary); color: var(--accent-fg);"
+        " border-color: var(--accent-primary); font-weight: 600; }"
         "QToolButton:disabled { color: var(--text-muted); }").arg(ui::uiFamilies());
 
     m_drawBar = new QToolBar(tr("绘图"), window);
@@ -116,6 +117,10 @@ void DrawingController::buildToolBar(QMainWindow *window)
     m_drawBar->setFloatable(false);
     m_drawBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_drawBar->setIconSize(QSize(ui::sz(14), ui::sz(14)));
+    connect(UiScale::instance(), &UiScale::changed, m_drawBar, [this]() {
+        m_drawBar->setIconSize(QSize(ui::sz(14), ui::sz(14)));
+        updateDrawColorIcon();
+    });
     window->addToolBar(Qt::TopToolBarArea, m_drawBar);
     setThemedStyle(m_drawBar, barQss);
 

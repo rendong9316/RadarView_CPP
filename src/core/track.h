@@ -11,8 +11,14 @@
 // 航迹数据源，对应 RadarView 的 adsb / radar / radar_raw
 enum class TrackSource { Adsb = 0, Radar = 1, RadarRaw = 2 };
 
+// 雷达航迹点列模式：一次导入后可在平滑 / 关联 / 预测三套点列间即时切换
+enum class RadarPointMode { Smooth = 0, Associated = 1, Predicted = 2 };
+
 QString trackSourceName(TrackSource s);      // "ADS-B" / "Radar" / "RadarRaw"
 QColor trackSourceColor(TrackSource s);      // 默认配色
+QString radarPointModeName(RadarPointMode m);   // "平滑" / "关联" / "预测"
+QString radarPointModeKey(RadarPointMode m);    // "smooth" / "associated" / "predicted"
+bool radarPointModeFromKey(const QString &key, RadarPointMode *out);
 
 // 单个航迹点；时间为 Unix 毫秒（数据源时间按北京时间 UTC+8 解析）
 struct TrackPoint {
@@ -37,16 +43,23 @@ struct Track {
     QString fileName;        // 导入文件名（雷达为显示名称）
     QString flightNo, icaoFlightNo, aircraftType, registration, airline, origin, destination;
     QVector<TrackPoint> points;   // 主点列（雷达=平滑/输出点列，原始量测=关联点列），按时间升序
-    // 雷达航迹的关联点列（asscPointList）：点云窗口「点源=关联」用它，与平滑点列来自同一 MAT。
-    // ADS-B / 原始量测 / 老库数据为空，表示不支持关联模式。
+    // 雷达航迹的关联点列（asscPointList）：地图与点云「关联」模式共用，与平滑点列来自同一 MAT。
+    // ADS-B / 原始量测 / 老库数据为空。
     QVector<TrackPoint> rawPoints;
+    // 雷达航迹的预测点列（predictRes）：地图与点云「预测」模式共用。
+    QVector<TrackPoint> predPoints;
 
     QString key() const;     // id::source::fileName，合并去重用
     bool hasRawPoints() const { return !rawPoints.isEmpty(); }
+    bool hasPredPoints() const { return !predPoints.isEmpty(); }
+    // 按雷达点列模式取对应点列（ADS-B 始终返回 points；老 RadarRaw 批次在平滑/关联下均返回 points）
+    const QVector<TrackPoint> &pointsForMode(RadarPointMode mode) const;
     qint64 minTime() const { return points.isEmpty() ? 0 : points.first().t; }
     qint64 maxTime() const { return points.isEmpty() ? 0 : points.last().t; }
+    qint64 minTimeForMode(RadarPointMode mode) const;
+    qint64 maxTimeForMode(RadarPointMode mode) const;
 
-    // 按时间稳定排序并去掉时间戳重复的点（保留先出现的）；points 与 rawPoints 都处理
+    // 按时间稳定排序并去掉时间戳重复的点（保留先出现的）；points / rawPoints / predPoints 均处理
     void normalize();
 };
 

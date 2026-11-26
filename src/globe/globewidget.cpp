@@ -820,8 +820,18 @@ QString GlobeWidget::trackTooltip(int index) const
         lines << tr("机型：%1").arg(t.aircraftType.toHtmlEscaped());
     if (!t.origin.isEmpty() || !t.destination.isEmpty())
         lines << tr("航线：%1 → %2").arg(t.origin.toHtmlEscaped(), t.destination.toHtmlEscaped());
-    lines << tr("点数：%1").arg(t.points.size());
-    lines << tr("时间：%1 ~ %2").arg(formatBeijingTime(t.minTime()), formatBeijingTime(t.maxTime()));
+    const RadarPointMode mode = m_trackLayer.radarPointMode();
+    const QVector<TrackPoint> &pts = t.pointsForMode(mode);
+    if (t.source == TrackSource::Radar && (t.hasRawPoints() || t.hasPredPoints())) {
+        lines << tr("点数：%1（当前：%2 | 平滑 %3 / 关联 %4 / 预测 %5）")
+                     .arg(pts.size()).arg(radarPointModeName(mode))
+                     .arg(t.points.size()).arg(t.rawPoints.size()).arg(t.predPoints.size());
+    } else {
+        lines << tr("点数：%1").arg(pts.size());
+    }
+    const qint64 tMin = pts.isEmpty() ? t.minTime() : pts.first().t;
+    const qint64 tMax = pts.isEmpty() ? t.maxTime() : pts.last().t;
+    lines << tr("时间：%1 ~ %2").arg(formatBeijingTime(tMin), formatBeijingTime(tMax));
     return QStringLiteral("<qt><div style='font-size:14px'>") + lines.join(QStringLiteral("<br>"))
          + QStringLiteral("</div></qt>");
 }

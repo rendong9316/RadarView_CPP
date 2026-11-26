@@ -102,6 +102,8 @@ public:
     void setTrackColor(int index);       // 右键「设置颜色」：改该航迹所属数据源（文件）的全部航迹颜色
     void applyTrackColor(int index, const QColor &color);   // 非交互版（自检 / setTrackColor 共用）
     void clearAllPointDots();            // 「清空所有点迹显示」：所有航迹都不再画点迹
+    void setRadarPointMode(RadarPointMode mode);   // 切换雷达航迹点列：平滑 / 关联 / 预测
+    RadarPointMode radarPointMode() const { return m_radarMode; }
     void setAllSourcesVisible(bool visible);   // 隐藏 / 显示所有数据源
     bool allSourcesHidden() const;             // 当前是否所有数据源都是隐藏态
     void resetAllFilters();              // 「重置所有筛选」：回到全部数据原样显示
@@ -185,6 +187,9 @@ private:
     QAction *m_hideAllSourcesAction = nullptr;   // 视图 → 隐藏所有数据源 / 显示所有数据源（文字随状态变）
     QAction *m_resetFiltersAction = nullptr;     // 视图 → 重置所有筛选
     QAction *m_clearDotsAction = nullptr;        // 视图 → 清空所有点迹显示
+    RadarPointMode m_radarMode = RadarPointMode::Smooth;
+    QPushButton *m_pointModeBtns[3] = { nullptr, nullptr, nullptr };
+    QAction *m_pointModeActions[3] = { nullptr, nullptr, nullptr };
     QHash<QString, QString> m_batchLabels;       // 来源::文件名 → 数据源显示名（批量数据管理里重命名）
 
     QTimer *m_uiSaveTimer = nullptr;     // UI 状态合并保存

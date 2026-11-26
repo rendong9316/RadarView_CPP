@@ -2,6 +2,7 @@
 #include "theme.h"
 
 #include <QApplication>
+#include <QButtonGroup>
 #include <QDialog>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -68,39 +69,25 @@ QString fontCss(int px)
 {
     return QStringLiteral("font-family: %1; font-size: %2px;").arg(uiFamilies()).arg(px);
 }
-
-// 三个绘图弹窗（距离圆 / 填充 / 文本）共用的外观：输入框、滑杆、按钮
-QString dialogQss()
-{
-    return QStringLiteral("QDialog { background: var(--bg-primary); }"
-                          "QLabel { color: var(--text-primary); }"
-                          "QLineEdit, QSpinBox, QDoubleSpinBox { background: var(--bg-secondary); color: var(--text-primary);"
-                          " padding: 8px; border: 1px solid var(--border-primary); border-radius: 4px; }"
-                          "QSlider::groove:horizontal { height: 4px; background: var(--bg-tertiary); border-radius: 2px; }"
-                          "QSlider::handle:horizontal { width: 12px; margin: -5px 0; border-radius: 6px;"
-                          " background: var(--accent-primary); }"
-                          "QDialogButtonBox QPushButton { padding: 8px 18px; min-height: 24px; background: var(--bg-tertiary);"
-                          " color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 4px; }"
-                          "QDialogButtonBox QPushButton:default { background: var(--accent-primary); color: white; }"
-                          "QDialogButtonBox QPushButton:disabled { color: var(--text-muted); }");
-}
 } // namespace
 
 void setAutoConfirm(bool on) { g_autoConfirm = on; }
 bool autoConfirm() { return g_autoConfirm; }
 
 RadarImportDialog::RadarImportDialog(const QString &filePath, const QString &defaultName,
-                                     const QColor &defaultColor, const QStringList &usedNames, QWidget *parent, bool nameOnly)
-    : QDialog(parent), m_color(defaultColor)
+                                     const QColor &defaultColor, const QStringList &usedNames,
+                                     QWidget *parent, bool nameOnly, RadarPointMode defaultMode)
+    : QDialog(parent), m_color(defaultColor), m_pointMode(defaultMode)
 {
     setObjectName(QStringLiteral("radarImportDialog"));
     setWindowTitle(nameOnly ? QStringLiteral("导入 ADS-B 数据") : QStringLiteral("导入雷达数据"));
     setModal(true);
-    setMinimumWidth(sz(420));
+    setMinimumWidth(sz(440));
     QVBoxLayout *body = new QVBoxLayout(this);
     bindMargins(body, 20, 18, 20, 18);
-    bindSpacing(body, 12);
+    bindSpacing(body, 10);
     QLabel *file = new QLabel(QStringLiteral("数据文件：%1").arg(QFileInfo(filePath).fileName()), this);
+    file->setObjectName(QStringLiteral("dialogSubtitle"));
     file->setWordWrap(true);
     body->addWidget(file);
     body->addWidget(new QLabel(nameOnly ? QStringLiteral("批次名称") : QStringLiteral("航迹名称"), this));
@@ -111,9 +98,35 @@ RadarImportDialog::RadarImportDialog(const QString &filePath, const QString &def
                                       : QStringLiteral("请输入名称，例如：东部雷达 10月27日"));
     body->addWidget(m_name);
     QLabel *hint = new QLabel(QStringLiteral("名称用于标识本次导入的整组航迹，各条航迹保留原始编号。"), this);
+    hint->setObjectName(QStringLiteral("dialogHint"));
     hint->setWordWrap(true);
     body->addWidget(hint);
     if (!nameOnly) {
+        body->addWidget(new QLabel(QStringLiteral("默认显示点列（一次导入同时读取三套点列，导入后可随时切换）"), this));
+        QWidget *seg = new QWidget(this);
+        seg->setObjectName(QStringLiteral("radarPointModeSeg"));
+        seg->setProperty("segmented", true);
+        seg->setAttribute(Qt::WA_StyledBackground);
+        QHBoxLayout *sl = new QHBoxLayout(seg);
+        bindMargins(sl, 3, 3, 3, 3);
+        bindSpacing(sl, 3);
+        QButtonGroup *grp = new QButtonGroup(seg);
+        grp->setExclusive(true);
+        const RadarPointMode modes[3] = { RadarPointMode::Smooth, RadarPointMode::Associated, RadarPointMode::Predicted };
+        const char *const labels[3] = { "平滑点", "关联点", "预测点" };
+        for (int i = 0; i < 3; ++i) {
+            QPushButton *b = new QPushButton(QString::fromUtf8(labels[i]), seg);
+            b->setObjectName(QStringLiteral("radarPointMode_%1").arg(i));
+            b->setCheckable(true);
+            b->setCursor(Qt::PointingHandCursor);
+            b->setChecked(modes[i] == m_pointMode);
+            grp->addButton(b, i);
+            sl->addWidget(b, 1);
+            const RadarPointMode mode = modes[i];
+            connect(b, &QPushButton::clicked, this, [this, mode]() { m_pointMode = mode; });
+        }
+        body->addWidget(seg);
+
         body->addWidget(new QLabel(QStringLiteral("标准颜色（点击色块选择）"), this));
         QLabel *preview = new QLabel(this);
         preview->setObjectName(QStringLiteral("radarColorPreview"));
@@ -121,7 +134,10 @@ RadarImportDialog::RadarImportDialog(const QString &filePath, const QString &def
         bindSize(preview, SizeKind::MinHeight, 38);
         auto updatePreview = [this, preview]() {
             preview->setText(QStringLiteral("━━  航迹颜色预览  %1").arg(m_color.name().toUpper()));
-            preview->setStyleSheet(QStringLiteral("QLabel { background: #202020; color: %1; padding: 8px; border-radius: 4px; }").arg(m_color.name()));
+            setThemedStyle(preview, QStringLiteral(
+                "QLabel { background: var(--surface-preview); color: %1; padding: 8px;"
+                " border: 1px solid var(--border-primary); border-radius: 4px; font-weight: 600; }")
+                .arg(m_color.name()));
         };
         ColorSwatchGrid *palette = new ColorSwatchGrid(m_color, this);
         connect(palette, &ColorSwatchGrid::colorChanged, this, [this, updatePreview](const QColor &c) {
@@ -151,13 +167,10 @@ RadarImportDialog::RadarImportDialog(const QString &filePath, const QString &def
     connect(m_name, &QLineEdit::textChanged, this, validate);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    setThemedStyle(this, QStringLiteral("QDialog { background: var(--bg-primary); }"
-                                       "QLabel { color: var(--text-primary); }"
-                                       "#radarImportError { color: var(--error); }"
-                                       "QLineEdit { background: var(--bg-secondary); color: var(--text-primary); padding: 8px; border: 1px solid var(--border-primary); }"
-                                       "QDialogButtonBox QPushButton { padding: 8px 18px; min-height: 24px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 4px; }"
-                                       "QDialogButtonBox QPushButton:default { background: var(--accent-primary); color: white; }"
-                                       "QDialogButtonBox QPushButton:disabled { color: var(--text-muted); }"));
+    setThemedStyle(this, dialogQss() + segmentedQss() + QStringLiteral(
+        "#dialogSubtitle { color: var(--text-secondary); }"
+        "#dialogHint { color: var(--text-tertiary); font-size: 11px; }"
+        "#radarImportError { color: var(--error); }"));
     validate();
     m_name->selectAll();
     m_name->setFocus();
@@ -273,8 +286,10 @@ DistanceCircleDialog::DistanceCircleDialog(const QString &flagLabel, double lat,
         preview->setText(QStringLiteral("○  距离圆 %1 km  %2")
                              .arg(m_radius->value(), 0, 'f', 1)
                              .arg(m_color.name().toUpper()));
-        preview->setStyleSheet(QStringLiteral("QLabel { background: #202020; color: %1; padding: 8px; border-radius: 4px; }")
-                                   .arg(m_color.name()));
+        setThemedStyle(preview, QStringLiteral(
+            "QLabel { background: var(--surface-preview); color: %1; padding: 8px;"
+            " border: 1px solid var(--border-primary); border-radius: 4px; font-weight: 600; }")
+            .arg(m_color.name()));
     };
     connect(m_radius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [updatePreview](double) { updatePreview(); });
@@ -361,10 +376,14 @@ FillDialog::FillDialog(const QColor &initial, QWidget *parent) : QDialog(parent)
     auto updatePreview = [this, percent, preview]() {
         percent->setText(QStringLiteral("%1%").arg(m_opacity));
         preview->setText(QStringLiteral("▩  填充预览  %1  %2%").arg(m_color.name().toUpper()).arg(m_opacity));
-        preview->setStyleSheet(QStringLiteral("QLabel { background: rgba(%1,%2,%3,%4); color: #ffffff;"
-                                              " padding: 8px; border-radius: 4px; border: 1px solid var(--border-primary); }")
-                                   .arg(m_color.red()).arg(m_color.green()).arg(m_color.blue())
-                                   .arg(m_opacity / 100.0, 0, 'f', 2));
+        QColor fill = m_color;
+        fill.setAlpha(qRound(m_opacity * 2.55));
+        const QString fg = (m_color.lightnessF() > 0.58 && m_opacity >= 45)
+            ? QStringLiteral("#111111") : QStringLiteral("var(--text-primary)");
+        setThemedStyle(preview, QStringLiteral(
+            "QLabel { background: %1; color: %2; padding: 8px; border-radius: 4px;"
+            " border: 1px solid var(--border-primary); font-weight: 600; }")
+            .arg(fill.name(QColor::HexArgb), fg));
     };
     connect(slider, &QSlider::valueChanged, this, [this, updatePreview](int v) {
         m_opacity = v;
@@ -441,8 +460,10 @@ TextDialog::TextDialog(const QColor &initial, QWidget *parent) : QDialog(parent)
         f.setPixelSize(sz(m_size->value()));
         f.setBold(true);
         preview->setFont(f);
-        preview->setStyleSheet(QStringLiteral("QLabel { background: #202020; color: %1; padding: 8px; border-radius: 4px; }")
-                                   .arg(m_color.name()));
+        setThemedStyle(preview, QStringLiteral(
+            "QLabel { background: var(--surface-preview); color: %1; padding: 8px;"
+            " border: 1px solid var(--border-primary); border-radius: 4px; }")
+            .arg(m_color.name()));
     };
     connect(m_text, &QLineEdit::textChanged, this, [updatePreview](const QString &) { updatePreview(); });
     connect(m_size, QOverload<int>::of(&QSpinBox::valueChanged), this, [updatePreview](int) { updatePreview(); });
@@ -635,17 +656,18 @@ bool confirm(QWidget *parent, const QString &message, const QString &title, bool
     btns->addStretch(1);
     v->addLayout(btns);
     setThemedStyle(card, QStringLiteral(
-        "#card { background: var(--bg-secondary); border: 1px solid %1; border-radius: 4px; }"
+        "#card { background: var(--bg-secondary); border: 1px solid %1; border-radius: 6px; }"
         "QLabel { background: transparent; %2 }"
         "#title { color: var(--text-primary); font-size: 14px; font-weight: 600; }"
         "#msg { color: var(--text-secondary); font-size: 12px; }"
-        "QPushButton { padding: 6px 20px; border-radius: 3px; %3 border: 1px solid var(--border-primary); }"
-        "#cancel { background: var(--button-bg); color: var(--text-secondary); }"
+        "QPushButton { padding: 6px 20px; border-radius: 4px; %3 border: 1px solid var(--border-primary); }"
+        "#cancel { background: var(--button-bg); color: var(--button-fg); }"
         "#cancel:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "#ok { background: var(--accent-primary); color: #ffffff; border-color: var(--accent-primary); }"
-        "#danger { background: #d32f2f; border-color: #d32f2f; color: #ffffff; }"
-        "#danger:hover { background: #b71c1c; border-color: #b71c1c; }")
-        .arg(danger ? QStringLiteral("#4ddc3232") : QStringLiteral("var(--border-primary)"), fontCss(12), fontCss(12)));
+        "#ok { background: var(--accent-primary); color: var(--accent-fg); border-color: var(--accent-primary); font-weight: 600; }"
+        "#ok:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
+        "#danger { background: var(--error); border-color: var(--error); color: #ffffff; font-weight: 600; }"
+        "#danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); }")
+        .arg(danger ? QStringLiteral("var(--error)") : QStringLiteral("var(--border-primary)"), fontCss(12), fontCss(12)));
     QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
     QObject::connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
     ok->setDefault(true);
@@ -684,15 +706,16 @@ bool prompt(QWidget *parent, const QString &message, const QString &defaultValue
     btns->addWidget(ok);
     v->addLayout(btns);
     setThemedStyle(card, QStringLiteral(
-        "#card { background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 6px; }"
+        "#card { background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px; }"
         "QLabel { background: transparent; color: var(--text-primary); %1 }"
-        "QLineEdit { padding: 6px 10px; %1 color: var(--text-primary); background: var(--input-bg);"
+        "QLineEdit { padding: 6px 10px; %1 color: var(--input-fg); background: var(--input-bg);"
         " border: 1px solid var(--input-border); border-radius: 4px; }"
         "QLineEdit:focus { border-color: var(--accent-primary); }"
-        "QPushButton { padding: 5px 16px; border-radius: 4px; %2 border: 1px solid transparent; }"
-        "#cancel { background: transparent; color: var(--text-secondary); border-color: var(--border-secondary); }"
-        "#cancel:hover { background: var(--bg-tertiary); }"
-        "#ok { background: var(--accent-primary); color: #ffffff; }").arg(fontCss(12), fontCss(11)));
+        "QPushButton { padding: 6px 18px; border-radius: 4px; %2 border: 1px solid var(--border-primary); }"
+        "#cancel { background: var(--button-bg); color: var(--button-fg); }"
+        "#cancel:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "#ok { background: var(--accent-primary); color: var(--accent-fg); border-color: var(--accent-primary); font-weight: 600; }"
+        "#ok:hover { background: var(--accent-hover); border-color: var(--accent-hover); }").arg(fontCss(12), fontCss(12)));
     QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
     QObject::connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
     QObject::connect(edit, &QLineEdit::returnPressed, &dlg, &QDialog::accept);
@@ -763,17 +786,19 @@ protected:
     {
         QPainter p(this);
         const bool hov = underMouse();
-        QColor fg = themeColor("text-primary");
+        QColor fg = m_danger ? themeColor("error") : themeColor("menu-fg");
         if (!small) {
-            if (hov)
-                p.fillRect(rect(), m_danger ? QColor(0xef, 0x44, 0x44) : themeColor(m_hoverBg));
-            if (hov)
-                fg = Qt::white;
+            if (hov) {
+                p.fillRect(rect(), m_danger ? themeColor("error") : themeColor(m_hoverBg));
+                fg = m_danger ? QColor(Qt::white) : themeColor("accent-fg");
+            }
         } else {
             if (hov)
-                p.fillRect(rect(), themeColor(m_hoverBg));
+                p.fillRect(rect(), m_danger ? themeColor("error-bg") : themeColor(m_hoverBg));
             if (m_danger)
                 fg = themeColor("error");
+            else if (hov)
+                fg = themeColor("text-primary");
         }
         const QRect inner = rect().marginsRemoved(m_pad);
         drawLucide(p, m_icon, QRectF(inner.left(), inner.center().y() - m_iconPx / 2.0 + 0.5, m_iconPx, m_iconPx), fg);
@@ -828,18 +853,16 @@ ContextMenu::ContextMenu(QWidget *parent) : QMenu(parent)
 {
     setAttribute(Qt::WA_TranslucentBackground);
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
-    setStyleSheet(Theme::scalePx(QStringLiteral("QMenu { background: #1e1e2e; border: 1px solid #3a3a5c; border-radius: 6px;"
-                                 " padding: 4px 0px; min-width: 120px; font-family: %1; font-size: 13px; color: #cdd6f4; }")
-                      .arg(uiFamilies())));
+    setThemedStyle(this, QStringLiteral(
+        "QMenu { background: var(--menu-bg); border: 1px solid var(--border-primary); border-radius: 4px;"
+        " padding: 4px 0px; min-width: 140px; font-family: %1; font-size: 12px; color: var(--menu-fg); }")
+        .arg(uiFamilies()));
 }
 
 QAction *ContextMenu::addItem(LucideIcon icon, const QString &text, std::function<void()> fn, bool danger)
 {
-    MenuItem *w = new MenuItem(icon, text, danger, sz(13), QMargins(sz(16), sz(8), sz(16), sz(8)), sz(13), "accent-primary", this);
+    MenuItem *w = new MenuItem(icon, text, danger, sz(12), QMargins(sz(14), sz(7), sz(14), sz(7)), sz(13), "accent-primary", this);
     w->setStyleSheet(QStringLiteral("background: transparent;"));
-    QPalette pal = w->palette();
-    pal.setColor(QPalette::WindowText, themeColor("text-primary"));
-    w->setPalette(pal);
     QAction *a = addMenuItem(this, w, fn);
     w->removeEventFilter(this);
     w->installEventFilter(new ClickForwarder(this));
@@ -850,14 +873,15 @@ SmallMenu::SmallMenu(QWidget *parent) : QMenu(parent)
 {
     setAttribute(Qt::WA_TranslucentBackground);
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
-    setStyleSheet(Theme::instance()->qss(QStringLiteral(
-        "QMenu { background: var(--bg-primary); border: 1px solid var(--border-secondary); border-radius: 4px;"
-        " padding: 2px 0px; min-width: 130px; font-family: %1; font-size: 10px; }")).arg(uiFamilies()));
+    setThemedStyle(this, QStringLiteral(
+        "QMenu { background: var(--menu-bg); border: 1px solid var(--border-primary); border-radius: 4px;"
+        " padding: 4px 0px; min-width: 136px; font-family: %1; font-size: 11px; color: var(--menu-fg); }")
+        .arg(uiFamilies()));
 }
 
 QAction *SmallMenu::addItem(LucideIcon icon, const QString &text, std::function<void()> fn, bool danger)
 {
-    MenuItem *w = new MenuItem(icon, text, danger, px(0.714), QMargins(sz(10), sz(4), sz(10), sz(4)), sz(13), "button-hover", this);
+    MenuItem *w = new MenuItem(icon, text, danger, sz(11), QMargins(sz(12), sz(6), sz(12), sz(6)), sz(13), "menu-hover", this);
     w->small = true;
     QAction *a = addMenuItem(this, w, fn);
     w->removeEventFilter(this);
@@ -882,10 +906,11 @@ UndoToast::UndoToast(QWidget *parent) : QWidget(parent)
     h->addWidget(m_text);
     h->addWidget(m_btn);
     setThemedStyle(this, QStringLiteral(
-        "#undoToast { background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 4px; }"
+        "#undoToast { background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px; }"
         "QLabel { background: transparent; color: var(--text-primary); font-family: %1; font-size: 12px; }"
-        "QPushButton { padding: 4px 12px; font-family: %1; font-size: 11px; font-weight: 600; color: #ffffff;"
-        " background: var(--accent-primary); border: none; border-radius: 3px; }").arg(uiFamilies()));
+        "QPushButton { padding: 4px 12px; font-family: %1; font-size: 11px; font-weight: 600; color: var(--accent-fg);"
+        " background: var(--accent-primary); border: none; border-radius: 4px; }"
+        "QPushButton:hover { background: var(--accent-hover); }").arg(uiFamilies()));
     connect(m_btn, &QPushButton::clicked, this, &UndoToast::undoClicked);
     auto setIc = [this]() {
         m_icon->setPixmap(lucidePixmap(LucideIcon::Trash2, sz(14), themeColor("text-primary"), devicePixelRatioF()));

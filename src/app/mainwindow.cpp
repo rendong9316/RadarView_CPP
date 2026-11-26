@@ -1,7 +1,9 @@
 #include "mainwindow.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QCloseEvent>
 #include <QColorDialog>
 #include <QDoubleSpinBox>
@@ -18,6 +20,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -48,22 +51,6 @@
 #include "uiwidgets.h"
 
 namespace {
-
-QString menuQss()
-{
-    return QStringLiteral(
-        "QMenuBar { background: var(--titlebar-bg); color: var(--titlebar-fg); font-family: %1; font-size: 13px;"
-        " border-bottom: 1px solid var(--titlebar-border); }"
-        "QMenuBar::item { padding: 5px 8px; background: transparent; }"
-        "QMenuBar::item:selected, QMenuBar::item:pressed { background: var(--menu-hover); }"
-        "QMenu { min-width: 220px; background: var(--menu-bg); color: var(--menu-fg); border: 1px solid var(--border-primary);"
-        " border-radius: 3px; padding: 4px 0px; font-family: %1; font-size: 13px; }"
-        "QMenu::item { padding: 4px 20px; min-height: 16px; }"
-        "QMenu::item:selected { background: var(--menu-hover); }"
-        "QMenu::item:disabled { color: var(--menu-shortcut); }"
-        "QMenu::separator { height: 1px; margin: 4px 12px; background: var(--menu-separator); }")
-        .arg(ui::uiFamilies());
-}
 
 void centerGlobeOnTracks(GlobeWidget *globe, const TrackStore &store)
 {
@@ -211,10 +198,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_importCtrl, &TrackImportCoordinator::importFinished, this, &MainWindow::importFinished);
     connect(m_importCtrl, &TrackImportCoordinator::persistFinished, this, &MainWindow::persistFinished);
     connect(m_importCtrl, &TrackImportCoordinator::dbStale, m_manage, &ManageState::markStale);
+    connect(m_importCtrl, &TrackImportCoordinator::radarPointModeSelected, this, &MainWindow::setRadarPointMode);
 
     buildMenuBar();
     m_drawCtrl->buildToolBar(this);
-    setThemedStyle(menuBar(), menuQss());
+    setThemedStyle(menuBar(), ui::menuBarQss());
 
     // 地图交互：单击航迹单独显示，单击空白处返回全部；右键菜单；双击放旗标（GlobeWidget 内处理）
     connect(m_globe, &GlobeWidget::trackClicked, this, [this](int index) {
@@ -231,9 +219,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_backAllBtn->setToolTip(tr("返回查看全部航迹（Esc）"));
     m_backAllBtn->setCursor(Qt::PointingHandCursor);
     setThemedStyle(m_backAllBtn, QStringLiteral(
-        "QPushButton { background-color: #0078d4; color: #ffffff; border: none; border-radius: 2px;"
-        " padding: 4px 12px; font-size: 12px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #1a8ae0; }"));
+        "QPushButton { background: var(--accent-primary); color: var(--accent-fg); border: 1px solid var(--accent-primary);"
+        " border-radius: 4px; padding: 5px 14px; font-family: %1; font-size: 12px; font-weight: 600; }"
+        "QPushButton:hover { background: var(--accent-hover); border-color: var(--accent-hover); }")
+        .arg(ui::uiFamilies()));
     m_backAllBtn->hide();
     connect(m_backAllBtn, &QPushButton::clicked, this, [this]() { isolateTrack(-1); });
     m_globe->installEventFilter(this);
@@ -363,7 +352,13 @@ void MainWindow::loadPersisted()
     m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
     m_managePanel->refresh();
 
-    // ---- 显示/隐藏状态：数据源整体显隐、状态栏里点掉的雷达文件、点迹、单独显示 ----
+    // ---- 显示/隐藏状态：雷达点列模式、数据源整体显隐、状态栏里点掉的雷达文件、点迹、单独显示 ----
+    {
+        RadarPointMode savedMode = RadarPointMode::Smooth;
+        radarPointModeFromKey(s.value(QStringLiteral("display.radar_point_mode"),
+                                      QStringLiteral("smooth")).toString(), &savedMode);
+        setRadarPointMode(savedMode);
+    }
     m_adsbVisible = s.value(QStringLiteral("display.adsb_visible"), true).toBool();
     {
         TrackLayer *layer = m_globe->trackLayer();
@@ -415,6 +410,7 @@ void MainWindow::saveUiState()
         return;
     app::setValue(QStringLiteral("display.adsb_visible"), m_adsbVisible);
     app::setValue(QStringLiteral("display.show_labels"), m_globe->showLabels());
+    app::setValue(QStringLiteral("display.radar_point_mode"), radarPointModeKey(m_radarMode));
 
     // 状态栏里被点掉的雷达文件（ADS-B 是整体开关，单独存在上面的键里）
     TrackLayer *layer = m_globe->trackLayer();
@@ -573,7 +569,11 @@ void MainWindow::resetReplayRange()
     for (int i = 0; i < m_store.size(); ++i) {
         if (!layer->isTrackShownIgnoringGroups(i))
             continue;
-        qint64 a = m_store.tracks()[i].minTime(), b = m_store.tracks()[i].maxTime();
+        const Track &tr = m_store.tracks()[i];
+        const QVector<TrackPoint> &pts = tr.pointsForMode(m_radarMode);
+        if (pts.isEmpty())
+            continue;
+        qint64 a = pts.first().t, b = pts.last().t;
         if (timeClip) {
             a = qMax(a, m_filter.timeMin);
             b = qMin(b, m_filter.timeMax);
@@ -730,6 +730,10 @@ void MainWindow::refreshSources()
     m_sourceStrip->setItems(items);
     m_statusBar->setTrackCount(m_store.size());
     updateHideAllSourcesAction();
+    if (m_filterPanel)
+        m_filterPanel->setShowRawSource(!raw.isEmpty());
+    if (m_settingsPanel)
+        m_settingsPanel->refresh();
 }
 
 // 数据源显示名：批量数据管理里可以重命名；file_name 仍是唯一标识
@@ -793,6 +797,32 @@ void MainWindow::clearAllPointDots()
     m_overviewDotKeys.clear();
     m_haveOverviewDots = false;
     applyDisplay();
+    scheduleSaveUiState();
+}
+
+// 切换雷达航迹显示点列（平滑 / 关联 / 预测）：同一份导入数据无需重复导入
+void MainWindow::setRadarPointMode(RadarPointMode mode)
+{
+    const int idx = int(mode);
+    for (int i = 0; i < 3; ++i) {
+        if (m_pointModeBtns[i]) {
+            QSignalBlocker blk(m_pointModeBtns[i]);
+            m_pointModeBtns[i]->setChecked(i == idx);
+        }
+        if (m_pointModeActions[i]) {
+            QSignalBlocker blk(m_pointModeActions[i]);
+            m_pointModeActions[i]->setChecked(i == idx);
+        }
+    }
+    if (m_importCtrl)
+        m_importCtrl->setDefaultPointMode(mode);
+    if (m_radarMode == mode && m_globe->trackLayer()->radarPointMode() == mode)
+        return;
+    m_radarMode = mode;
+    m_globe->resetInteraction();
+    m_globe->trackLayer()->setRadarPointMode(mode);
+    resetReplayRange();
+    m_globe->update();
     scheduleSaveUiState();
 }
 
@@ -868,7 +898,7 @@ QDialog *MainWindow::showTrackPoints(int index)
 {
     if (index < 0 || index >= m_store.size())
         return nullptr;
-    TrackPointDialog *dlg = new TrackPointDialog(m_store.tracks()[index], this);
+    TrackPointDialog *dlg = new TrackPointDialog(m_store.tracks()[index], this, m_radarMode);
     dlg->show();
     return dlg;
 }
@@ -1069,8 +1099,7 @@ void MainWindow::buildMenuBar()
                                 [pick]() { pick(TrackSource::Adsb); });
     QAction *aImportRadar = item(mFile, tr("导入雷达数据..."), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_O),
                                  [pick]() { pick(TrackSource::Radar); });
-    QAction *aImportRaw = item(mFile, tr("导入雷达原始测量数据..."), QKeySequence(), [pick]() { pick(TrackSource::RadarRaw); });
-    m_importCtrl->setImportActions({ aImportAdsb, aImportRadar, aImportRaw });
+    m_importCtrl->setImportActions({ aImportAdsb, aImportRadar });
     mFile->addSeparator();
     item(mFile, tr("打开瓦片 (.mbtiles)..."), QKeySequence(), [this]() { m_mapSources->openTileFile(); });
     QMenu *mSource = mFile->addMenu(tr("底图源"));
@@ -1093,11 +1122,12 @@ void MainWindow::buildMenuBar()
 
     QMenu *mSettings = mb->addMenu(tr("设置"));
     mSettings->setObjectName(QStringLiteral("displaySettingsMenu"));
-    setThemedStyle(mSettings, menuQss() + QStringLiteral(
-        "QLabel, QSpinBox, QDoubleSpinBox { font-family: %1; font-size: 13px; }"
+    setThemedStyle(mSettings, ui::menuBarQss() + QStringLiteral(
+        "QLabel, QSpinBox, QDoubleSpinBox { font-family: %1; font-size: 12px; }"
         "QLabel { color: var(--menu-fg); background: transparent; }"
         "QSpinBox, QDoubleSpinBox { color: var(--input-fg); background: var(--input-bg);"
-        " border: 1px solid var(--border-primary); border-radius: 3px; padding: 4px 6px; min-width: 80px; }").arg(ui::uiFamilies()));
+        " border: 1px solid var(--input-border); border-radius: 4px; padding: 3px 6px; min-width: 80px; }"
+        "QSpinBox:focus, QDoubleSpinBox:focus { border-color: var(--accent-primary); }").arg(ui::uiFamilies()));
     auto settingRow = [mSettings](const QString &label, QWidget *control) {
         QWidget *row = new QWidget(mSettings);
         QHBoxLayout *layout = new QHBoxLayout(row);
@@ -1168,6 +1198,22 @@ void MainWindow::buildMenuBar()
                                         "并恢复显示被隐藏的数据源，让画面回到全部数据原样显示"));
     m_clearDotsAction = item(mView, tr("清空所有点迹显示"), QKeySequence(), [this]() { clearAllPointDots(); });
     m_clearDotsAction->setToolTip(tr("取消所有航迹的「显示所有对应点迹」"));
+    QMenu *mPointMode = mView->addMenu(tr("雷达点源"));
+    {
+        QActionGroup *grp = new QActionGroup(this);
+        grp->setExclusive(true);
+        const RadarPointMode modes[3] = { RadarPointMode::Smooth, RadarPointMode::Associated, RadarPointMode::Predicted };
+        const char *const labels[3] = { "平滑点（smoothPointList）", "关联点（asscPointList）", "预测点（predictRes）" };
+        for (int i = 0; i < 3; ++i) {
+            QAction *a = mPointMode->addAction(QString::fromUtf8(labels[i]));
+            a->setCheckable(true);
+            a->setChecked(modes[i] == m_radarMode);
+            grp->addAction(a);
+            m_pointModeActions[i] = a;
+            const RadarPointMode mode = modes[i];
+            connect(a, &QAction::triggered, this, [this, mode]() { setRadarPointMode(mode); });
+        }
+    }
     mView->addSeparator();
     item(mView, tr("新建点迹三维窗口"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_P),
          [this]() { showPoint3dWindow(); });
@@ -1199,6 +1245,53 @@ void MainWindow::buildMenuBar()
     drawToggle->setToolTip(tr("显示 / 隐藏绘图工具栏"));
     connect(drawToggle, &QAction::triggered, this, &MainWindow::setDrawingBarVisible);
     m_drawCtrl->setToggleAction(drawToggle);
+
+    // 菜单栏右上角：雷达点源分段切换（平滑 / 关联 / 预测），一次导入即可一键切换
+    QWidget *corner = new QWidget(mb);
+    corner->setObjectName(QStringLiteral("pointModeCorner"));
+    QHBoxLayout *cl = new QHBoxLayout(corner);
+    ui::bindMargins(cl, 4, 2, 8, 2);
+    ui::bindSpacing(cl, 6);
+    QLabel *lbl = new QLabel(tr("雷达点源"), corner);
+    lbl->setObjectName(QStringLiteral("pointModeLabel"));
+    cl->addWidget(lbl);
+    QWidget *seg = new QWidget(corner);
+    seg->setObjectName(QStringLiteral("mainPointModeSeg"));
+    seg->setProperty("segmented", true);
+    seg->setAttribute(Qt::WA_StyledBackground);
+    QHBoxLayout *sl = new QHBoxLayout(seg);
+    ui::bindMargins(sl, 2, 2, 2, 2);
+    ui::bindSpacing(sl, 2);
+    QButtonGroup *btnGrp = new QButtonGroup(seg);
+    btnGrp->setExclusive(true);
+    const RadarPointMode modes[3] = { RadarPointMode::Smooth, RadarPointMode::Associated, RadarPointMode::Predicted };
+    const char *const names[3] = { "平滑", "关联", "预测" };
+    const char *const tips[3] = {
+        "显示雷达平滑点列（smoothPointList / outputPointList）",
+        "显示雷达关联点列（asscPointList）",
+        "显示雷达预测点列（predictRes）"
+    };
+    for (int i = 0; i < 3; ++i) {
+        QPushButton *b = new QPushButton(QString::fromUtf8(names[i]), seg);
+        b->setObjectName(QStringLiteral("pointModeBtn_%1").arg(i));
+        b->setCheckable(true);
+        b->setChecked(modes[i] == m_radarMode);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setToolTip(QString::fromUtf8(tips[i]));
+        btnGrp->addButton(b, i);
+        sl->addWidget(b);
+        m_pointModeBtns[i] = b;
+        const RadarPointMode mode = modes[i];
+        connect(b, &QPushButton::clicked, this, [this, mode]() { setRadarPointMode(mode); });
+    }
+    cl->addWidget(seg);
+    setThemedStyle(corner, ui::segmentedQss() + QStringLiteral(
+        "#pointModeCorner { background: transparent; }"
+        "#pointModeLabel { color: var(--text-secondary); background: transparent; font-family: %1; font-size: 11px; }"
+        "QWidget[segmented=\"true\"] QPushButton { padding: 2px 8px; font-size: 11px; }")
+        .arg(ui::uiFamilies()));
+    mb->setCornerWidget(corner, Qt::TopRightCorner);
 }
 
 QStackedWidget *MainWindow::buildEditorArea()

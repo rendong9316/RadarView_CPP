@@ -46,6 +46,9 @@ Point3dWindow *Point3dCoordinator::createWindow()
     // 点云 <-> 地图全链路联动
     connect(win, &Point3dWindow::trackFocusChanged, this, &Point3dCoordinator::onPoint3dFocus);
     connect(win, &Point3dWindow::trackActivated, this, &Point3dCoordinator::onPoint3dActivate);
+    connect(win, &Point3dWindow::isolationCleared, this, [this]() {
+        emit isolateTrackRequested(-1);
+    });
     return win;
 }
 

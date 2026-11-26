@@ -41,6 +41,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
@@ -101,16 +102,21 @@ void runSelfTest(MainWindow *w)
         QLineEdit *name = dlg.findChild<QLineEdit *>(QStringLiteral("radarImportName"));
         QDialogButtonBox *buttons = dlg.findChild<QDialogButtonBox *>();
         QPushButton *blue = dlg.findChild<QPushButton *>(QStringLiteral("radarColor_7"));
-        check(name && buttons && blue, QStringLiteral("雷达导入包含名称、标准色和确认控件"));
-        if (name && buttons && blue) {
+        QPushButton *predBtn = dlg.findChild<QPushButton *>(QStringLiteral("radarPointMode_2"));
+        check(name && buttons && blue && predBtn, QStringLiteral("雷达导入包含名称、标准色、点源选择和确认控件"));
+        if (name && buttons && blue && predBtn) {
+            check(dlg.pointMode() == RadarPointMode::Smooth, QStringLiteral("雷达导入默认显示平滑点"));
             name->setText(QStringLiteral("   "));
             check(!buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("雷达名称不能为空"));
             name->setText(QStringLiteral("已有名称"));
             check(!buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("雷达批次名称不能重复"));
             name->setText(QStringLiteral("  东部雷达  "));
             blue->click();
+            predBtn->click();
             check(dlg.trackName() == QStringLiteral("东部雷达") && dlg.trackColor() == QColor("#0070C0")
-                  && buttons->button(QDialogButtonBox::Ok)->isEnabled(), QStringLiteral("雷达自定义名称与标准蓝色选择"));
+                  && dlg.pointMode() == RadarPointMode::Predicted
+                  && buttons->button(QDialogButtonBox::Ok)->isEnabled(),
+                  QStringLiteral("雷达自定义名称、标准蓝色与预测点源选择"));
             if (qEnvironmentVariableIsSet("RV_SHOT")) {
                 dlg.show();
                 QCoreApplication::processEvents();
@@ -118,6 +124,200 @@ void runSelfTest(MainWindow *w)
             }
             buttons->button(QDialogButtonBox::Cancel)->click();
             check(dlg.result() == QDialog::Rejected, QStringLiteral("取消导入对话框"));
+        }
+
+        // 平滑 / 关联 / 预测三套点列切换（Track::pointsForMode + TrackPointDialog）
+        Track multi;
+        multi.id = QStringLiteral("RADAR-0099");
+        multi.source = TrackSource::Radar;
+        multi.fileName = QStringLiteral("Radar");
+        for (int i = 0; i < 2; ++i) {
+            TrackPoint sp;
+            sp.t = 1765360182000LL + i * 1000;
+            sp.lat = 31.0 + i * 0.01;
+            sp.lon = 118.0 + i * 0.01;
+            sp.prange = 1000.0f + i * 10.0f;
+            multi.points.append(sp);
+        }
+        for (int i = 0; i < 3; ++i) {
+            TrackPoint rp;
+            rp.t = 1765360182000LL + i * 500;
+            rp.lat = 31.1 + i * 0.01;
+            rp.lon = 118.1 + i * 0.01;
+            rp.prange = 2000.0f + i * 10.0f;
+            rp.snr = 25.0f + i;
+            multi.rawPoints.append(rp);
+        }
+        {
+            TrackPoint pp;
+            pp.t = 1765360182500LL;
+            pp.lat = 31.2;
+            pp.lon = 118.2;
+            pp.prange = 3000.0f;
+            multi.predPoints.append(pp);
+        }
+        multi.normalize();
+        check(multi.pointsForMode(RadarPointMode::Smooth).size() == 2
+                  && multi.pointsForMode(RadarPointMode::Associated).size() == 3
+                  && multi.pointsForMode(RadarPointMode::Predicted).size() == 1,
+              QStringLiteral("单条雷达航迹支持平滑/关联/预测三套点列切换"));
+        TrackPointDialog ptDlg(multi, w, RadarPointMode::Smooth);
+        QPushButton *assocTab = ptDlg.findChild<QPushButton *>(QStringLiteral("trackPointMode_1"));
+        QPushButton *predTab = ptDlg.findChild<QPushButton *>(QStringLiteral("trackPointMode_2"));
+        check(ptDlg.rowCount() == 2 && assocTab && predTab,
+              QStringLiteral("点迹弹窗默认显示平滑点（%1 行）并带三态切换按钮").arg(ptDlg.rowCount()));
+        if (assocTab && predTab) {
+            assocTab->click();
+            check(ptDlg.rowCount() == 3, QStringLiteral("点迹弹窗切换到关联点（%1 行）").arg(ptDlg.rowCount()));
+            predTab->click();
+            check(ptDlg.rowCount() == 1, QStringLiteral("点迹弹窗切换到预测点（%1 行）").arg(ptDlg.rowCount()));
+        }
+
+        // 真实 MAT v5 解析：验证 trackList.predictRes 正确读入 Track::predPoints
+        {
+            auto appendTag = [](QByteArray &out, quint32 type, const QByteArray &payload) {
+                char hdr[8];
+                qToLittleEndian<quint32>(type, hdr);
+                qToLittleEndian<quint32>(quint32(payload.size()), hdr + 4);
+                out.append(hdr, 8);
+                out.append(payload);
+                const int pad = (8 - (payload.size() % 8)) % 8;
+                if (pad > 0)
+                    out.append(QByteArray(pad, '\0'));
+            };
+            auto makeDoubleScalar = [&appendTag](const QByteArray &name, double v) {
+                QByteArray body;
+                char flags[8] = { 0 };
+                qToLittleEndian<quint32>(6u, flags); // mxDOUBLE_CLASS
+                appendTag(body, 6u, QByteArray(flags, 8));
+                char dims[8];
+                qToLittleEndian<qint32>(1, dims);
+                qToLittleEndian<qint32>(1, dims + 4);
+                appendTag(body, 5u, QByteArray(dims, 8));
+                appendTag(body, 1u, name);
+                QByteArray dv(8, '\0');
+                quint64 bits = 0;
+                std::memcpy(&bits, &v, 8);
+                qToLittleEndian<quint64>(bits, dv.data());
+                appendTag(body, 9u, dv);
+                QByteArray mat;
+                appendTag(mat, 14u, body);
+                return mat;
+            };
+            auto makeStruct = [&appendTag](const QByteArray &name, int nElem,
+                                           const QList<QByteArray> &fields,
+                                           const QList<QByteArray> &values) {
+                QByteArray body;
+                char flags[8] = { 0 };
+                qToLittleEndian<quint32>(2u, flags); // mxSTRUCT_CLASS
+                appendTag(body, 6u, QByteArray(flags, 8));
+                char dims[8];
+                qToLittleEndian<qint32>(1, dims);
+                qToLittleEndian<qint32>(nElem, dims + 4);
+                appendTag(body, 5u, QByteArray(dims, 8));
+                appendTag(body, 1u, name);
+                char fnLen[4];
+                qToLittleEndian<qint32>(32, fnLen);
+                appendTag(body, 5u, QByteArray(fnLen, 4));
+                QByteArray fnames;
+                for (const QByteArray &fn : fields) {
+                    QByteArray slot(32, '\0');
+                    std::memcpy(slot.data(), fn.constData(), size_t(qMin(31, fn.size())));
+                    fnames.append(slot);
+                }
+                appendTag(body, 1u, fnames);
+                for (const QByteArray &val : values)
+                    body.append(val);
+                QByteArray mat;
+                appendTag(mat, 14u, body);
+                return mat;
+            };
+            const QList<QByteArray> ptFields = {
+                "time", "lat", "lon", "prange", "pvr", "paz", "snr"
+            };
+            auto makePt = [&](double dn, double lat, double lon, double r, double vr, double az, double snr) {
+                return QList<QByteArray>{
+                    makeDoubleScalar(QByteArray(), dn),
+                    makeDoubleScalar(QByteArray(), lat),
+                    makeDoubleScalar(QByteArray(), lon),
+                    makeDoubleScalar(QByteArray(), r),
+                    makeDoubleScalar(QByteArray(), vr),
+                    makeDoubleScalar(QByteArray(), az),
+                    makeDoubleScalar(QByteArray(), snr),
+                };
+            };
+            QList<QByteArray> smoothVals = makePt(739961.75, 31.0, 118.0, 1000.0, 10.0, 90.0, 20.0);
+            QList<QByteArray> asscVals = makePt(739961.75, 31.01, 118.01, 1010.0, 10.5, 90.5, 26.5);
+            QList<QByteArray> predVals = makePt(739961.75, 31.02, 118.02, 3100.0, 11.0, 91.0, 21.0);
+            predVals << makePt(739961.7501, 31.03, 118.03, 3150.0, 11.5, 91.5, 22.0);
+            const QByteArray smoothArr = makeStruct(QByteArray(), 1, ptFields, smoothVals);
+            const QByteArray asscArr = makeStruct(QByteArray(), 1, ptFields, asscVals);
+            const QByteArray predArr = makeStruct(QByteArray(), 2, ptFields, predVals);
+            const QList<QByteArray> trFields = {
+                "BatchNo", "Type", "smoothPointList", "asscPointList", "predictRes"
+            };
+            const QList<QByteArray> trVals = {
+                makeDoubleScalar(QByteArray(), 7.0),
+                makeDoubleScalar(QByteArray(), 1.0),
+                smoothArr,
+                asscArr,
+                predArr
+            };
+            QByteArray matFile(128, '\0');
+            std::memcpy(matFile.data(), "MATLAB 5.0 MAT-file", 19);
+            matFile[124] = 0x00;
+            matFile[125] = 0x01;
+            matFile[126] = 'I';
+            matFile[127] = 'M';
+            matFile.append(makeStruct("trackList", 1, trFields, trVals));
+
+            QTemporaryFile matTmp(QCoreApplication::applicationDirPath() + QStringLiteral("/predictres-XXXXXX.mat"));
+            check(matTmp.open(), QStringLiteral("创建含 predictRes 的 MAT 测试文件"));
+            matTmp.write(matFile);
+            matTmp.close();
+            QVector<Track> parsed;
+            QString perr;
+            const bool pok = parseRadarMat(matTmp.fileName(), false, QStringLiteral("PredMat"), &parsed, &perr);
+            check(pok && parsed.size() == 1 && parsed.first().points.size() == 1
+                      && parsed.first().rawPoints.size() == 1 && parsed.first().predPoints.size() == 2
+                      && qFuzzyCompare(parsed.first().predPoints.first().prange, 3100.0f),
+                  QStringLiteral("MAT predictRes 字段解析为预测点列（%1/%2/%3 点） %4")
+                      .arg(parsed.isEmpty() ? -1 : parsed.first().points.size())
+                      .arg(parsed.isEmpty() ? -1 : parsed.first().rawPoints.size())
+                      .arg(parsed.isEmpty() ? -1 : parsed.first().predPoints.size())
+                      .arg(perr));
+        }
+
+        // 文件菜单已移除「导入雷达原始测量数据…」；无旧数据时筛选/设置面板隐藏 Raw 行
+        {
+            bool foundRawImport = false;
+            for (QAction *a : w->menuBar()->findChildren<QAction *>())
+                if (a->text().contains(QStringLiteral("原始测量")))
+                    foundRawImport = true;
+            check(!foundRawImport, QStringLiteral("文件菜单已移除「导入雷达原始测量数据…」入口"));
+            QWidget *pfRaw = w->filterPanel()->findChild<QWidget *>(QStringLiteral("pfRow_2"));
+            QWidget *setRaw = w->settingsPanel()->findChild<QWidget *>(QStringLiteral("rawDotScaleRow"));
+            check(pfRaw && pfRaw->isHidden(), QStringLiteral("无旧数据时筛选面板隐藏 Raw 点数筛选行"));
+            check(setRaw && setRaw->isHidden(), QStringLiteral("无旧数据时设置面板隐藏 Raw 圆球直径行"));
+        }
+
+        // 点迹三维窗口：内嵌航迹勾选列表、画布隐藏集合与返回全部按钮
+        {
+            Point3dWindow *pwin = new Point3dWindow(nullptr);
+            QListWidget *tlist = pwin->findChild<QListWidget *>(QStringLiteral("point3dTrackList"));
+            QPushButton *backBtn = pwin->findChild<QPushButton *>(QStringLiteral("point3dBackAllBtn"));
+            check(tlist != nullptr && backBtn != nullptr && backBtn->isHidden(),
+                  QStringLiteral("点迹三维窗口包含侧栏航迹列表与默认隐藏的「返回全部」按钮"));
+            int cleared = 0;
+            QObject::connect(pwin, &Point3dWindow::isolationCleared, pwin, [&cleared]() { ++cleared; });
+            QSet<int> iso;
+            iso.insert(7);
+            pwin->canvas()->setIsolatedBatches(iso);
+            pwin->clearIsolation();
+            check(pwin->isolatedBatches().isEmpty() && cleared == 1 && backBtn && backBtn->isHidden(),
+                  QStringLiteral("点迹三维窗口退出单独显示并通知主窗口"));
+            pwin->close();
+            QApplication::processEvents();
         }
     }
 

@@ -54,8 +54,16 @@ struct TrackOverlay {
     QColor color;
     QVector<TrackOverlayPoint> points;      // 平滑点列（Radar 批次的主点列）
     QVector<TrackOverlayPoint> rawPoints;   // 关联点列（同一 MAT 的 asscPointList / RadarRaw 批次）
-    qint64 minTime = 0, maxTime = 0;        // 两套点列合起来的时间范围（联动匹配用）
+    QVector<TrackOverlayPoint> predPoints;  // 预测点列（同一 MAT 的 predictRes）
+    qint64 minTime = 0, maxTime = 0;        // 三套点列合起来的时间范围（联动匹配用）
 };
+
+// 叠加航迹的稳定键（与 Track::key() 口径一致）
+inline QString point3dOverlayKey(const TrackOverlay &ov)
+{
+    return ov.id + QStringLiteral("::") + trackSourceName(ov.source)
+         + QStringLiteral("::") + ov.fileName;
+}
 
 // 地图侧的一条航迹在联动里怎么指代：BatchNo（MAT 里的航迹编号）+ 时间范围。
 // 同一 MAT 分别按「雷达航迹」「雷达原始测量」导入时，id 前缀不同（RADAR-/RAW-）
@@ -159,6 +167,9 @@ inline Point3dRegion point3dRegionExtent(const Point3dDataset &data, Point3dView
     for (const TrackOverlay &t : data.tracks)
         for (const TrackOverlayPoint &op : t.rawPoints)
             add(op.prange, op.pvr, op.paz, op.zValue);
+    for (const TrackOverlay &t : data.tracks)
+        for (const TrackOverlayPoint &op : t.predPoints)
+            add(op.prange, op.pvr, op.paz, op.zValue);
     r.valid = any && r.x1 >= r.x0 && r.y1 >= r.y0 && r.z1 >= r.z0;
     return r;
 }
@@ -179,7 +190,7 @@ inline int point3dBatchNo(const Track &t)
     return point3dBatchNoFromId(t.id);
 }
 
-// 点源选择：同一条叠加航迹可能同时带平滑点列与关联点列，按当前模式取对应的一列。
+// 点源选择：同一条叠加航迹可能同时带平滑、关联、预测三套点列，按当前模式取对应的一列。
 // 返回 nullptr 表示这条航迹在当前模式下没有可画的点。
 inline const QVector<TrackOverlayPoint> *point3dOverlayPointsFor(const TrackOverlay &ov,
                                                                 Point3dTrackSource mode)
@@ -190,14 +201,16 @@ inline const QVector<TrackOverlayPoint> *point3dOverlayPointsFor(const TrackOver
     case Point3dTrackSource::Associated:
         return ov.rawPoints.isEmpty() ? nullptr : &ov.rawPoints;
     case Point3dTrackSource::Predicted:
-        return nullptr;                       // 预测点列未入库
+        return ov.predPoints.isEmpty() ? nullptr : &ov.predPoints;
     case Point3dTrackSource::Auto:
         break;
     }
-    // 自动：有平滑看平滑，只有关联点列时看关联（避免"自动"什么都不显示）
+    // 自动：优先平滑，其次关联，再次预测
     if (!ov.points.isEmpty())
         return &ov.points;
-    return ov.rawPoints.isEmpty() ? nullptr : &ov.rawPoints;
+    if (!ov.rawPoints.isEmpty())
+        return &ov.rawPoints;
+    return ov.predPoints.isEmpty() ? nullptr : &ov.predPoints;
 }
 
 // 该航迹是否带某种点列（供窗口判断当前点源过滤是否把所选航迹全藏起来）
@@ -206,10 +219,10 @@ inline bool point3dOverlayHasColumn(const TrackOverlay &ov, Point3dTrackSource m
     switch (mode) {
     case Point3dTrackSource::Smooth: return !ov.points.isEmpty();
     case Point3dTrackSource::Associated: return !ov.rawPoints.isEmpty();
-    case Point3dTrackSource::Predicted: return false;
+    case Point3dTrackSource::Predicted: return !ov.predPoints.isEmpty();
     case Point3dTrackSource::Auto: break;
     }
-    return !ov.points.isEmpty() || !ov.rawPoints.isEmpty();
+    return !ov.points.isEmpty() || !ov.rawPoints.isEmpty() || !ov.predPoints.isEmpty();
 }
 
 #endif // POINT3DTYPES_H

@@ -121,7 +121,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     // ---- 线宽调节（0.5–8，默认 3）----
     QVBoxLayout *g = addGroup(main, int(LucideIcon::GripHorizontal), QStringLiteral("线宽调节"),
                               QStringLiteral("设置航迹线的像素宽度，范围 0.5-8 px。拖动滑块即时生效。"));
-    m_lineWidth = addSlider(g, QStringLiteral("线宽"), themeColor("text-primary"), 0.5, 8.0, 0.5,
+    m_lineWidth = addSlider(g, QStringLiteral("线宽"), QColor(), 0.5, 8.0, 0.5,
               s.value(QStringLiteral("display.line_width"), 3.0).toDouble(), QStringLiteral("px"),
               [this, layer](double v) {
                   app::setValue(QStringLiteral("display.line_width"), v);
@@ -137,7 +137,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
                  QStringLiteral("设置各数据源终点圆球的缩放比例，范围 0.2-3.0 倍。"));
     for (TrackSource src : kSources) {
         const QString key = QStringLiteral("display.dot_scale.%1").arg(trackSourceKey(src));
-        addSlider(g, srcLabel(src), trackSourceColor(src), 0.2, 3.0, 0.1, s.value(key, 1.0).toDouble(), QString(),
+        QSlider *sl = addSlider(g, srcLabel(src), trackSourceColor(src), 0.2, 3.0, 0.1, s.value(key, 1.0).toDouble(), QString(),
                   [this, layer, key, src](double v) {
                       app::setValue(key, v);
                       if (layer)
@@ -145,12 +145,17 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
                       if (m_host.globe)
                           m_host.globe->update();
                   });
+        if (src == TrackSource::RadarRaw && sl) {
+            m_rawDotRow = sl->parentWidget();
+            if (m_rawDotRow)
+                m_rawDotRow->setObjectName(QStringLiteral("rawDotScaleRow"));
+        }
     }
 
     // ---- 点迹圆球大小（0.2–5.0，基准 7px）----
     g = addGroup(main, int(LucideIcon::Dot), QStringLiteral("点迹显示"),
                  QStringLiteral("右键航迹「显示所有对应点迹」时每个采样点圆球的大小，范围 0.2-5.0 倍。"));
-    m_pointScale = addSlider(g, QStringLiteral("圆球大小"), themeColor("accent-primary"), 0.2, 5.0, 0.1,
+    m_pointScale = addSlider(g, QStringLiteral("圆球大小"), QColor(), 0.2, 5.0, 0.1,
               s.value(QStringLiteral("display.track_point_dot_scale"), 1.0).toDouble(), QString(),
               [this, layer](double v) {
                   app::setValue(QStringLiteral("display.track_point_dot_scale"), v);
@@ -165,7 +170,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     g = addGroup(main, int(LucideIcon::Circle), QStringLiteral("套索顶点"),
                  QStringLiteral("空间套索边界上每个顶点小圆球的半径，范围 1-16 px。默认 3 px；"
                                 "调到 6 px 以上时圆球里会显示顶点序号。"));
-    addSlider(g, QStringLiteral("圆球半径"), themeColor("accent-primary"), 1.0, 16.0, 0.5,
+    addSlider(g, QStringLiteral("圆球半径"), QColor(), 1.0, 16.0, 0.5,
               s.value(QStringLiteral("display.lasso_vertex_px"), 3.0).toDouble(), QStringLiteral("px"),
               [this](double v) {
                   app::setValue(QStringLiteral("display.lasso_vertex_px"), v);
@@ -176,7 +181,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     // ---- 旗标大小（0.5–3.0，默认 1.2）----
     g = addGroup(main, int(LucideIcon::Flag), QStringLiteral("旗标大小"),
                  QStringLiteral("设置旗标图标和文字标签的整体缩放比例，范围 0.5-3.0 倍。"));
-    addSlider(g, QStringLiteral("图标&文字"), themeColor("accent-primary"), 0.5, 3.0, 0.1,
+    addSlider(g, QStringLiteral("图标&文字"), QColor(), 0.5, 3.0, 0.1,
               s.value(QStringLiteral("display.flag_scale"), 1.2).toDouble(), QString(),
               [this](double v) {
                   app::setValue(QStringLiteral("display.flag_scale"), v);
@@ -187,7 +192,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     // ---- 字号大小（10–20 px，全局界面缩放）----
     g = addGroup(main, int(LucideIcon::Type), QStringLiteral("字号大小"),
                  QStringLiteral("设置应用界面文字的基础字号，范围 10-50 px。侧栏、菜单栏、状态栏、地图标签等所有文本及其容器同步缩放。"));
-    m_font = addSlider(g, QStringLiteral("应用字号"), themeColor("text-primary"), ui::kFontMinPx, ui::kFontMaxPx, 1,
+    m_font = addSlider(g, QStringLiteral("应用字号"), QColor(), ui::kFontMinPx, ui::kFontMaxPx, 1,
                        UiScale::instance()->basePx(), QStringLiteral("px"),
                        [this](double v) {
                            UiScale::instance()->setBasePx(int(v));
@@ -230,21 +235,22 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     setThemedStyle(this, QStringLiteral(
         "#settingsPanel, #settingsScroll, #settingsContent { background: transparent; }"
         "QLabel { background: transparent; }"
-        "#groupHeader { color: var(--text-secondary); font-family: %1; font-size: 11px; font-weight: 600; }"
-        "#groupHeader:hover { color: var(--text-primary); }"
+        "#groupHeader { color: var(--text-primary); font-family: %1; font-size: 12px; font-weight: 600; }"
+        "#groupHeader:hover { color: var(--accent-primary); }"
         "#groupChevron, #groupIcon { color: var(--text-tertiary); font-size: 11px; }"
         "#settingsGroup { border-bottom: 1px solid var(--border-secondary); }"
-        "#rowLabel { font-family: %1; font-size: 11px; min-width: 56px; }"
-        "#rowValue { color: var(--text-tertiary); font-family: %2; font-size: 10px; }"
-        "#resetBtn { border: 1px solid transparent; border-radius: 2px; background: transparent; }"
+        "#rowLabel { color: var(--text-secondary); font-family: %1; font-size: 11px; min-width: 56px; }"
+        "#rowValue { color: var(--text-tertiary); font-family: %2; font-size: 11px; }"
+        "#resetBtn { border: 1px solid transparent; border-radius: 4px; background: transparent; }"
         "#resetBtn:hover { border-color: var(--accent-primary); }"
         "QSlider::groove:horizontal { height: 4px; background: var(--bg-tertiary); border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: var(--accent-primary); border-radius: 2px; }"
         "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0px; border-radius: 6px;"
         " background: var(--accent-primary); }"
-        "#actionBtn, #actionDanger { padding: 4px 10px; background: var(--button-bg); color: var(--button-fg);"
-        " border: 1px solid transparent; border-radius: 2px; font-family: %1; font-size: 11px; }"
-        "#actionBtn:hover { background: var(--button-hover); }"
-        "#actionDanger { color: var(--error); background: transparent; }"
+        "#actionBtn, #actionDanger { padding: 5px 10px; background: var(--button-bg); color: var(--button-fg);"
+        " border: 1px solid var(--border-primary); border-radius: 4px; font-family: %1; font-size: 11px; }"
+        "#actionBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "#actionDanger { color: var(--error); background: transparent; border-color: var(--error); }"
         "#actionDanger:hover { background: var(--error-bg); }")
         .arg(ui::uiFamilies(), ui::monoFamilies()));
     refresh();
@@ -307,7 +313,9 @@ QSlider *SettingsPanel::addSlider(QVBoxLayout *body, const QString &label, const
     ui::bindSpacing(rl, 8);
     QLabel *lab = new QLabel(label, row);
     lab->setObjectName(QStringLiteral("rowLabel"));
-    lab->setStyleSheet(QStringLiteral("color: %1;").arg(color.name()));
+    // 无效颜色表示走主题文字色（随主题切换自动更新）；有效颜色用于区分各数据源色标
+    if (color.isValid())
+        lab->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;").arg(color.name()));
     QSlider *sl = new QSlider(Qt::Horizontal, row);
     sl->setRange(int(std::lround(minV / step)), int(std::lround(maxV / step)));
     sl->setValue(int(std::lround(qBound(minV, value, maxV) / step)));
@@ -333,6 +341,18 @@ QSlider *SettingsPanel::addSlider(QVBoxLayout *body, const QString &label, const
 
 void SettingsPanel::refresh()
 {
+    if (m_rawDotRow) {
+        bool hasRaw = false;
+        if (m_host.store) {
+            for (const Track &t : m_host.store->tracks()) {
+                if (t.source == TrackSource::RadarRaw) {
+                    hasRaw = true;
+                    break;
+                }
+            }
+        }
+        m_rawDotRow->setVisible(hasRaw);
+    }
     if (!m_batchLabel)
         return;
     const ManageStats st = trackdb::isOpen() ? trackdb::stats() : ManageStats();

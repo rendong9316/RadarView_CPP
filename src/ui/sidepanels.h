@@ -48,6 +48,7 @@ public:
     FilterPanel(TrackFilterState *state, QWidget *parent = nullptr);
     void setDataRange(qint64 minMs, qint64 maxMs);   // 0, 0 表示无数据
     void setSpatialLasso(SpatialLasso *lasso);       // 地图套索状态（按钮/面积显示联动）
+    void setShowRawSource(bool show);                // 无历史 RadarRaw 数据时隐藏 Raw 行
     void refreshUi();                                // 外部改了 TrackFilterState 后刷新界面
 
     // ---- 自检用 ----
@@ -85,8 +86,10 @@ private:
     int m_calTarget = -1;
     QList<QPushButton *> m_presets;         // 全部数据 / 最早 1 小时 / 最后 1 小时
     QPushButton *m_apply = nullptr, *m_clear = nullptr;
+    QWidget *m_pcRow[3] = { nullptr, nullptr, nullptr };
     QCheckBox *m_pcCheck[3];
     QLineEdit *m_pcMin[3], *m_pcMax[3];
+    bool m_showRaw = false;
     qint64 m_dataMin = 0, m_dataMax = 0;
 
     // 空间套索

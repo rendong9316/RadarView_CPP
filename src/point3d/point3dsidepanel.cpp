@@ -4,6 +4,7 @@
 #include "point3dcanvas.h"
 #include "theme.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -11,12 +12,18 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <cmath>
 #include <limits>
 
 namespace {
@@ -71,7 +78,6 @@ void Point3dSidePanel::buildUi()
     setWidgetResizable(true);
     // 允许横向滚动：否则侧栏内容的最小宽度会顶到窗口最小宽度上，窗口又拉不窄了
     setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    setFixedWidth(ui::sz(300));
 
     QWidget *page = new QWidget(this);
     page->setObjectName(QStringLiteral("point3dSidePage"));
@@ -135,11 +141,33 @@ void Point3dSidePanel::buildUi()
     // ---- 显示 ----
     {
         QFormLayout *f = addForm(QStringLiteral("显示"));
-        m_sourceBtn = new QPushButton(QStringLiteral("平滑"), page);
-        m_sourceBtn->setCheckable(true);
-        m_sourceBtn->setToolTip(QStringLiteral(
-            "切换叠加航迹的点列：平滑（smoothPointList）↔ 关联（asscPointList）"));
-        f->addRow(QStringLiteral("航迹点源"), m_sourceBtn);
+        QWidget *seg = new QWidget(page);
+        seg->setObjectName(QStringLiteral("point3dSourceSeg"));
+        seg->setProperty("segmented", true);
+        seg->setAttribute(Qt::WA_StyledBackground);
+        QHBoxLayout *sl = new QHBoxLayout(seg);
+        ui::bindMargins(sl, 2, 2, 2, 2);
+        ui::bindSpacing(sl, 2);
+        QButtonGroup *grp = new QButtonGroup(seg);
+        grp->setExclusive(true);
+        const char *const names[3] = { "平滑", "关联", "预测" };
+        const char *const tips[3] = {
+            "平滑点列（smoothPointList / outputPointList）",
+            "关联点列（asscPointList）",
+            "预测点列（predictRes）"
+        };
+        for (int i = 0; i < 3; ++i) {
+            QPushButton *b = new QPushButton(QString::fromUtf8(names[i]), seg);
+            b->setObjectName(QStringLiteral("point3dSource_%1").arg(i));
+            b->setCheckable(true);
+            b->setCursor(Qt::PointingHandCursor);
+            b->setToolTip(QString::fromUtf8(tips[i]));
+            grp->addButton(b, i);
+            sl->addWidget(b, 1);
+            m_sourceBtns[i] = b;
+        }
+        m_sourceBtns[0]->setChecked(true);
+        f->addRow(QStringLiteral("航迹点源"), seg);
 
         QHBoxLayout *row = new QHBoxLayout;
         row->setSpacing(ui::sz(4));
@@ -159,6 +187,55 @@ void Point3dSidePanel::buildUi()
         row->addWidget(m_trackBtn);
         row->addWidget(m_labelBtn);
         f->addRow(QStringLiteral("图层"), row);
+    }
+
+    // ---- 叠加航迹（内嵌快速勾选列表）----
+    {
+        QGroupBox *g = new QGroupBox(QStringLiteral("叠加航迹"), page);
+        QVBoxLayout *gl = new QVBoxLayout(g);
+        gl->setContentsMargins(ui::sz(8), ui::sz(10), ui::sz(8), ui::sz(8));
+        gl->setSpacing(ui::sz(5));
+
+        QHBoxLayout *acts = new QHBoxLayout;
+        acts->setSpacing(ui::sz(4));
+        m_trackAllBtn = new QPushButton(QStringLiteral("全选"), g);
+        m_trackAllBtn->setObjectName(QStringLiteral("point3dTrackAllBtn"));
+        m_trackAllBtn->setCursor(Qt::PointingHandCursor);
+        m_trackAllBtn->setToolTip(QStringLiteral("显示全部已加载航迹（并退出单独显示）"));
+        m_trackNoneBtn = new QPushButton(QStringLiteral("全不选"), g);
+        m_trackNoneBtn->setObjectName(QStringLiteral("point3dTrackNoneBtn"));
+        m_trackNoneBtn->setCursor(Qt::PointingHandCursor);
+        m_trackNoneBtn->setToolTip(QStringLiteral("隐藏全部叠加航迹"));
+        m_trackChooseBtn = new QPushButton(QStringLiteral("从库选择…"), g);
+        m_trackChooseBtn->setObjectName(QStringLiteral("point3dTrackChooseBtn"));
+        m_trackChooseBtn->setCursor(Qt::PointingHandCursor);
+        m_trackChooseBtn->setToolTip(QStringLiteral("从数据库挑选要叠加到本窗口的雷达航迹"));
+        acts->addWidget(m_trackAllBtn);
+        acts->addWidget(m_trackNoneBtn);
+        acts->addStretch(1);
+        acts->addWidget(m_trackChooseBtn);
+        gl->addLayout(acts);
+
+        m_trackFilter = new QLineEdit(g);
+        m_trackFilter->setObjectName(QStringLiteral("point3dTrackFilter"));
+        m_trackFilter->setPlaceholderText(QStringLiteral("过滤批号 / 文件名…"));
+        m_trackFilter->setClearButtonEnabled(true);
+        gl->addWidget(m_trackFilter);
+
+        m_trackSummary = new QLabel(QStringLiteral("导入点迹后将自动匹配时间重叠的航迹"), g);
+        m_trackSummary->setObjectName(QStringLiteral("point3dTrackSummary"));
+        m_trackSummary->setWordWrap(true);
+        gl->addWidget(m_trackSummary);
+
+        m_trackList = new QListWidget(g);
+        m_trackList->setObjectName(QStringLiteral("point3dTrackList"));
+        m_trackList->setUniformItemSizes(true);
+        m_trackList->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_trackList->setMinimumHeight(ui::sz(110));
+        m_trackList->setMaximumHeight(ui::sz(210));
+        m_trackList->setToolTip(QStringLiteral("勾选控制显隐；单击高亮聚焦；双击单独显示（点空白或 Esc 返回全部）"));
+        gl->addWidget(m_trackList);
+        lay->addWidget(g);
     }
 
     // ---- 尺寸 ----
@@ -238,15 +315,17 @@ void Point3dSidePanel::buildUi()
 
 void Point3dSidePanel::connectSignals()
 {
-    connect(m_sourceBtn, &QPushButton::toggled, this, [this](bool associated) {
-        m_sourceBtn->setText(associated ? QStringLiteral("关联") : QStringLiteral("平滑"));
-        m_canvas->setTrackSource(associated ? Point3dTrackSource::Associated
-                                            : Point3dTrackSource::Smooth);
-        if (!m_restoring)
-            app::setValue(QStringLiteral("point3d.track_source"),
-                          associated ? QStringLiteral("associated") : QStringLiteral("smooth"));
-        emit statusChanged();
-    });
+    const Point3dTrackSource sources[3] = {
+        Point3dTrackSource::Smooth,
+        Point3dTrackSource::Associated,
+        Point3dTrackSource::Predicted
+    };
+    for (int i = 0; i < 3; ++i) {
+        const Point3dTrackSource src = sources[i];
+        connect(m_sourceBtns[i], &QPushButton::clicked, this, [this, src]() {
+            setTrackSource(src);
+        });
+    }
 
     connect(m_pointSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double v) {
@@ -329,6 +408,34 @@ void Point3dSidePanel::connectSignals()
         if (!m_restoring)
             app::setValue(QStringLiteral("point3d.show_labels"), on);
     });
+
+    connect(m_trackAllBtn, &QPushButton::clicked, this, [this]() { setAllTracksChecked(true); });
+    connect(m_trackNoneBtn, &QPushButton::clicked, this, [this]() { setAllTracksChecked(false); });
+    connect(m_trackChooseBtn, &QPushButton::clicked, this, &Point3dSidePanel::chooseTracksRequested);
+    connect(m_trackFilter, &QLineEdit::textChanged, this, &Point3dSidePanel::onTrackFilterChanged);
+    connect(m_trackList, &QListWidget::itemChanged, this, &Point3dSidePanel::onTrackItemChanged);
+    connect(m_trackList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        if (!item)
+            return;
+        const int batchNo = item->data(Qt::UserRole + 1).toInt();
+        if (batchNo <= 0)
+            return;
+        emit trackRowClicked(batchNo,
+                             TrackSource(item->data(Qt::UserRole + 2).toInt()),
+                             item->data(Qt::UserRole + 3).toLongLong(),
+                             item->data(Qt::UserRole + 4).toLongLong());
+    });
+    connect(m_trackList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
+        if (!item)
+            return;
+        const int batchNo = item->data(Qt::UserRole + 1).toInt();
+        if (batchNo <= 0)
+            return;
+        emit trackRowDoubleClicked(batchNo,
+                                   TrackSource(item->data(Qt::UserRole + 2).toInt()),
+                                   item->data(Qt::UserRole + 3).toLongLong(),
+                                   item->data(Qt::UserRole + 4).toLongLong());
+    });
 }
 
 void Point3dSidePanel::restoreDefaults()
@@ -348,9 +455,12 @@ void Point3dSidePanel::restoreDefaults()
     m_canvas->setShowTracks(m_trackBtn->isChecked());
     m_canvas->setShowLabels(m_labelBtn->isChecked());
 
-    // 点源（平滑/关联）：按钮状态即设置值，按下时自动写回
-    m_sourceBtn->setChecked(setting("point3d.track_source", QStringLiteral("smooth")).toString()
-                            == QLatin1String("associated"));
+    // 点源（平滑 / 关联 / 预测）
+    const QString srcStr = setting("point3d.track_source", QStringLiteral("smooth")).toString();
+    const Point3dTrackSource src = srcStr == QLatin1String("associated") ? Point3dTrackSource::Associated
+                                 : srcStr == QLatin1String("predicted") ? Point3dTrackSource::Predicted
+                                                                        : Point3dTrackSource::Smooth;
+    setTrackSource(src);
     m_pointSizeSpin->setValue(setting("point3d.point_scale", 1.0).toDouble());
     m_lineWidthSpin->setValue(setting("point3d.track_line_width", 2.0).toDouble());
     m_labelSizeSpin->setValue(setting("point3d.label_scale", 1.0).toDouble());
@@ -420,9 +530,43 @@ void Point3dSidePanel::setWindowLength(int len)
     m_canvas->setWindowLength(len);
 }
 
+void Point3dSidePanel::setTrackSource(Point3dTrackSource src)
+{
+    const int idx = src == Point3dTrackSource::Associated ? 1
+                  : src == Point3dTrackSource::Predicted ? 2 : 0;
+    const Point3dTrackSource resolved = idx == 1 ? Point3dTrackSource::Associated
+                                      : idx == 2 ? Point3dTrackSource::Predicted
+                                                 : Point3dTrackSource::Smooth;
+    for (int i = 0; i < 3; ++i)
+        if (m_sourceBtns[i])
+            m_sourceBtns[i]->setChecked(i == idx);
+    m_canvas->setTrackSource(resolved);
+    if (!m_restoring) {
+        const char *key = idx == 1 ? "associated" : idx == 2 ? "predicted" : "smooth";
+        app::setValue(QStringLiteral("point3d.track_source"), QString::fromLatin1(key));
+    }
+    // 切换点源时只刷新列表项点数文案，不打断其它操作
+    if (m_trackList && m_data && m_trackList->count() == m_data->tracks.size()) {
+        m_trackListSyncing = true;
+        for (int i = 0; i < m_data->tracks.size(); ++i) {
+            const TrackOverlay &ov = m_data->tracks.at(i);
+            const QVector<TrackOverlayPoint> *pts = point3dOverlayPointsFor(ov, resolved);
+            const int curCount = pts ? pts->size() : 0;
+            if (QListWidgetItem *item = m_trackList->item(i))
+                item->setText(QStringLiteral("T%1 · %2点 (%3)").arg(ov.batchNo).arg(curCount).arg(ov.fileName));
+        }
+        m_trackListSyncing = false;
+    }
+    emit statusChanged();
+}
+
 void Point3dSidePanel::toggleTrackSource()
 {
-    m_sourceBtn->toggle();
+    const Point3dTrackSource cur = m_canvas->trackSource();
+    const Point3dTrackSource next = cur == Point3dTrackSource::Smooth ? Point3dTrackSource::Associated
+                                  : cur == Point3dTrackSource::Associated ? Point3dTrackSource::Predicted
+                                                                          : Point3dTrackSource::Smooth;
+    setTrackSource(next);
 }
 
 void Point3dSidePanel::toggleDetections()
@@ -495,6 +639,149 @@ void Point3dSidePanel::applyWindowLength(int len)
     m_canvas->setWindowLength(len);
     app::setValue(QStringLiteral("point3d.window_length"), len);
     emit statusChanged();
+}
+
+// ---------------------------------------------------------------------------
+//  叠加航迹内嵌勾选列表
+// ---------------------------------------------------------------------------
+void Point3dSidePanel::refreshTrackList(const QSet<QString> &hiddenKeys, int highlightedBatch)
+{
+    if (!m_trackList)
+        return;
+    m_trackListSyncing = true;
+    m_trackList->clear();
+    if (m_data) {
+        const Point3dTrackSource src = m_canvas ? m_canvas->trackSource() : Point3dTrackSource::Smooth;
+        for (int i = 0; i < m_data->tracks.size(); ++i) {
+            const TrackOverlay &ov = m_data->tracks.at(i);
+            const QString key = point3dOverlayKey(ov);
+            const QVector<TrackOverlayPoint> *pts = point3dOverlayPointsFor(ov, src);
+            const int curCount = pts ? pts->size() : 0;
+
+            QColor dotCol = ov.color.isValid()
+                ? ov.color
+                : QColor::fromHslF(std::fmod(i * 137.508, 360.0) / 360.0, 0.78, 0.62);
+            QPixmap pm(10, 10);
+            pm.fill(Qt::transparent);
+            {
+                QPainter p(&pm);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(Qt::NoPen);
+                p.setBrush(dotCol);
+                p.drawEllipse(1, 1, 8, 8);
+            }
+
+            QListWidgetItem *item = new QListWidgetItem(
+                QIcon(pm),
+                QStringLiteral("T%1 · %2点 (%3)").arg(ov.batchNo).arg(curCount).arg(ov.fileName),
+                m_trackList);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+            item->setCheckState(hiddenKeys.contains(key) ? Qt::Unchecked : Qt::Checked);
+            item->setData(Qt::UserRole, key);
+            item->setData(Qt::UserRole + 1, ov.batchNo);
+            item->setData(Qt::UserRole + 2, int(ov.source));
+            item->setData(Qt::UserRole + 3, ov.minTime);
+            item->setData(Qt::UserRole + 4, ov.maxTime);
+            item->setToolTip(QStringLiteral("%1（%2）\n平滑 %3 点 / 关联 %4 点 / 预测 %5 点\n"
+                                            "勾选切换显隐 · 单击高亮 · 双击单独显示")
+                                 .arg(ov.id, ov.fileName)
+                                 .arg(ov.points.size()).arg(ov.rawPoints.size()).arg(ov.predPoints.size()));
+            if (highlightedBatch > 0 && ov.batchNo == highlightedBatch)
+                item->setSelected(true);
+        }
+    }
+    m_trackListSyncing = false;
+    onTrackFilterChanged(m_trackFilter ? m_trackFilter->text() : QString());
+    updateTrackSummary();
+}
+
+void Point3dSidePanel::setHighlightedTrackBatch(int batchNo)
+{
+    if (!m_trackList)
+        return;
+    m_trackListSyncing = true;
+    m_trackList->clearSelection();
+    if (batchNo > 0) {
+        for (int i = 0; i < m_trackList->count(); ++i) {
+            QListWidgetItem *item = m_trackList->item(i);
+            if (item && item->data(Qt::UserRole + 1).toInt() == batchNo) {
+                item->setSelected(true);
+                m_trackList->scrollToItem(item, QAbstractItemView::EnsureVisible);
+                break;
+            }
+        }
+    }
+    m_trackListSyncing = false;
+}
+
+void Point3dSidePanel::onTrackFilterChanged(const QString &text)
+{
+    if (!m_trackList)
+        return;
+    const QString needle = text.trimmed();
+    for (int i = 0; i < m_trackList->count(); ++i) {
+        QListWidgetItem *item = m_trackList->item(i);
+        const bool match = needle.isEmpty()
+            || item->text().contains(needle, Qt::CaseInsensitive)
+            || item->data(Qt::UserRole).toString().contains(needle, Qt::CaseInsensitive);
+        item->setHidden(!match);
+    }
+}
+
+void Point3dSidePanel::onTrackItemChanged(QListWidgetItem *)
+{
+    if (m_trackListSyncing || !m_trackList)
+        return;
+    QSet<QString> hidden;
+    for (int i = 0; i < m_trackList->count(); ++i) {
+        QListWidgetItem *item = m_trackList->item(i);
+        if (item->checkState() != Qt::Checked)
+            hidden.insert(item->data(Qt::UserRole).toString());
+    }
+    updateTrackSummary();
+    emit hiddenTracksChanged(hidden);
+}
+
+void Point3dSidePanel::setAllTracksChecked(bool checked)
+{
+    if (!m_trackList || m_trackList->count() == 0)
+        return;
+    m_trackListSyncing = true;
+    QSet<QString> hidden;
+    const Qt::CheckState st = checked ? Qt::Checked : Qt::Unchecked;
+    for (int i = 0; i < m_trackList->count(); ++i) {
+        QListWidgetItem *item = m_trackList->item(i);
+        if (!item->isHidden())
+            item->setCheckState(st);
+        if (item->checkState() != Qt::Checked)
+            hidden.insert(item->data(Qt::UserRole).toString());
+    }
+    m_trackListSyncing = false;
+    updateTrackSummary();
+    emit hiddenTracksChanged(hidden);
+}
+
+void Point3dSidePanel::updateTrackSummary()
+{
+    if (!m_trackSummary || !m_trackList)
+        return;
+    const int total = m_trackList->count();
+    if (total == 0) {
+        m_trackSummary->setText(
+            (!m_data || m_data->frames.isEmpty())
+                ? QStringLiteral("导入点迹后将自动匹配时间重叠的航迹")
+                : QStringLiteral("当前时间窗暂无匹配航迹，可点击「从库选择…」"));
+        if (m_trackAllBtn) m_trackAllBtn->setEnabled(false);
+        if (m_trackNoneBtn) m_trackNoneBtn->setEnabled(false);
+        return;
+    }
+    int shown = 0;
+    for (int i = 0; i < total; ++i)
+        if (m_trackList->item(i)->checkState() == Qt::Checked)
+            ++shown;
+    m_trackSummary->setText(QStringLiteral("已勾选 %1 / %2 条（双击独显，Esc/点空白恢复）").arg(shown).arg(total));
+    if (m_trackAllBtn) m_trackAllBtn->setEnabled(true);
+    if (m_trackNoneBtn) m_trackNoneBtn->setEnabled(true);
 }
 
 // ---------------------------------------------------------------------------

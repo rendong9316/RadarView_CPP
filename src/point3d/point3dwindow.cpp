@@ -49,62 +49,65 @@ QVariant setting(const char *key, const QVariant &def)
 
 QString toolbarQss()
 {
-    return QStringLiteral(
-        // 菜单栏（对齐主窗口）
-        "QWidget#point3dNavBar { background: var(--bg-secondary);"
-        " border-bottom: 1px solid var(--border-primary); }"
-        "QMenuBar { background: transparent; color: var(--text-secondary);"
-        " font-family: %1; font-size: 12px; border: none; }"
-        "QMenuBar::item { padding: 4px 10px; background: transparent; }"
-        "QMenuBar::item:selected { background: var(--button-hover); color: var(--text-primary); }"
-        "QMenu { background: var(--dropdown-bg); color: var(--dropdown-fg);"
-        " border: 1px solid var(--border-primary); font-family: %1; font-size: 12px; }"
-        "QMenu::item { padding: 4px 18px; }"
-        "QMenu::item:selected { background: var(--dropdown-hover); }"
-        // 左侧「显示」侧栏
-        "QStackedWidget#point3dSideStack { background: var(--bg-secondary);"
-        " border-right: 1px solid var(--border-primary); }"
-        "QSplitter::handle { background: var(--border-primary); }"
-        "QScrollArea#point3dSide, QScrollArea#point3dAdvanced { background: var(--bg-secondary);"
+    return ui::menuBarQss() + ui::scrollbarQss() + ui::segmentedQss() + QStringLiteral(
+        // 顶部导航栏：与主窗口标题栏/菜单栏完全一致
+        "QWidget#point3dNavBar { background: var(--titlebar-bg);"
+        " border-bottom: 1px solid var(--titlebar-border); }"
+        "QMenuBar#point3dMenuBar { background: transparent; border: none; }"
+        // 左侧侧栏：与主窗口 SidePanel 统一
+        "QStackedWidget#point3dSideStack { background: var(--sidebar-bg);"
+        " border-right: 1px solid var(--sidebar-border); }"
+        "QSplitter::handle { background: transparent; }"
+        "QSplitter::handle:hover { background: var(--accent-primary); }"
+        "QScrollArea#point3dSide, QScrollArea#point3dAdvanced { background: var(--sidebar-bg);"
         " border: none; }"
-        "QWidget#point3dSidePage { background: var(--bg-secondary); }"
-        "QGroupBox { color: var(--text-secondary); border: 1px solid var(--border-primary);"
-        " border-radius: 4px; margin-top: 10px; font-family: %1; font-size: 12px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
-        "QScrollBar:vertical { background: var(--bg-tertiary); width: 10px; margin: 0; border: none; }"
-        "QScrollBar::handle:vertical { background: var(--border-primary); min-height: 40px;"
-        " border-radius: 5px; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0;"
-        " border: none; background: none; }"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }"
-        "QScrollBar:horizontal { background: var(--bg-tertiary); height: 10px; margin: 0;"
-        " border: none; }"
-        "QScrollBar::handle:horizontal { background: var(--border-primary); min-width: 40px;"
-        " border-radius: 5px; }"
-        "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0;"
-        " border: none; background: none; }"
-        "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }"
-        // 底部状态栏
-        "QWidget#point3dStatus { background: var(--bg-secondary);"
-        " border-top: 1px solid var(--border-primary); }"
-        "QLabel { color: var(--text-secondary); font-family: %1; font-size: 12px; }"
-        "QCheckBox { color: var(--text-secondary); font-family: %1; font-size: 12px; }"
-        "QPushButton { color: var(--text-secondary); background: var(--button-bg);"
-        " border: 1px solid var(--border-primary); border-radius: 3px; padding: 4px 10px;"
-        " font-family: %1; font-size: 12px; }"
+        "QWidget#point3dSidePage, QWidget#point3dAdvancedPage { background: var(--sidebar-bg); }"
+        "QGroupBox { color: var(--text-primary); border: 1px solid var(--border-secondary);"
+        " border-radius: 4px; margin-top: 12px; padding-top: 4px;"
+        " font-family: %1; font-size: 11px; font-weight: 600; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px;"
+        " color: var(--text-secondary); }"
+        // 底部状态栏：与主窗口 AppStatusBar 统一
+        "QWidget#point3dStatus { background: var(--statusbar-bg);"
+        " border-top: 1px solid var(--statusbar-border); }"
+        "QWidget#point3dStatus QLabel { color: var(--statusbar-fg); }"
+        "QLabel { color: var(--text-secondary); background: transparent; font-family: %1; font-size: 11px; }"
+        "QCheckBox { color: var(--text-secondary); background: transparent; font-family: %1; font-size: 11px; }"
+        "QPushButton { color: var(--button-fg); background: var(--button-bg);"
+        " border: 1px solid var(--border-primary); border-radius: 4px; padding: 4px 10px;"
+        " font-family: %1; font-size: 11px; }"
         "QPushButton:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "QPushButton:checked { background: var(--accent-primary); color: #ffffff;"
+        "QPushButton:checked { background: var(--accent-primary); color: var(--accent-fg);"
+        " border-color: var(--accent-primary); font-weight: 600; }"
+        "QPushButton:disabled { color: var(--text-muted); border-color: var(--border-secondary); }"
+        "QWidget#point3dNavBar QPushButton { background: transparent; border-color: transparent;"
+        " color: var(--titlebar-fg); padding: 3px 10px; font-size: 12px; }"
+        "QWidget#point3dNavBar QPushButton:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "QWidget#point3dNavBar QPushButton:checked { background: var(--accent-primary); color: var(--accent-fg);"
         " border-color: var(--accent-primary); }"
-        "QComboBox, QSpinBox, QDoubleSpinBox { color: var(--text-primary); background: var(--input-bg);"
-        " border: 1px solid var(--input-border); border-radius: 3px; padding: 2px 6px;"
-        " font-family: %1; font-size: 12px; }"
+        "QPushButton#point3dBackAllBtn { background: var(--accent-primary); color: var(--accent-fg);"
+        " border: 1px solid var(--accent-primary); border-radius: 4px; padding: 3px 10px;"
+        " font-size: 11px; font-weight: 600; }"
+        "QPushButton#point3dBackAllBtn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
+        "QListWidget#point3dTrackList { background: var(--bg-primary); color: var(--text-primary);"
+        " border: 1px solid var(--border-primary); border-radius: 4px; outline: none;"
+        " font-family: %1; font-size: 11px; }"
+        "QListWidget#point3dTrackList::item { padding: 3px 4px; border-radius: 3px; }"
+        "QListWidget#point3dTrackList::item:hover { background: var(--bg-hover); }"
+        "QListWidget#point3dTrackList::item:selected { background: var(--accent-subtle); color: var(--text-primary); }"
+        "QLabel#point3dTrackSummary { color: var(--text-tertiary); font-size: 10px; }"
+        "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { color: var(--input-fg); background: var(--input-bg);"
+        " border: 1px solid var(--input-border); border-radius: 4px; padding: 3px 6px;"
+        " font-family: %1; font-size: 11px; }"
+        "QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: var(--accent-primary); }"
         "QSlider::groove:horizontal { height: 4px; background: var(--bg-tertiary);"
         " border-radius: 2px; }"
         "QSlider::sub-page:horizontal { background: var(--accent-primary); border-radius: 2px; }"
         "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0;"
         " border-radius: 6px; background: var(--accent-primary); }"
         "QComboBox QAbstractItemView { background: var(--dropdown-bg); color: var(--dropdown-fg);"
-        " selection-background-color: var(--dropdown-hover); }")
+        " border: 1px solid var(--border-primary); selection-background-color: var(--dropdown-hover);"
+        " selection-color: var(--text-primary); }")
         .arg(ui::uiFamilies());
 }
 
@@ -285,13 +288,111 @@ void Point3dWindow::reloadOverlaysFromKeys()
                 ++m_skippedTracks;       // 与点迹时间窗对不上（一致性校验）
                 continue;
             }
-            if (qMax(ov.points.size(), ov.rawPoints.size()) < minLen)
+            if (qMax(ov.points.size(), qMax(ov.rawPoints.size(), ov.predPoints.size())) < minLen)
                 continue;                // 最小航迹长度：太短的航迹不画（对应 MATLAB MinTrackLength）
             m_data.tracks.append(ov);
         }
     }
+    // 清理不再存在于当前叠加集里的隐藏键，保持状态干净
+    QSet<QString> validKeys;
+    for (const TrackOverlay &ov : qAsConst(m_data.tracks))
+        validKeys.insert(point3dOverlayKey(ov));
+    m_hiddenTrackKeys.intersect(validKeys);
+    m_canvas->setHiddenTrackKeys(m_hiddenTrackKeys);
     m_canvas->refreshLimits();
+    if (m_sideSettings)
+        m_sideSettings->refreshTrackList(m_hiddenTrackKeys, m_pinnedBatch);
     applyLinkedSelection();              // 重载后重新套用地图当前的选中/筛选
+    updateBackAllButton();
+}
+
+void Point3dWindow::autoLoadMatchingTracks()
+{
+    if (m_manualTracksChosen || !m_trackKeys.isEmpty() || m_data.frames.isEmpty() || !trackdb::isOpen())
+        return;
+    QString err;
+    const QVector<DbTrackSummary> sums = trackdb::trackSummaries(QString(), &err);
+    for (const DbTrackSummary &s : sums) {
+        if (!(s.hasMeasure || s.hasRaw || s.hasPred))
+            continue;
+        if (s.maxMs < m_data.minTime || s.minMs > m_data.maxTime)
+            continue;
+        m_trackKeys << s.icao + QStringLiteral("::") + trackSourceName(s.source)
+                    + QStringLiteral("::") + s.fileName;
+    }
+}
+
+void Point3dWindow::clearIsolation()
+{
+    const bool hadIso = !m_canvas->isolatedBatches().isEmpty();
+    const bool hadPin = m_pinnedBatch >= 0 || m_canvas->highlightedBatch() >= 0;
+    m_linkedSelection.clear();
+    m_pinnedBatch = -1;
+    m_canvas->setIsolatedBatches(QSet<int>());
+    m_canvas->setHighlightedBatch(-1);
+    if (m_sideSettings)
+        m_sideSettings->setHighlightedTrackBatch(-1);
+    updateBackAllButton();
+    updateStatus();
+    if (hadIso)
+        emit isolationCleared();
+    if (hadPin)
+        emit trackFocusChanged(-1, TrackSource::Radar, 0, 0);
+}
+
+void Point3dWindow::toggleTrackHighlight(int batchNo, TrackSource source, qint64 t0, qint64 t1)
+{
+    if (batchNo <= 0)
+        return;
+    if (m_pinnedBatch == batchNo) {
+        m_pinnedBatch = -1;
+        m_canvas->setHighlightedBatch(-1);
+        if (m_sideSettings)
+            m_sideSettings->setHighlightedTrackBatch(-1);
+        updateStatus();
+        emit trackFocusChanged(-1, TrackSource::Radar, 0, 0);
+        return;
+    }
+    m_pinnedBatch = batchNo;
+    m_canvas->setHighlightedBatch(batchNo);
+    if (m_sideSettings)
+        m_sideSettings->setHighlightedTrackBatch(batchNo);
+    updateStatus();
+    emit trackFocusChanged(batchNo, source, t0, t1);
+}
+
+void Point3dWindow::toggleTrackIsolation(int batchNo, TrackSource source, qint64 t0, qint64 t1)
+{
+    if (batchNo <= 0)
+        return;
+    const QSet<int> cur = m_canvas->isolatedBatches();
+    if (cur.size() == 1 && cur.contains(batchNo)) {
+        clearIsolation();
+        return;
+    }
+    QSet<int> only;
+    only.insert(batchNo);
+    m_pinnedBatch = batchNo;
+    m_canvas->setIsolatedBatches(only);
+    m_canvas->setHighlightedBatch(batchNo);
+    if (m_sideSettings)
+        m_sideSettings->setHighlightedTrackBatch(batchNo);
+    updateBackAllButton();
+    updateStatus();
+    emit trackActivated(batchNo, source, t0, t1);
+}
+
+void Point3dWindow::updateBackAllButton()
+{
+    if (!m_backAllBtn || !m_canvas)
+        return;
+    const QSet<int> iso = m_canvas->isolatedBatches();
+    if (iso.isEmpty()) {
+        m_backAllBtn->hide();
+    } else {
+        m_backAllBtn->setText(QStringLiteral("← 返回全部（独显 %1 条 · Esc）").arg(iso.size()));
+        m_backAllBtn->show();
+    }
 }
 
 // 地图侧选中/筛选 → 本窗口同步"单独显示"对应航迹
@@ -305,6 +406,7 @@ void Point3dWindow::applyLinkedSelection()
 {
     if (m_linkedSelection.isEmpty()) {
         m_canvas->setIsolatedBatches(QSet<int>());
+        updateBackAllButton();
         updateStatus();
         return;
     }
@@ -318,6 +420,7 @@ void Point3dWindow::applyLinkedSelection()
     if (batches.isEmpty())
         return;                          // 地图选中的航迹本窗口没有：保持原样
     m_canvas->setIsolatedBatches(batches);
+    updateBackAllButton();
     updateStatus();
 }
 
@@ -377,10 +480,14 @@ void Point3dWindow::chooseTracksFromDb()
                                  QStringLiteral("数据库未打开。请先在主窗口导入雷达航迹数据。"));
         return;
     }
-    TrackPicker dlg(this);
+    QSet<QString> preselected;
+    for (const QString &k : qAsConst(m_trackKeys))
+        preselected.insert(k);
+    TrackPicker dlg(this, preselected);
     if (dlg.exec() != QDialog::Accepted)
         return;
 
+    m_manualTracksChosen = true;
     const QVector<DbTrackSummary> sel = dlg.selectedTracks();
     m_trackKeys.clear();
     for (const DbTrackSummary &s : sel)
@@ -407,8 +514,22 @@ void Point3dWindow::chooseTracksFromDb()
                 admitted = true;
                 break;
             }
-        if (!admitted)
-            m_sideSettings->toggleTrackSource();
+        if (!admitted) {
+            for (Point3dTrackSource cand : { Point3dTrackSource::Smooth,
+                                             Point3dTrackSource::Associated,
+                                             Point3dTrackSource::Predicted }) {
+                bool ok = false;
+                for (const TrackOverlay &ov : qAsConst(m_data.tracks))
+                    if (point3dOverlayHasColumn(ov, cand)) {
+                        ok = true;
+                        break;
+                    }
+                if (ok) {
+                    m_sideSettings->setTrackSource(cand);
+                    break;
+                }
+            }
+        }
     } else if (!sel.isEmpty() && !app::testMode()) {
         // 选了航迹却一条也叠加不上：多半是时间窗不重叠或旧数据没有测量坐标
         QMessageBox::information(
@@ -436,6 +557,12 @@ QJsonObject Point3dWindow::sessionJson() const
     for (const QString &k : m_trackKeys)
         tracks.append(k);
     o.insert(QStringLiteral("tracks"), tracks);
+
+    QJsonArray hidden;
+    for (const QString &k : qAsConst(m_hiddenTrackKeys))
+        hidden.append(k);
+    o.insert(QStringLiteral("hidden_tracks"), hidden);
+    o.insert(QStringLiteral("manual_tracks"), m_manualTracksChosen);
 
     double yaw = 42.0, pitch = 23.0, zoom = 1.0, panX = 0.0, panY = 0.0;
     m_canvas->camera(&yaw, &pitch, &zoom, &panX, &panY);
@@ -497,6 +624,10 @@ void Point3dWindow::restoreSession(const QJsonObject &obj)
     m_trackKeys.clear();
     for (const QJsonValue &v : obj.value(QStringLiteral("tracks")).toArray())
         m_trackKeys << v.toString();
+    m_hiddenTrackKeys.clear();
+    for (const QJsonValue &v : obj.value(QStringLiteral("hidden_tracks")).toArray())
+        m_hiddenTrackKeys.insert(v.toString());
+    m_manualTracksChosen = obj.value(QStringLiteral("manual_tracks")).toBool(!m_trackKeys.isEmpty());
 
     m_sideSettings->setRestoring(false);
     m_restoring = false;
@@ -576,9 +707,15 @@ void Point3dWindow::buildUi()
     m_advancedBtn = new QPushButton(QStringLiteral("高级"), navBar);
     m_advancedBtn->setCheckable(true);
     m_advancedBtn->setToolTip(QStringLiteral("展开 / 收起左侧「高级参数」侧栏"));
+    m_backAllBtn = new QPushButton(QStringLiteral("← 返回全部 (Esc)"), navBar);
+    m_backAllBtn->setObjectName(QStringLiteral("point3dBackAllBtn"));
+    m_backAllBtn->setCursor(Qt::PointingHandCursor);
+    m_backAllBtn->setToolTip(QStringLiteral("退出航迹单独显示，恢复显示所有已勾选航迹（Esc 或点击空白处）"));
+    m_backAllBtn->hide();
     nav->addWidget(m_settingsBtn);
     nav->addWidget(m_advancedBtn);
     nav->addStretch(1);
+    nav->addWidget(m_backAllBtn);
     root->addWidget(navBar);
 
     // ---- 主体：左侧停靠区（设置页 / 高级页）+ 画布 ----
@@ -587,7 +724,7 @@ void Point3dWindow::buildUi()
     body->setSpacing(0);
     m_sideStack = new QStackedWidget(this);
     m_sideStack->setObjectName(QStringLiteral("point3dSideStack"));
-    m_sideStack->setMinimumWidth(ui::sz(220));
+    ui::bindSize(m_sideStack, ui::SizeKind::MinWidth, 240);
     m_sideSettings = new Point3dSidePanel(m_canvas, &m_data, this);
     m_sideAdvanced = new Point3dAdvancedPanel(this);
     m_sideStack->addWidget(m_sideSettings);
@@ -684,12 +821,28 @@ void Point3dWindow::buildUi()
     });
 
     // 设置页 / 高级页信号
+    connect(m_backAllBtn, &QPushButton::clicked, this, &Point3dWindow::clearIsolation);
     connect(m_sideSettings, &Point3dSidePanel::viewModeChanged,
             this, &Point3dWindow::syncViewMenuChecks);
     connect(m_sideSettings, &Point3dSidePanel::statusChanged,
             this, &Point3dWindow::updateStatus);
     connect(m_sideSettings, &Point3dSidePanel::statusMessage,
             this, [this](const QString &text) { m_status->setText(text); });
+    connect(m_sideSettings, &Point3dSidePanel::chooseTracksRequested,
+            this, &Point3dWindow::chooseTracksFromDb);
+    connect(m_sideSettings, &Point3dSidePanel::hiddenTracksChanged,
+            this, [this](const QSet<QString> &keys) {
+                m_hiddenTrackKeys = keys;
+                m_canvas->setHiddenTrackKeys(m_hiddenTrackKeys);
+                if (keys.isEmpty() && !m_canvas->isolatedBatches().isEmpty())
+                    clearIsolation();
+                updateStatus();
+                emit dataChanged();
+            });
+    connect(m_sideSettings, &Point3dSidePanel::trackRowClicked,
+            this, &Point3dWindow::toggleTrackHighlight);
+    connect(m_sideSettings, &Point3dSidePanel::trackRowDoubleClicked,
+            this, &Point3dWindow::toggleTrackIsolation);
 
     connect(m_sideAdvanced, &Point3dAdvancedPanel::continuityConfigChanged,
             this, &Point3dWindow::recomputeContinuityNow);
@@ -706,21 +859,26 @@ void Point3dWindow::buildUi()
     connect(m_canvas, &Point3dCanvas::hoverChanged, this, &Point3dWindow::updateStatus);
     connect(m_canvas, &Point3dCanvas::statsChanged, this, &Point3dWindow::updateStatus);
     connect(m_canvas, &Point3dCanvas::cameraChanged, this, &Point3dWindow::saveSettings);
-    connect(m_canvas, &Point3dCanvas::trackFocusChanged,
-            this, &Point3dWindow::trackFocusChanged);
-    connect(m_canvas, &Point3dCanvas::trackActivated,
-            this, &Point3dWindow::trackActivated);
-    // 左键单击某条航迹：本窗口单独显示这一条，并通知主窗口让地图也单独显示它（双向联动）
-    connect(m_canvas, &Point3dCanvas::trackClicked, this,
+    connect(m_canvas, &Point3dCanvas::trackFocusChanged, this,
             [this](int batchNo, TrackSource source, qint64 t0, qint64 t1) {
-                if (batchNo <= 0)
-                    return;
-                QSet<int> only;
-                only.insert(batchNo);
-                m_canvas->setIsolatedBatches(only);
-                updateStatus();
-                emit trackActivated(batchNo, source, t0, t1);
+                if (batchNo > 0) {
+                    emit trackFocusChanged(batchNo, source, t0, t1);
+                } else if (m_pinnedBatch > 0) {
+                    // 悬停移出但仍有单击锁定的高亮航迹：保持锁定高亮，不清除
+                    m_canvas->setHighlightedBatch(m_pinnedBatch);
+                } else {
+                    emit trackFocusChanged(-1, TrackSource::Radar, 0, 0);
+                }
             });
+    // 左键单击某条航迹：高亮聚焦并联动地图（不再把用户锁进单条隔离）
+    connect(m_canvas, &Point3dCanvas::trackClicked, this, &Point3dWindow::toggleTrackHighlight);
+    // 左键双击某条航迹：进入 / 退出单条独显（并联动地图）
+    connect(m_canvas, &Point3dCanvas::trackActivated, this, &Point3dWindow::toggleTrackIsolation);
+    // 左键单击空白处：退出单独显示或取消锁定高亮
+    connect(m_canvas, &Point3dCanvas::emptyClicked, this, [this]() {
+        if (!m_canvas->isolatedBatches().isEmpty() || m_pinnedBatch >= 0)
+            clearIsolation();
+    });
 
     // 本窗口独立播放控制
     connect(m_playBtn, &QPushButton::clicked, this, &Point3dWindow::togglePlay);
@@ -763,6 +921,7 @@ void Point3dWindow::buildUi()
     bindKey(Qt::Key_T, [this]() { m_sideSettings->toggleTracks(); });
     bindKey(Qt::Key_L, [this]() { m_sideSettings->toggleLabels(); });
     bindKey(Qt::Key_Space, [this]() { togglePlay(); });
+    bindKey(Qt::Key_Escape, [this]() { clearIsolation(); });
 
     // 没有点迹数据前先禁用播放控制（导入完成后 syncPlaybackUi 打开）
     m_playBtn->setEnabled(false);
@@ -886,8 +1045,11 @@ void Point3dWindow::onImportDone()
     m_data = job->dataset();
     setPlaying(false);
     m_canvas->setDataset(&m_data);
+    m_pinnedBatch = -1;
     m_canvas->setHighlightedBatch(-1);
     m_files = m_pendingFiles;
+    // 尚未手动挑过航迹时，自动从数据库加载时间窗重叠的雷达航迹
+    autoLoadMatchingTracks();
     // 重新导入点迹后，已选数据库航迹需要按新帧重新映射 Z 值
     reloadOverlaysFromKeys();
     // 数据变了：各视图的区域区间按新量程夹紧/复位，再套用到画布
@@ -938,7 +1100,7 @@ void Point3dWindow::updateStatus()
     QString text = m_canvas->statusText();
     const QSet<int> isolated = m_canvas->isolatedBatches();
     if (!isolated.isEmpty())
-        text += QStringLiteral(" | 按地图选择单独显示 %1 条").arg(isolated.size());
+        text += QStringLiteral(" | 单独显示 %1 条（Esc/点空白返回全部）").arg(isolated.size());
     if (m_skippedTracks > 0)
         text += QStringLiteral(" | %1 条航迹与点迹时间不匹配已忽略").arg(m_skippedTracks);
     if (m_sideSettings && m_sideSettings->regionAppliedForView(m_canvas->viewMode()))
