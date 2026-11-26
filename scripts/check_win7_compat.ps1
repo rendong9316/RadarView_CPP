@@ -1,6 +1,6 @@
 ﻿# 检查发布目录里所有 exe/dll 的导入表，是否直接引用了 Win7 上不存在的 API
 # 返回 0 = 可安全分发到 Win7(64位), 1 = 存在不兼容 API
-# 用法: powershell -ExecutionPolicy Bypass -File check_win7_compat.ps1 [产物目录]
+# 用法: powershell -ExecutionPolicy Bypass -File scripts/check_win7_compat.ps1 [产物目录]
 
 param(
     [string]$Dir = "",
@@ -8,7 +8,7 @@ param(
 )
 
 if ([string]::IsNullOrWhiteSpace($Dir)) {
-    $Dir = Join-Path $PSScriptRoot "build\win7\release"
+    $Dir = Join-Path $PSScriptRoot "..\build\win7\release"
 }
 
 if ([string]::IsNullOrWhiteSpace($ObjDump)) {

@@ -9,12 +9,32 @@
 - **时间轴回放与地图标绘**：多源统一 UTC 毫秒时间基准（北京时间输入/显示）、空间套索筛选、球面贴地绘图（Vincenty 测地圆/大圆加密/GeoJSON 导出/撤销栈）、旗标与航线标尺。
 - **点迹三维可视化（point3d）**：可多开的独立三维点云窗口（纯 `QPainter` 正交投影、SNR 色标、区域筛选、独立逐帧回放），与主地图和数据库按 `BatchNo + 时间窗` 三方双向联动。
 
+## 目录结构
+
+```text
+RadarView_CPP/
+├── HelloVscode.pro          # Qt qmake 工程文件
+├── README.md                # 项目总览与构建指南
+├── CLAUDE.md                # 开发约束与 AI 协作规范
+├── docs/                    # 架构、双平台兼容性与数据格式文档
+├── scripts/                 # Win7 / RHEL 7.6 构建、打包与导入表检查脚本
+├── src/
+│   ├── app/                 # 启动入口、主窗口壳层、路径、主题与通用控件
+│   ├── core/                # 地理算法、坐标系、航迹数据模型与回放控制
+│   ├── io/                  # MAT v5 / CSV 解析、异步导入与 SQLite 持久化
+│   ├── globe/               # 3D 地球渲染、航迹图层、瓦片源与地图标绘工具
+│   ├── ui/                  # 状态栏、筛选/管理/设置面板与对话框
+│   ├── point3d/             # 点迹三维可视化独立子系统
+│   └── selftest/            # 内置离线自检套件（--selftest / --dbtest 等）
+└── tools/                   # Python 离线高德瓦片制作与维护脚本
+```
+
 ## 环境要求
 
 | 平台 | Qt 版本 | 编译器 | 构建脚本 |
 |---|---|---|---|
-| Windows 7 SP1 x64 | Qt 5.14.2 (`mingw73_64`) | 干净的 MinGW 7.3.0 (`x86_64-posix-seh`) | [build_win7.sh](build_win7.sh) |
-| RHEL / CentOS 7.6 x64 | Qt 5.14.2 (`gcc_64`) | devtoolset-7+ (GCC 7.3+) | [build_linux.sh](build_linux.sh) |
+| Windows 7 SP1 x64 | Qt 5.14.2 (`mingw73_64`) | 干净的 MinGW 7.3.0 (`x86_64-posix-seh`) | [scripts/build_win7.sh](scripts/build_win7.sh) |
+| RHEL / CentOS 7.6 x64 | Qt 5.14.2 (`gcc_64`) | devtoolset-7+ (GCC 7.3+) | [scripts/build_linux.sh](scripts/build_linux.sh) |
 
 > 不要升级至 Qt 6，也不要使用被 MSYS2 GCC 16 污染的 MinGW 工具链（会导致 Win7 缺失 Win8+ API 或 RHEL 7 超过 `GLIBC_2.17`）。详见 [docs/platform-compat.md](docs/platform-compat.md)。
 
@@ -26,16 +46,16 @@
 # 默认自动探测 /d/software 与 /h/software，也可显式指定环境变量
 MINGW=/h/software/mingw730_clean/Tools/mingw730_64/bin \
 QTPATH=/h/software/Qt/Qt5.14.2/5.14.2/mingw73_64 \
-bash build_win7.sh
+bash scripts/build_win7.sh
 
 # 检查产物目录中所有 exe/dll 导入表是否兼容 Win7
-powershell -NoProfile -ExecutionPolicy Bypass -File check_win7_compat.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_win7_compat.ps1
 ```
 
 ### RHEL / CentOS 7.6 整包
 
 ```bash
-QTDIR=~/Qt5.14.2/5.14.2/gcc_64 bash build_linux.sh
+QTDIR=~/Qt5.14.2/5.14.2/gcc_64 bash scripts/build_linux.sh
 ```
 
 ### 内置自检模式

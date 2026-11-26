@@ -17,7 +17,7 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 |---|---|---|
 | Qt | 5.14.2 MinGW 64：`D:/software/Qt/Qt5.14.2/5.14.2/mingw73_64` | 5.14.2 gcc_64（官方 Linux 安装包） |
 | 编译器 | 干净的 MinGW 7.3.0：`D:/software/mingw730_clean/Tools/mingw730_64/bin` | devtoolset-7（GCC 7.3）；不要用系统自带 GCC 4.8.5 |
-| 构建脚本 | `build_win7.sh` | `build_linux.sh` |
+| 构建脚本 | `scripts/build_win7.sh` | `scripts/build_linux.sh` |
 
 - Qt 6 不支持 Win7，也不支持 RHEL 7（glibc 2.17），不要升级。
 - 不要用 `D:/software/Qt/Qt5.14.2/Tools/mingw730_64`，它已被 MSYS2 gcc 16 污染（运行库依赖 Win8+ API，且带一个 Qt6 的 qmake）。
@@ -158,8 +158,8 @@ Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）�
 
 ### 部署
 
-- **Windows**：`build_win7.sh` 部署到 `build/win7/release`。新增 Qt 模块或插件时，同步在部署段里拷贝对应 dll。
-- **Linux**：`build_linux.sh` 部署到 `build/linux/HelloVscode/`，整包带走，不依赖目标机上的 Qt：
+- **Windows**：`scripts/build_win7.sh` 部署到 `build/win7/release`。新增 Qt 模块或插件时，同步在部署段里拷贝对应 dll。
+- **Linux**：`scripts/build_linux.sh` 部署到 `build/linux/HelloVscode/`，整包带走，不依赖目标机上的 Qt：
   - `lib/`：Qt `.so`（含 `libicu*`）；
   - `plugins/`：`platforms/libqxcb.so`、`xcbglintegrations/`、`sqldrivers/libqsqlite.so`、`imageformats/`；
   - `fonts/`：中文字体，启动时用 `QFontDatabase::addApplicationFont` 加载；
@@ -168,12 +168,12 @@ Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）�
 
 ### 每次改动后的验证
 
-1. `bash build_win7.sh`：用 7.3 重编、部署到 `build/win7/release` 并跑 `--selftest`，必须 `RESULT OK`。
+1. `bash scripts/build_win7.sh`：用 7.3 重编、部署到 `build/win7/release` 并跑 `--selftest`，必须 `RESULT OK`。
 2. 在 `build/win7/release` 下分别用默认、`QT_OPENGL=angle`、`QT_OPENGL=software`、`QT_OPENGL=angle QT_ANGLE_PLATFORM=d3d9` 跑 `./HelloVscode.exe --selftest`，都要 `RESULT OK` 且 GL 错误数为 0。
 3. 航迹/回放自检（同样四种渲染模式）：`./HelloVscode.exe --tracktest "D:/Desktop/RadarView_BiuldByTauri/2026-04-27 09-30-00.csv" "D:/Desktop/RadarView_BiuldByTauri/track_20251210175946.mat"`，看 `tracktest.log`。纯解析自检用 `--parsetest <csv> <mat>`，看 `parsetest.log`。
 4. 点迹可视化自检：`./HelloVscode.exe --pointtest "<detPoint 目录或文件>" --track "<track_*.mat>"` 与 `./HelloVscode.exe --dbtest`（数据库 v2→v4 迁移与重导补列），均须 `RESULT OK`，分别看 `pointtest.log` / `dbtest.log`。
-5. `powershell -NoProfile -ExecutionPolicy Bypass -File check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
-6. Linux（有 CentOS/RHEL 7 环境时）：`bash build_linux.sh`，会编译、部署、跑 `--selftest`，并检查产物不依赖高于 GLIBC_2.17 / GLIBCXX_3.4.19 的符号。软件渲染用 `LIBGL_ALWAYS_SOFTWARE=1` 再跑一遍。
+5. `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
+6. Linux（有 CentOS/RHEL 7 环境时）：`bash scripts/build_linux.sh`，会编译、部署、跑 `--selftest`，并检查产物不依赖高于 GLIBC_2.17 / GLIBCXX_3.4.19 的符号。软件渲染用 `LIBGL_ALWAYS_SOFTWARE=1` 再跑一遍。
 7. 最终确认需在 Win7 SP1 x64 虚拟机和 CentOS/RHEL 7.6 虚拟机里分别运行整包。
 
 ### Git 提交与推送（已获用户长期授权）

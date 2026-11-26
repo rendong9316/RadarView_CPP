@@ -1,14 +1,14 @@
 #!/bin/bash
 # 在 CentOS 7 / RHEL 7.x x86_64 上编译、整包部署并自检
-# 用法: cd HelloVscode && bash build_linux.sh
+# 用法: bash scripts/build_linux.sh
 # 可选环境变量:
 #   QTDIR     Qt 5.14.2 gcc_64 目录（默认 ~/Qt5.14.2/5.14.2/gcc_64）
 #   TILE_SRC  含 .mbtiles 的目录（默认 ./tiles）
 #   FONT_SRC  中文字体文件（默认依次找文泉驿微米黑 / Noto CJK）
 # 产物: build/linux/HelloVscode/（整个目录拷到目标机，运行 ./HelloVscode.sh）
 set -e
-cd "$(dirname "$0")"
-SRC="$(pwd)"
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$SRC"
 
 QTDIR="${QTDIR:-$HOME/Qt5.14.2/5.14.2/gcc_64}"
 TILE_SRC="${TILE_SRC:-$SRC/tiles}"

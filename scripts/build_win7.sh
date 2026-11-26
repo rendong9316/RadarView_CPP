@@ -1,14 +1,14 @@
 #!/bin/bash
 # 一键重建 Win7 兼容版并自检
-# 用法: bash build_win7.sh
+# 用法: bash scripts/build_win7.sh
 # 可选环境变量（默认自动探测 /d/software 与 /h/software）：
 #   MINGW     干净的 MinGW 7.3.0 bin 目录
 #   QTPATH    Qt 5.14.2 mingw73_64 目录（也兼容 QTDIR）
 #   TILE_SRC  含 .mbtiles 的目录
 # 产物: build/win7/release/（整包拷到 Win7 64位机器即可运行）
 set -e
-cd "$(dirname "$0")"
-SRC="$(pwd)"
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$SRC"
 
 # 自动探测干净的 Qt 官方 MinGW 7.3.0（x86_64-posix-seh-rt_v5-rev0），运行库不依赖 Win8+ API
 # 注意：Qt 自带的 Tools/mingw730_64 可能已被 MSYS2 gcc16 污染，不要用
