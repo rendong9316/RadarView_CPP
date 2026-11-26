@@ -26,9 +26,9 @@ VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbti
 
 ### 依赖约束
 
-- 只用 QtCore / QtGui / QtWidgets / QtSql（qsqlite）。不引入 QtWebEngine、QtMultimedia、QtNetwork 服务端、ActiveQt、QtQuick 等，也不引入第三方库；确有需要时先评估两个平台的离线部署。
+- 只用 QtCore / QtGui / QtWidgets / QtSql（qsqlite）/ QtNetwork（仅用于可选在线 HTTP 底图 `NetTileSource`）。不引入 QtWebEngine、QtMultimedia、QtNetwork 服务端、ActiveQt、QtQuick 等，也不引入第三方库；确有需要时先评估两个平台的离线部署。
 - zlib：Windows 用 Qt5Core 内置并导出的版本（`<QtZlib/zlib.h>`），Linux 链接系统 `libz.so.1`（RHEL 7 自带）。
-- 程序完全离线运行：不联网、不开监听端口、不调用外部进程。
+- 程序默认完全离线运行：不开监听端口、不调用外部进程；仅在用户主动切换在线底图时由 `NetTileSource` 发起 HTTP 瓦片请求。
 
 ### 代码约束
 
