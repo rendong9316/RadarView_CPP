@@ -10,8 +10,8 @@ class QLabel;
 class QPaintEvent;
 class QStackedWidget;
 
-// 侧栏面板（RadarView useActivityBar.ts PanelId）：轨迹面板 / 图层控制已移除
-enum class PanelId { Manage = 0, Flags, TimeFilter, Settings, Count };
+// 侧栏面板（RadarView useActivityBar.ts PanelId）：Settings 保留原索引 3 以兼容旧设置持久化
+enum class PanelId { Manage = 0, Flags, TimeFilter, Settings, Diagnostics, Count };
 
 namespace appshell {
 

@@ -6,9 +6,11 @@
 #include <QButtonGroup>
 #include <QCloseEvent>
 #include <QColorDialog>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -34,6 +36,7 @@
 
 #include "apppaths.h"
 #include "appstatusbar.h"
+#include "diagnosticspanel.h"
 #include "drawingcontroller.h"
 #include "geocalc.h"
 #include "globewidget.h"
@@ -41,6 +44,7 @@
 #include "mapsourcecontroller.h"
 #include "maptools.h"
 #include "point3dcoordinator.h"
+#include "point3dwindow.h"
 #include "radarsite.h"
 #include "radarsitedialog.h"
 #include "replaycontroller.h"
@@ -146,11 +150,115 @@ MainWindow::MainWindow(QWidget *parent)
         setTrackColorMode(m == 1 ? TrackLayer::TrackColorMode::ByTrack : TrackLayer::TrackColorMode::ByFile);
     });
     connect(m_manage, &ManageState::dataChanged, m_settingsPanel, &SettingsPanel::refresh);
+    m_diagPanel = new DiagnosticsPanel(&m_store, m_radarSites, this);
+    m_diagPanel->setDiagBundle(&m_diagBundle);
+    connect(m_diagPanel, &DiagnosticsPanel::mutedTracksChanged, this, [this](const QSet<int> &muted) {
+        m_globe->trackLayer()->setMutedTracks(muted);
+        m_globe->update();
+    });
+    connect(m_diagPanel, &DiagnosticsPanel::isolateTracksRequested, this,
+            [this](const QSet<int> &indices, bool zoomToFirst) {
+                if (indices.isEmpty()) {
+                    isolateTrack(-1);
+                    return;
+                }
+                QSet<QString> keys;
+                int firstIdx = -1;
+                for (int idx : indices) {
+                    if (idx >= 0 && idx < m_store.size()) {
+                        keys.insert(m_store.tracks().at(idx).key());
+                        if (firstIdx < 0 || idx < firstIdx)
+                            firstIdx = idx;
+                    }
+                }
+                if (keys.isEmpty())
+                    return;
+                if (m_isoKeys.isEmpty()) {
+                    m_overviewDotKeys = m_dotKeys;
+                    m_haveOverviewDots = true;
+                }
+                m_isoKeys = keys;
+                applyDisplay();
+                scheduleSaveUiState();
+                if (zoomToFirst && firstIdx >= 0) {
+                    if (indices.size() == 1) {
+                        zoomToTrack(firstIdx);
+                    } else {
+                        double minLon = 1e9, maxLon = -1e9, minLat = 1e9, maxLat = -1e9;
+                        bool any = false;
+                        for (int idx : indices) {
+                            if (idx < 0 || idx >= m_store.size())
+                                continue;
+                            const QVector<TrackPoint> &pts = m_store.tracks().at(idx).pointsForMode(m_radarMode);
+                            for (const TrackPoint &pt : pts) {
+                                minLon = qMin(minLon, pt.lon);
+                                maxLon = qMax(maxLon, pt.lon);
+                                minLat = qMin(minLat, pt.lat);
+                                maxLat = qMax(maxLat, pt.lat);
+                                any = true;
+                            }
+                        }
+                        if (any)
+                            m_globe->fitGeoBounds(minLon, maxLon, minLat, maxLat);
+                    }
+                }
+            });
+    connect(m_diagPanel, &DiagnosticsPanel::filterOverlayRequested, this, &MainWindow::setFilterOverlayEnabled);
+    connect(m_diagPanel, &DiagnosticsPanel::gateAutopsyOverlayChanged,
+            m_globe, &GlobeWidget::setGateAutopsyOverlay);
+    connect(m_diagPanel, &DiagnosticsPanel::fragmentOverlayChanged,
+            m_globe, &GlobeWidget::setFragmentBridgeOverlay);
+    connect(m_diagPanel, &DiagnosticsPanel::orphanClusterSelected, this,
+            [this](const trackdiag::OrphanDetCluster &cl) {
+                m_globe->setOrphanClusterOverlay(cl, activeDiagDetDataset(), true);
+                const RadarSite *site = m_radarSites ? m_radarSites->activeSite() : nullptr;
+                double aLat = 0.0, aLon = 0.0;
+                if (site && site->anchorLatLon(&aLat, &aLon)
+                        && std::isfinite(cl.meanRange) && std::isfinite(cl.meanAz) && cl.meanRange > 0.0f) {
+                    const double rKm = cl.meanRange > 20000.0f ? double(cl.meanRange) / 1000.0 : double(cl.meanRange);
+                    double lat = 0.0, lon = 0.0;
+                    if (geocalc::destination(aLat, aLon, double(cl.meanAz), rKm, &lat, &lon)) {
+                        double cLon = 0.0, cLat = 0.0, cAlt = 600.0;
+                        m_globe->cameraView(&cLon, &cLat, &cAlt);
+                        m_globe->lookAt(lon, lat, qMin(cAlt, 400.0));
+                    }
+                }
+            });
+    connect(m_diagPanel, &DiagnosticsPanel::focusPoint3dRegionRequested, this,
+            [this](double rMin, double rMax, double vMin, double vMax,
+                   double azMin, double azMax, int frameStart, int frameEnd) {
+                Point3dWindow *target = (m_diagDetWin && m_diagDetWin->dataset() && !m_diagDetWin->dataset()->frames.isEmpty())
+                    ? m_diagDetWin.data() : nullptr;
+                if (!target) {
+                    const QList<Point3dWindow *> wins = m_point3d->windows();
+                    for (int i = wins.size() - 1; i >= 0; --i) {
+                        if (wins[i] && wins[i]->dataset() && !wins[i]->dataset()->frames.isEmpty()) {
+                            target = wins[i];
+                            break;
+                        }
+                    }
+                }
+                if (!target) {
+                    if (!app::testMode())
+                        m_statusBar->setError(QStringLiteral("请先点击「加载 DetPoint…」或在点迹三维窗口中导入原始点迹"));
+                    return;
+                }
+                target->showNormal();
+                target->raise();
+                target->activateWindow();
+                target->focusLocalBox(rMin, rMax, vMin, vMax, azMin, azMax, frameStart, frameEnd);
+            });
+    connect(m_diagPanel, &DiagnosticsPanel::loadDetPointsRequested, this, &MainWindow::loadDetPointsForDiagnostics);
+    connect(m_diagPanel, &DiagnosticsPanel::replaySeekRequested, this, [this](qint64 timeMs) {
+        if (m_replay->end() > m_replay->start())
+            m_replay->seekTime(timeMs);
+    });
     for (int i = 0; i < int(PanelId::Count); ++i) {
         QWidget *w = i == int(PanelId::Manage) ? static_cast<QWidget *>(m_managePanel)
                    : i == int(PanelId::Flags) ? static_cast<QWidget *>(m_flagPanel)
                    : i == int(PanelId::TimeFilter) ? static_cast<QWidget *>(m_filterPanel)
-                   : i == int(PanelId::Settings) ? static_cast<QWidget *>(m_settingsPanel) : new QWidget;
+                   : i == int(PanelId::Settings) ? static_cast<QWidget *>(m_settingsPanel)
+                   : i == int(PanelId::Diagnostics) ? static_cast<QWidget *>(m_diagPanel) : new QWidget;
         m_sidePanel->addPanel(w);
     }
     m_sidePanel->hide();
@@ -235,7 +343,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_drawCtrl, &DrawingController::errorMessage, m_statusBar, &AppStatusBar::setError);
     connect(m_drawCtrl, &DrawingController::uiStateChanged, this, &MainWindow::scheduleSaveUiState);
     connect(m_point3d, &Point3dCoordinator::isolateTrackRequested, this, &MainWindow::isolateTrack);
-    connect(m_point3d, &Point3dCoordinator::replayRangeInvalidated, this, &MainWindow::resetReplayRange);
+    connect(m_point3d, &Point3dCoordinator::replayRangeInvalidated, this, [this]() {
+        resetReplayRange();
+        syncDiagDetDataset();
+    });
     connect(m_point3d, &Point3dCoordinator::masterSeekRequested, m_replay, &ReplayController::seekTime);
     connect(m_importCtrl, &TrackImportCoordinator::loadingStateChanged, m_statusBar, &AppStatusBar::setLoading);
     connect(m_importCtrl, &TrackImportCoordinator::persistingStateChanged, m_statusBar, &AppStatusBar::setPersisting);
@@ -257,6 +368,12 @@ MainWindow::MainWindow(QWidget *parent)
         if (m_radarSites)
             m_radarSites->upsertFromSysPara(site);
     });
+    connect(m_importCtrl, &TrackImportCoordinator::radarDiagBundleDiscovered, this,
+            [this](const trackdiag::TrackDiagBundle &bundle) {
+                m_diagBundle.merge(bundle);
+                if (m_diagPanel)
+                    m_diagPanel->setDiagBundle(&m_diagBundle);
+            });
     connect(m_radarSites, &RadarSiteStore::changed, this, [this]() {
         if (m_radarPpiAction) {
             QSignalBlocker blk(m_radarPpiAction);
@@ -264,6 +381,8 @@ MainWindow::MainWindow(QWidget *parent)
         }
         if (!m_radarSites->activeSite())
             m_statusBar->setRadarPolarText(QString(), QString(), false);
+        if (m_diagPanel)
+            m_diagPanel->refreshAll();
         m_globe->update();
     });
 
@@ -303,9 +422,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_manage, &ManageState::storeChanged, this, [this]() {
         refreshSources();
         m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
+        if (m_store.size() == 0) {
+            m_diagBundle.clear();
+            m_globe->clearDiagnosticsOverlay();
+            m_globe->trackLayer()->setMutedTracks(QSet<int>());
+        }
         applyDisplay();
         if (m_analysisWin)
             m_analysisWin->refreshTracks();
+        if (m_diagPanel)
+            m_diagPanel->refreshAll();
     });
     connect(m_manage, &ManageState::displayChanged, this, &MainWindow::applyDisplay);
     connect(m_managePanel, &ManagePanel::viewPointsRequested, this, [this](const QString &key) {
@@ -477,6 +603,8 @@ void MainWindow::loadPersisted()
     applyAdsbVisibility();
     refreshSources();
     applyDisplay();
+    if (m_diagPanel)
+        m_diagPanel->refreshAll();
     centerGlobeOnTracks(m_globe, m_store);
     // 上次退出时的视角优先于「自动定位到数据中心」
     restoreUiState();
@@ -649,7 +777,66 @@ void MainWindow::onTracksImported(int beforeCount, bool firstData)
         centerGlobeOnTracks(m_globe, m_store);
     if (m_analysisWin)
         m_analysisWin->refreshTracks();
+    if (m_diagPanel)
+        m_diagPanel->refreshAll();
     m_globe->update();
+}
+
+const Point3dDataset *MainWindow::activeDiagDetDataset() const
+{
+    if (m_diagDetWin && m_diagDetWin->dataset() && !m_diagDetWin->dataset()->frames.isEmpty())
+        return m_diagDetWin->dataset();
+    const QList<Point3dWindow *> wins = m_point3d ? m_point3d->windows() : QList<Point3dWindow *>();
+    for (int i = wins.size() - 1; i >= 0; --i) {
+        if (wins[i] && wins[i]->dataset() && !wins[i]->dataset()->frames.isEmpty())
+            return wins[i]->dataset();
+    }
+    return nullptr;
+}
+
+void MainWindow::syncDiagDetDataset()
+{
+    if (!m_diagPanel || !m_point3d)
+        return;
+    Point3dWindow *best = nullptr;
+    const QList<Point3dWindow *> wins = m_point3d->windows();
+    for (int i = wins.size() - 1; i >= 0; --i) {
+        if (wins[i] && wins[i]->dataset() && !wins[i]->dataset()->frames.isEmpty()) {
+            best = wins[i];
+            break;
+        }
+    }
+    if (best) {
+        m_diagDetWin = best;
+        m_diagPanel->setDetDataset(best->dataset());
+    } else if (!m_diagDetWin.isNull()) {
+        // 之前绑定的点迹窗口已清空或关闭，清理指针防止悬垂引用
+        m_diagDetWin = nullptr;
+        m_diagPanel->setDetDataset(nullptr);
+    }
+}
+
+void MainWindow::loadDetPointsForDiagnostics()
+{
+    if (app::testMode())
+        return;
+    const QString dir = app::settings().value(QStringLiteral("point3d.last_dir"), QDir::homePath()).toString();
+    const QString pattern = app::settings().value(QStringLiteral("point3d.file_pattern"),
+                                                  QStringLiteral("detPoint_*.mat")).toString();
+    const QString filter = QStringLiteral("MATLAB 点迹数据 (%1);;所有文件 (*)").arg(pattern);
+    const QStringList files = QFileDialog::getOpenFileNames(this, tr("加载原始检测点迹 (DetPoint)"), dir, filter);
+    if (files.isEmpty())
+        return;
+    app::setValue(QStringLiteral("point3d.last_dir"), QFileInfo(files.first()).absolutePath());
+    Point3dWindow *win = m_diagDetWin.data();
+    if (!win) {
+        const QList<Point3dWindow *> wins = m_point3d->windows();
+        win = wins.isEmpty() ? m_point3d->createWindow() : wins.last();
+    }
+    m_diagDetWin = win;
+    win->show();
+    win->raise();
+    win->loadDetectionFiles(files);
 }
 
 // ---------------------------------------------------------------
@@ -1056,6 +1243,8 @@ void MainWindow::resetAllFilters()
     }
     m_isoKeys.clear();                      // 地图单独显示 / 多选对比
     m_globe->clearFocusPoint();
+    m_globe->trackLayer()->setMutedTracks(QSet<int>());
+    m_globe->clearDiagnosticsOverlay();
     m_manage->clearVisible();               // 管理系统可见集合（单独显示）
     m_manage->clearHighlights();
     if (m_managePanel)
@@ -1488,6 +1677,7 @@ void MainWindow::buildMenuBar()
     item(mView, tr("航迹管理系统"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_M), [this]() { activatePanel(PanelId::Manage); });
     item(mView, tr("旗标面板"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_F), [this]() { activatePanel(PanelId::Flags); });
     item(mView, tr("时间过滤"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_E), [this]() { activatePanel(PanelId::TimeFilter); });
+    item(mView, tr("航迹诊断面板"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_D), [this]() { activatePanel(PanelId::Diagnostics); });
     item(mView, tr("空间套索筛选"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_S), [this]() { m_filterPanel->clickSpatialToggle(); });
     mView->addSeparator();
     item(mView, tr("重置地图视角"), QKeySequence(Qt::CTRL + Qt::Key_R), [this]() { m_globe->resetView(); });
@@ -1687,14 +1877,19 @@ void MainWindow::activatePanel(PanelId id)
     m_panel = i;
     m_sidePanel->showPanel(i, appshell::panelTitle(id));
     m_sidePanel->show();
+    const int defW = id == PanelId::Diagnostics ? 380 : appshell::kSidebarDefault;
     const int w = qBound(ui::sz(appshell::kSidebarMin),
-                         m_panelWidth.value(i, ui::sz(appshell::kSidebarDefault)),
+                         m_panelWidth.value(i, ui::sz(defW)),
                          ui::sz(appshell::kSidebarMax));
     const int total = qMax(m_splitter->width(), w + 200);
     m_splitter->setSizes(QList<int>() << w << total - w);
     m_activityBar->highlight(i);
     if (id == PanelId::Manage)
         m_managePanel->refresh();
+    else if (id == PanelId::Diagnostics && m_diagPanel) {
+        syncDiagDetDataset();
+        m_diagPanel->refreshAll();
+    }
     scheduleSaveUiState();
 }
 

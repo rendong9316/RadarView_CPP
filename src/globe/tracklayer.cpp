@@ -24,6 +24,7 @@ const float kLineHalfWidthPx = 1.0f;         // 线宽 2px
 const float kHoverHalfWidthPx = 2.5f;        // 悬停线宽 5px（与 RadarView HOVER_WIDTH 一致）
 const float kHoverDotScale = 1.6f;           // 悬停端点放大倍数
 const QVector4D kHoverColor(1.0f, 0.2f, 0.2f, 1.0f);   // #ff3333
+const QVector4D kMutedColor(0.55f, 0.25f, 0.28f, 0.22f); // 门限沙盒弱化暗红灰
 
 // 线段四边形：每个顶点都带两个端点，着色器在屏幕空间算法线并沿 side 方向展开
 const char *const kLineVs = R"(
@@ -115,7 +116,7 @@ void main()
     if (a <= 0.0)
         discard;
     float ring = clamp(r - (v_r - 1.5), 0.0, 1.0);
-    gl_FragColor = vec4(mix(u_color.rgb, vec3(0.0), ring * 0.85), a);
+    gl_FragColor = vec4(mix(u_color.rgb, vec3(0.0), ring * 0.85), a * u_color.a);
 }
 )";
 
@@ -425,6 +426,19 @@ void TrackLayer::setIsolatedTracks(const QSet<int> &indices)
     m_ptDotsDirty = true;
 }
 
+void TrackLayer::setMutedTracks(const QSet<int> &indices)
+{
+    QSet<int> clean;
+    for (int idx : indices)
+        if (idx >= 0)
+            clean.insert(idx);
+    if (clean == m_mutedTracks)
+        return;
+    m_mutedTracks = clean;
+    m_rangesDirty = true;
+    m_dynamicDirty = true;
+}
+
 void TrackLayer::setTrackMask(const QVector<bool> &mask)
 {
     if (mask == m_mask)
@@ -434,20 +448,23 @@ void TrackLayer::setTrackMask(const QVector<bool> &mask)
     m_dynamicDirty = true;
 }
 
-// 每组：全部显示时直接画整批；否则把要显示的航迹片段按批次合并成尽量少的绘制调用
+// 每组：全部显示且无 mute 航迹时直接画整批；否则把要正常显示的航迹片段按批次合并成尽量少的绘制调用
 void TrackLayer::rebuildDrawRanges()
 {
     m_rangesDirty = false;
     m_groupFull = QVector<bool>(m_groups.size(), true);
     m_groupPieces = QVector<QVector<Piece>>(m_groups.size());
-    if (m_mask.isEmpty())
+    if (m_mask.isEmpty() && m_mutedTracks.isEmpty())
         return;
-    for (int i = 0; i < m_trackGroup.size(); ++i)
-        if (i >= m_mask.size() || !m_mask[i])
+    for (int i = 0; i < m_trackGroup.size(); ++i) {
+        const bool maskedOut = !m_mask.isEmpty() && (i >= m_mask.size() || !m_mask[i]);
+        if (maskedOut || m_mutedTracks.contains(i))
             m_groupFull[m_trackGroup[i]] = false;
+    }
     for (int i = 0; i < m_trackGroup.size(); ++i) {
         const int g = m_trackGroup[i];
-        if (m_groupFull[g] || i >= m_mask.size() || !m_mask[i])
+        const bool maskedOut = !m_mask.isEmpty() && (i >= m_mask.size() || !m_mask[i]);
+        if (m_groupFull[g] || maskedOut || m_mutedTracks.contains(i))
             continue;
         QVector<Piece> &out = m_groupPieces[g];
         for (const Piece &p : qAsConst(m_trackPieces[i])) {
@@ -500,6 +517,12 @@ void TrackLayer::rebuildStatic()
     for (auto it = m_isoTracks.begin(); it != m_isoTracks.end();) {
         if (*it < 0 || *it >= tracks.size())
             it = m_isoTracks.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = m_mutedTracks.begin(); it != m_mutedTracks.end();) {
+        if (*it < 0 || *it >= tracks.size())
+            it = m_mutedTracks.erase(it);
         else
             ++it;
     }
@@ -816,21 +839,52 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
             gl->glDrawElements(GL_TRIANGLES, p.count * 6, GL_UNSIGNED_SHORT, nullptr);
         }
     };
+    const float mutedHw = qMax(0.75f * dpr, hw * 0.7f);
     if (!m_isoTracks.isEmpty()) {
+        if (!m_mutedTracks.isEmpty()) {
+            m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(mutedHw, mutedHw + 1.0f));
+            m_lineProg->setUniformValue(m_uLineColor, kMutedColor);
+            for (int ti : qAsConst(m_isoTracks)) {
+                if (!trackShown(ti) || !m_mutedTracks.contains(ti))
+                    continue;
+                drawTrackPieces(ti);
+            }
+            m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(hw, hw + 1.0f));
+        }
         for (int ti : qAsConst(m_isoTracks)) {
-            if (!trackShown(ti))
+            if (!trackShown(ti) || m_mutedTracks.contains(ti))
                 continue;
             m_lineProg->setUniformValue(m_uLineColor, trackColorVec(ti));
             drawTrackPieces(ti);
         }
     } else if (m_colorMode == TrackColorMode::ByTrack) {
+        if (!m_mutedTracks.isEmpty()) {
+            m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(mutedHw, mutedHw + 1.0f));
+            m_lineProg->setUniformValue(m_uLineColor, kMutedColor);
+            for (int ti : qAsConst(m_mutedTracks)) {
+                if (!trackShown(ti) || m_trackPieces[ti].isEmpty())
+                    continue;
+                drawTrackPieces(ti);
+            }
+            m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(hw, hw + 1.0f));
+        }
         for (int ti = 0; ti < m_trackGroup.size(); ++ti) {
-            if (!trackShown(ti) || m_trackPieces[ti].isEmpty())
+            if (!trackShown(ti) || m_trackPieces[ti].isEmpty() || m_mutedTracks.contains(ti))
                 continue;
             m_lineProg->setUniformValue(m_uLineColor, trackColorVec(ti));
             drawTrackPieces(ti);
         }
     } else {
+        if (!m_mutedTracks.isEmpty()) {
+            m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(mutedHw, mutedHw + 1.0f));
+            m_lineProg->setUniformValue(m_uLineColor, kMutedColor);
+            for (int ti : qAsConst(m_mutedTracks)) {
+                if (!trackShown(ti) || m_trackPieces[ti].isEmpty())
+                    continue;
+                drawTrackPieces(ti);
+            }
+            m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(hw, hw + 1.0f));
+        }
         for (const Batch &b : qAsConst(m_batches)) {
             if (!m_groups[b.group].visible || !m_groupFull[b.group])
                 continue;
@@ -871,12 +925,16 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
     };
     if (m_replay) {
         m_lineProg->setUniformValue(m_uLineWindow, allTime);
-        if (m_colorMode == TrackColorMode::ByTrack) {
+        if (m_colorMode == TrackColorMode::ByTrack || !m_mutedTracks.isEmpty()) {
             gl->glBindBuffer(GL_ARRAY_BUFFER, m_headVbo);
             for (const TrackHeadSpan &sp : qAsConst(m_headSpans)) {
-                m_lineProg->setUniformValue(m_uLineColor, trackColorVec(sp.track));
+                const bool muted = m_mutedTracks.contains(sp.track);
+                const float useHw = muted ? mutedHw : hw;
+                m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(useHw, useHw + 1.0f));
+                m_lineProg->setUniformValue(m_uLineColor, muted ? kMutedColor : trackColorVec(sp.track));
                 drawRange(GroupRange{sp.first, sp.count}, kLineStride, setLineAttribs);
             }
+            m_lineProg->setUniformValue(m_uLineHalfWidth, QVector2D(hw, hw + 1.0f));
         } else {
             drawRanges(m_headVbo, m_headRanges, kLineStride, setLineAttribs,
                        [&](int g) { m_lineProg->setUniformValue(m_uLineColor, groupColor(g)); });
@@ -911,13 +969,19 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
         gl->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void *>(off));
         gl->glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void *>(off + 3 * sizeof(float)));
     };
-    if (m_colorMode == TrackColorMode::ByTrack) {
+    if (m_colorMode == TrackColorMode::ByTrack || !m_mutedTracks.isEmpty()) {
         gl->glBindBuffer(GL_ARRAY_BUFFER, m_dotVbo);
         for (int dIdx = 0; dIdx < m_dotTracks.size(); ++dIdx) {
             const int ti = m_dotTracks[dIdx];
-            const QColor c = trackColor(ti);
-            m_dotProg->setUniformValue(m_uDotColor, QVector4D(float(c.redF()), float(c.greenF()), float(c.blueF()), 1.0f));
-            m_dotProg->setUniformValue(m_uDotRadius, m_groups[m_trackGroup[ti]].radiusPx * dpr);
+            const bool muted = m_mutedTracks.contains(ti);
+            if (muted) {
+                m_dotProg->setUniformValue(m_uDotColor, QVector4D(kMutedColor.toVector3D(), 0.28f));
+                m_dotProg->setUniformValue(m_uDotRadius, m_groups[m_trackGroup[ti]].radiusPx * 0.65f * dpr);
+            } else {
+                const QColor c = trackColor(ti);
+                m_dotProg->setUniformValue(m_uDotColor, QVector4D(float(c.redF()), float(c.greenF()), float(c.blueF()), 1.0f));
+                m_dotProg->setUniformValue(m_uDotRadius, m_groups[m_trackGroup[ti]].radiusPx * dpr);
+            }
             drawRange(GroupRange{dIdx, 1}, kDotStride, setDotAttribs);
         }
     } else {

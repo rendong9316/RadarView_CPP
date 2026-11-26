@@ -2,6 +2,7 @@
 
 #include "apppaths.h"
 #include "appstatusbar.h"
+#include "diagnosticspanel.h"
 #include "globewidget.h"
 #include "mainwindow.h"
 #include "point3dwindow.h"
@@ -10,6 +11,7 @@
 #include "track.h"
 #include "trackanalysis.h"
 #include "trackanalysiswindow.h"
+#include "trackdiag.h"
 #include "tracklayer.h"
 #include "trackparsers.h"
 #include "trackpointdialog.h"
@@ -203,7 +205,8 @@ void runDebugTest(MainWindow *w, const QString &mat, const QString &detDir, cons
                     pwin->seekToFrame(targetF);
                     check(rp->current() == pwin->dataset()->frames.at(targetF).timeMs,
                           QStringLiteral("点迹窗口手动切帧反向驱动主地图时钟"));
-                    pwin->close();
+                    // 保留点迹窗口以便 Phase 4 诊断面板联动 60 帧 DetPoint，先关闭主时钟同步避免干扰 Phase 2/3
+                    pwin->setSyncMasterClock(false);
 
                     // 7. Phase 2: 滤波残差与两航迹定量误差对比
                     const Track &tr0 = store->tracks().at(0);
@@ -299,9 +302,199 @@ void runDebugTest(MainWindow *w, const QString &mat, const QString &detDir, cons
                             check(sb->checkLayout(&layoutRep2),
                                   QStringLiteral("Phase 3 启用极坐标状态栏后布局校验：%1")
                                       .arg(layoutRep2.isEmpty() ? QStringLiteral("OK") : layoutRep2));
-                            check(g->glErrorCount() == 0,
-                                  QStringLiteral("全程 OpenGL 错误数=%1").arg(g->glErrorCount()));
-                            finish();
+
+                            // 9. Phase 4: 航迹诊断面板 + 虚假航迹/消失断航双引擎自检
+                            const trackdiag::TrackDiagBundle &bundle = w->diagBundle();
+                            int metaWithQuality = 0;
+                            int metaWithAssc = 0;
+                            int metaWithGate = 0;
+                            int metaWithLife = 0;
+                            for (auto it = bundle.metas.constBegin(); it != bundle.metas.constEnd(); ++it) {
+                                const trackdiag::TrackDiagMeta &m = it.value();
+                                if (m.valid && std::isfinite(m.quality) && m.quality >= 0.0 && m.quality <= 1.0)
+                                    ++metaWithQuality;
+                                if (!m.asscFlags.isEmpty())
+                                    ++metaWithAssc;
+                                if (m.gate.valid)
+                                    ++metaWithGate;
+                                if (!m.life.isEmpty())
+                                    ++metaWithLife;
+                            }
+                            check(bundle.metas.size() == 84
+                                      && metaWithQuality == 84
+                                      && metaWithAssc == 84
+                                      && metaWithGate == 84
+                                      && metaWithLife > 0,
+                                  QStringLiteral("Phase 4 自动解析 TrackDiagBundle 元数据：共 %1 条（Quality=%2 asscFlags=%3 gate=%4 lifeList=%5）")
+                                      .arg(bundle.metas.size()).arg(metaWithQuality).arg(metaWithAssc)
+                                      .arg(metaWithGate).arg(metaWithLife));
+                            check(bundle.tempPoints.size() == 1857,
+                                  QStringLiteral("Phase 4 自动解析 tempTrackList=%1 条（期望 1857）")
+                                      .arg(bundle.tempPoints.size()));
+
+                            // 9a. 虚假航迹引擎：84 条降序评分 + 沙盒门限与 TrackLayer mutedTracks 同步
+                            trackdiag::FalseTrackConfig fcfg;
+                            const QVector<trackdiag::FalseTrackItem> falseItems =
+                                trackdiag::evaluateFalseTracks(*store, bundle, fcfg);
+                            bool scoreDesc = true;
+                            for (int i = 1; i < falseItems.size(); ++i) {
+                                if (falseItems.at(i - 1).suspicionScore + 1e-6 < falseItems.at(i).suspicionScore) {
+                                    scoreDesc = false;
+                                    break;
+                                }
+                            }
+                            check(falseItems.size() == 84 && scoreDesc,
+                                  QStringLiteral("Phase 4 evaluateFalseTracks 产出 %1 条且按疑点分降序（最高=%2 最低=%3）")
+                                      .arg(falseItems.size())
+                                      .arg(falseItems.isEmpty() ? 0.0 : falseItems.first().suspicionScore, 0, 'f', 1)
+                                      .arg(falseItems.isEmpty() ? 0.0 : falseItems.last().suspicionScore, 0, 'f', 1));
+
+                            w->activatePanel(PanelId::Diagnostics);
+                            DiagnosticsPanel *dp = w->diagnosticsPanel();
+                            check(dp != nullptr && w->activePanel() == int(PanelId::Diagnostics),
+                                  QStringLiteral("Phase 4 打开航迹诊断面板（activePanel=%1）").arg(w->activePanel()));
+                            if (!dp) {
+                                pwin->close();
+                                finish();
+                                return;
+                            }
+                            dp->setCurrentTab(0);
+                            check(dp->currentTab() == 0 && dp->falseTrackCount() == 84,
+                                  QStringLiteral("Phase 4 诊断面板 Tab 1 虚假航迹列表=%1 条").arg(dp->falseTrackCount()));
+                            dp->setSandboxMinQuality(0.5);
+                            const int filteredCnt = dp->filteredFalseCount();
+                            const int mutedCnt = layer->mutedTracks().size();
+                            check(filteredCnt > 0 && mutedCnt == filteredCnt,
+                                  QStringLiteral("Phase 4 调整沙盒 minQuality=0.5：拟滤除=%1 条，TrackLayer mutedTracks=%2 条")
+                                      .arg(filteredCnt).arg(mutedCnt));
+                            dp->selectFalseRow(0);
+
+                            // 9b. 消失/断航引擎：断航 + 波门尸检 + 断批重起 + 漏批挖掘 + 四级漏斗
+                            const Point3dDataset *detDs = pwin->dataset();
+                            check(detDs != nullptr && detDs->frames.size() == 60,
+                                  QStringLiteral("Phase 4 诊断联动 DetPoint 帧数=%1（期望 60）")
+                                      .arg(detDs ? detDs->frames.size() : 0));
+
+                            const QVector<trackdiag::BrokenTrackItem> broken =
+                                trackdiag::findBrokenTracks(*store, bundle, active);
+                            check(!broken.isEmpty(),
+                                  QStringLiteral("Phase 4 findBrokenTracks 检出异常断航=%1 条").arg(broken.size()));
+
+                            bool gateValid = false;
+                            bool hasVerdict = false;
+                            int autopsyIdx = 0;
+                            trackdiag::GateAutopsyResult sampleAutopsy;
+                            for (int bi = 0; bi < qMin(broken.size(), 15); ++bi) {
+                                const trackdiag::GateAutopsyResult ar =
+                                    trackdiag::runGateAutopsy(broken.at(bi).trackIndex, *store, bundle, detDs);
+                                bool curGate = false;
+                                bool curCand = false;
+                                for (const trackdiag::GateAutopsyFrame &fr : ar.frames) {
+                                    if (fr.gateR > 0.0f && fr.gateAz > 0.0f)
+                                        curGate = true;
+                                    for (const trackdiag::GateCandidate &c : fr.candidates) {
+                                        if (!c.verdict.isEmpty())
+                                            curCand = true;
+                                    }
+                                }
+                                if (bi == 0) {
+                                    sampleAutopsy = ar;
+                                    autopsyIdx = bi;
+                                }
+                                if (curGate && curCand) {
+                                    sampleAutopsy = ar;
+                                    autopsyIdx = bi;
+                                    gateValid = true;
+                                    hasVerdict = true;
+                                    break;
+                                }
+                                if (curGate)
+                                    gateValid = true;
+                            }
+                            check(!sampleAutopsy.frames.isEmpty() && !sampleAutopsy.primaryCause.isEmpty()
+                                      && gateValid && hasVerdict,
+                                  QStringLiteral("Phase 4 runGateAutopsy 有效波门与候选点判定：frames=%1 cause=%2")
+                                      .arg(sampleAutopsy.frames.size()).arg(sampleAutopsy.primaryCause));
+
+                            const QVector<trackdiag::TrackFragmentPair> frags = trackdiag::findFragmentPairs(*store);
+                            check(!frags.isEmpty(),
+                                  QStringLiteral("Phase 4 findFragmentPairs 检出断批重起=%1 对").arg(frags.size()));
+
+                            const QVector<trackdiag::OrphanDetCluster> orphans =
+                                detDs ? trackdiag::findOrphanDetClusters(*detDs, *store, bundle)
+                                      : QVector<trackdiag::OrphanDetCluster>();
+                            check(!orphans.isEmpty(),
+                                  QStringLiteral("Phase 4 findOrphanDetClusters 检出未关联漏批链=%1 条").arg(orphans.size()));
+
+                            const QVector<trackdiag::FunnelFrameStat> funnel =
+                                trackdiag::traceTrackFunnel(store->tracks().at(0), *store, bundle, detDs);
+                            int funnelHits = 0;
+                            for (const trackdiag::FunnelFrameStat &fs : funnel) {
+                                if (fs.l1DetCount > 0 || fs.l2TempCount > 0 || fs.l3AsscCount > 0 || fs.l4SmoothCount > 0)
+                                    ++funnelHits;
+                            }
+                            check(!funnel.isEmpty() && funnelHits > 0,
+                                  QStringLiteral("Phase 4 traceTrackFunnel 输出 %1 帧（有效命中 %2 帧）")
+                                      .arg(funnel.size()).arg(funnelHits));
+
+                            // 9c. 切换 Tab 2 与三子视图，选中异常行触发地图诊断叠加绘制
+                            dp->setCurrentTab(1);
+                            check(dp->currentTab() == 1
+                                      && dp->brokenTrackCount() > 0
+                                      && dp->fragmentPairCount() > 0
+                                      && dp->orphanClusterCount() > 0,
+                                  QStringLiteral("Phase 4 诊断面板 Tab 2 统计：断航=%1 配对=%2 漏批链=%3")
+                                      .arg(dp->brokenTrackCount())
+                                      .arg(dp->fragmentPairCount())
+                                      .arg(dp->orphanClusterCount()));
+
+                            dp->setDisappearSubView(0);
+                            dp->selectBrokenRow(autopsyIdx);
+                            check(!dp->lastGateAutopsy().frames.isEmpty(),
+                                  QStringLiteral("Phase 4 选中异常断航行触发波门尸检（%1 帧）")
+                                      .arg(dp->lastGateAutopsy().frames.size()));
+                            if (autopsyIdx >= 0 && autopsyIdx < broken.size())
+                                g->lookAt(broken.at(autopsyIdx).endLon, broken.at(autopsyIdx).endLat, 500.0);
+
+                            afterFrames([=]() {
+                                const int gateDrawn = g->diagnosticsItemsDrawn();
+                                check(gateDrawn > 0,
+                                      QStringLiteral("Phase 4 地图波门尸检叠加绘制图元=%1").arg(gateDrawn));
+
+                                // 断批重起子视图：先清除波门叠加再选中首对，独立验证双选隔离与桥接虚线绘制
+                                g->clearDiagnosticsOverlay();
+                                dp->setDisappearSubView(1);
+                                dp->selectFragmentRow(0);
+                                afterFrames([=]() {
+                                    const int fragDrawn = g->diagnosticsItemsDrawn();
+                                    check(fragDrawn > 0 && w->isolatedTracks().size() == 2,
+                                          QStringLiteral("Phase 4 断批重起叠加绘制图元=%1，双选隔离=%2 条")
+                                              .arg(fragDrawn).arg(w->isolatedTracks().size()));
+
+                                    // 漏批挖掘 & 四级漏斗子视图：先清除桥接叠加再选中漏批链与漏斗航迹
+                                    g->clearDiagnosticsOverlay();
+                                    dp->setDisappearSubView(2);
+                                    dp->selectOrphanRow(0);
+                                    dp->selectFunnelTrack(0);
+                                    check(dp->funnelFrameCount() > 0,
+                                          QStringLiteral("Phase 4 面板四级漏斗表=%1 帧").arg(dp->funnelFrameCount()));
+                                    afterFrames([=]() {
+                                        const int orphanDrawn = g->diagnosticsItemsDrawn();
+                                        check(orphanDrawn > 0,
+                                              QStringLiteral("Phase 4 漏批点迹链叠加绘制图元=%1").arg(orphanDrawn));
+
+                                        // 恢复清理并核验全程零 GL 错误
+                                        g->clearDiagnosticsOverlay();
+                                        w->isolateTrack(-1);
+                                        layer->setMutedTracks(QSet<int>());
+                                        w->closeSidebar();
+                                        pwin->close();
+                                        check(g->glErrorCount() == 0,
+                                              QStringLiteral("全程 OpenGL 错误数=%1").arg(g->glErrorCount()));
+                                        finish();
+                                    });
+                                });
+                            });
                         });
                     });
                 });

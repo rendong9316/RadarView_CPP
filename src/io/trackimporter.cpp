@@ -29,8 +29,14 @@ void TrackImporter::run()
                 track.fileName = m_displayName.trimmed();
     } else {
         m_radarSite = RadarSite();
+        m_diagBundle.clear();
         m_ok = parseRadarMat(m_path, m_kind == TrackSource::RadarRaw, m_displayName,
                              &m_tracks, &m_error, progress, &m_radarSite);
+        if (m_ok) {
+            const QString resolvedName = !m_tracks.isEmpty() ? m_tracks.first().fileName : m_displayName;
+            QString diagErr;
+            trackdiag::parseTrackDiagFromMat(m_path, resolvedName, m_kind, &m_diagBundle, &diagErr);
+        }
     }
     m_elapsed = clock.elapsed();
 }

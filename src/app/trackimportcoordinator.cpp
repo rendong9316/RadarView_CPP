@@ -175,6 +175,8 @@ void TrackImportCoordinator::onImportDone()
         }
         if (imp->hasRadarSite())
             emit radarSiteDiscovered(imp->radarSite());
+        if (imp->hasDiagBundle())
+            emit radarDiagBundleDiscovered(imp->diagBundle());
         emit tracksImported(before, firstData);
     } else {
         msg = imp->errorString();

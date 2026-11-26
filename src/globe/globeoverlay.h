@@ -10,6 +10,7 @@
 #include <QWidget>
 
 #include "trackanalysis.h"
+#include "trackdiag.h"
 
 class DrawingManager;
 class FlagStore;
@@ -37,6 +38,15 @@ public:
         bool showResiduals = true;
     };
 
+    struct DiagOrphanPoint {
+        double rangeKm;
+        double azDeg;
+        float snr;
+        int frameId;
+        DiagOrphanPoint(double r = 0.0, double a = 0.0, float s = 0.0f, int f = 0)
+            : rangeKm(r), azDeg(a), snr(s), frameId(f) {}
+    };
+
     struct Context {
         const GlobeCamera *camera = nullptr;
         const TrackLayer *trackLayer = nullptr;
@@ -60,6 +70,17 @@ public:
         int compareMaxIdx = -1;
         const QVector<trackanalysis::TrackDiffSample> *compareSamples = nullptr;
         const RadarSiteStore *radarSites = nullptr;
+        // 航迹诊断叠加：断航波门尸检 / 断批重起桥接 / 未关联漏网点迹链
+        bool gateAutopsyVisible = false;
+        const trackdiag::GateAutopsyResult *gateAutopsy = nullptr;
+        bool fragmentBridgeVisible = false;
+        int fragmentIdxA = -1;
+        int fragmentIdxB = -1;
+        bool orphanClusterVisible = false;
+        int orphanClusterId = 0;
+        int orphanPointCount = 0;
+        float orphanMeanSnr = 0.0f;
+        const QVector<DiagOrphanPoint> *orphanPoints = nullptr;
     };
 
     explicit GlobeOverlay(QWidget *parent = nullptr);
@@ -92,6 +113,7 @@ public:
     int filterOverlayItemsDrawn() const { return m_filterOverlayItems; }
     int compareLinksDrawn() const { return m_compareLinksDrawn; }
     int radarPpiPrimitivesDrawn() const { return m_radarPpiPrimitives; }
+    int diagnosticsItemsDrawn() const { return m_diagnosticsItemsDrawn; }
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -107,6 +129,7 @@ private:
     void drawBand(QPainter &p);
     void drawFilterOverlay(QPainter &p);
     void drawCompareLinks(QPainter &p);
+    void drawDiagnosticsOverlay(QPainter &p);
     void drawFocusPoint(QPainter &p);
     void drawPointTip(QPainter &p);
 
@@ -125,6 +148,7 @@ private:
     int m_filterOverlayItems = 0;
     int m_compareLinksDrawn = 0;
     int m_radarPpiPrimitives = 0;
+    int m_diagnosticsItemsDrawn = 0;
 
     QHash<QString, QPixmap> m_labelCache;   // 标签文字 + 颜色 -> 带描边的位图
     QPixmap m_flagIcon;

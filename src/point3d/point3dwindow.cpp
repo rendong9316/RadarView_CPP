@@ -40,6 +40,7 @@
 
 #include <cmath>
 #include <functional>
+#include <limits>
 
 namespace {
 
@@ -505,6 +506,50 @@ bool Point3dWindow::regionAppliedForView(Point3dViewMode mode) const
 bool Point3dWindow::setRegionForCurrentView(const Point3dRegion &r, bool apply)
 {
     return m_sideSettings->setRegionForCurrentView(r, apply);
+}
+
+void Point3dWindow::focusLocalBox(double rMin, double rMax, double vMin, double vMax,
+                                  double azMin, double azMax, int frameStart, int frameEnd)
+{
+    if (m_data.frames.isEmpty() || !m_sideSettings || !m_canvas)
+        return;
+    const Point3dViewMode mode = m_canvas->viewMode();
+    Point3dRegion reg;
+    reg.valid = true;
+    point3dViewCoordinates(mode, rMin, vMin, azMin, &reg.x0, &reg.y0);
+    point3dViewCoordinates(mode, rMax, vMax, azMax, &reg.x1, &reg.y1);
+    if (reg.x0 > reg.x1)
+        qSwap(reg.x0, reg.x1);
+    if (reg.y0 > reg.y1)
+        qSwap(reg.y0, reg.y1);
+
+    double z0 = double(qMin(frameStart, frameEnd));
+    double z1 = double(qMax(frameStart, frameEnd));
+    const double dataZ0 = m_data.frames.first().zValue;
+    const double dataZ1 = m_data.frames.last().zValue;
+    if (z1 < dataZ0 || z0 > dataZ1 || !(z1 > z0)) {
+        z0 = dataZ0;
+        z1 = dataZ1;
+    }
+    reg.z0 = z0;
+    reg.z1 = z1;
+
+    int bestFrame = m_data.frames.size() - 1;
+    double bestDiff = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < m_data.frames.size(); ++i) {
+        const double d = std::fabs(m_data.frames.at(i).zValue - z1);
+        if (d < bestDiff) {
+            bestDiff = d;
+            bestFrame = i;
+        }
+    }
+    setPlaying(false);
+    const int needWin = int(std::ceil(z1 - z0)) + 2;
+    if (m_canvas->windowLength() > 0 && m_canvas->windowLength() < needWin)
+        m_sideSettings->setWindowLength(0);
+    setFrameInternal(bestFrame);
+    m_sideSettings->setRegionForCurrentView(reg, true);
+    m_canvas->update();
 }
 
 void Point3dWindow::setViewMode(Point3dViewMode mode)

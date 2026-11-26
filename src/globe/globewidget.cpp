@@ -316,6 +316,71 @@ void GlobeWidget::setCompareLinks(const QVector<trackanalysis::TrackDiffSample> 
     update();
 }
 
+void GlobeWidget::setGateAutopsyOverlay(const trackdiag::GateAutopsyResult &res, bool visible)
+{
+    m_gateAutopsy = res;
+    m_gateAutopsyVisible = visible && !m_gateAutopsy.frames.isEmpty();
+    syncOverlayContext();
+    update();
+}
+
+void GlobeWidget::setFragmentBridgeOverlay(int idxA, int idxB, bool visible)
+{
+    m_fragmentIdxA = idxA;
+    m_fragmentIdxB = idxB;
+    m_fragmentBridgeVisible = visible && idxA >= 0 && idxB >= 0;
+    syncOverlayContext();
+    update();
+}
+
+void GlobeWidget::setOrphanClusterOverlay(const trackdiag::OrphanDetCluster &cluster,
+                                          const Point3dDataset *detData, bool visible)
+{
+    m_orphanPoints.clear();
+    m_orphanClusterId = cluster.clusterId;
+    m_orphanPointCount = cluster.pointCount;
+    m_orphanMeanSnr = cluster.meanSnr;
+    auto toKm = [](double r) -> double {
+        return r > 20000.0 ? (r / 1000.0) : r;
+    };
+    if (visible) {
+        if (detData && !cluster.framePointIndices.isEmpty()) {
+            m_orphanPoints.reserve(cluster.framePointIndices.size());
+            for (const QPair<int, int> &fp : cluster.framePointIndices) {
+                if (fp.first < 0 || fp.first >= detData->frames.size())
+                    continue;
+                const DetPointFrame &df = detData->frames.at(fp.first);
+                if (fp.second < 0 || fp.second >= df.points.size())
+                    continue;
+                const DetPointItem &dp = df.points.at(fp.second);
+                m_orphanPoints.append(GlobeOverlay::DiagOrphanPoint(
+                    toKm(double(dp.range)), double(dp.az), dp.snr, int(std::lround(df.frameId))));
+            }
+        }
+        if (m_orphanPoints.isEmpty() && std::isfinite(cluster.meanRange) && std::isfinite(cluster.meanAz)
+                && cluster.meanRange > 0.0f) {
+            m_orphanPoints.append(GlobeOverlay::DiagOrphanPoint(
+                toKm(double(cluster.meanRange)), double(cluster.meanAz), cluster.meanSnr, cluster.frameStart));
+        }
+    }
+    m_orphanClusterVisible = visible && !m_orphanPoints.isEmpty();
+    syncOverlayContext();
+    update();
+}
+
+void GlobeWidget::clearDiagnosticsOverlay()
+{
+    m_gateAutopsy = trackdiag::GateAutopsyResult();
+    m_gateAutopsyVisible = false;
+    m_fragmentIdxA = -1;
+    m_fragmentIdxB = -1;
+    m_fragmentBridgeVisible = false;
+    m_orphanPoints.clear();
+    m_orphanClusterVisible = false;
+    syncOverlayContext();
+    update();
+}
+
 int GlobeWidget::filterOverlayItemsDrawn() const
 {
     return m_overlay ? m_overlay->filterOverlayItemsDrawn() : 0;
@@ -324,6 +389,11 @@ int GlobeWidget::filterOverlayItemsDrawn() const
 int GlobeWidget::compareLinksDrawn() const
 {
     return m_overlay ? m_overlay->compareLinksDrawn() : 0;
+}
+
+int GlobeWidget::diagnosticsItemsDrawn() const
+{
+    return m_overlay ? m_overlay->diagnosticsItemsDrawn() : 0;
 }
 
 void GlobeWidget::setTrackStore(const TrackStore *store)
@@ -529,6 +599,16 @@ void GlobeWidget::syncOverlayContext()
     ctx.compareMaxIdx = m_compareMaxIdx;
     ctx.compareSamples = &m_compareSamples;
     ctx.radarSites = m_radarSites;
+    ctx.gateAutopsyVisible = m_gateAutopsyVisible;
+    ctx.gateAutopsy = &m_gateAutopsy;
+    ctx.fragmentBridgeVisible = m_fragmentBridgeVisible;
+    ctx.fragmentIdxA = m_fragmentIdxA;
+    ctx.fragmentIdxB = m_fragmentIdxB;
+    ctx.orphanClusterVisible = m_orphanClusterVisible;
+    ctx.orphanClusterId = m_orphanClusterId;
+    ctx.orphanPointCount = m_orphanPointCount;
+    ctx.orphanMeanSnr = m_orphanMeanSnr;
+    ctx.orphanPoints = &m_orphanPoints;
     m_overlay->setContext(ctx);
 }
 
@@ -641,6 +721,9 @@ void GlobeWidget::paintGL()
                          || m_focusValid
                          || m_filterOverlay.enabled
                          || m_compareLinksVisible
+                         || m_gateAutopsyVisible
+                         || m_fragmentBridgeVisible
+                         || m_orphanClusterVisible
                          || (m_radarSites && m_radarSites->ppiVisible() && !m_radarSites->sites().isEmpty())
                          || m_tipTrack >= 0;
     if (overlay || (m_overlay && m_overlay->isWanted())) {

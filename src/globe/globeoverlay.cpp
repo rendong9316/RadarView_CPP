@@ -128,6 +128,7 @@ void GlobeOverlay::paintEvent(QPaintEvent *)
     m_filterOverlayItems = 0;
     m_compareLinksDrawn = 0;
     m_radarPpiPrimitives = 0;
+    m_diagnosticsItemsDrawn = 0;
     if (!m_wanted || !m_ctx.camera)
         return;
     p.setRenderHint(QPainter::Antialiasing);
@@ -142,6 +143,7 @@ void GlobeOverlay::paintEvent(QPaintEvent *)
     drawRuler(p);
     drawLasso(p);
     drawFlags(p);
+    drawDiagnosticsOverlay(p);
     drawFocusPoint(p);
     drawPointTip(p);
 }
@@ -1087,5 +1089,307 @@ void GlobeOverlay::drawRadarSites(QPainter &p)
             }
         }
     }
+    p.restore();
+}
+
+void GlobeOverlay::drawDiagnosticsOverlay(QPainter &p)
+{
+    m_diagnosticsItemsDrawn = 0;
+    if (!m_ctx.camera)
+        return;
+    const bool drawGate = m_ctx.gateAutopsyVisible && m_ctx.gateAutopsy && !m_ctx.gateAutopsy->frames.isEmpty();
+    const bool drawFrag = m_ctx.fragmentBridgeVisible && m_ctx.trackStore
+                          && m_ctx.fragmentIdxA >= 0 && m_ctx.fragmentIdxB >= 0
+                          && m_ctx.fragmentIdxA < m_ctx.trackStore->size()
+                          && m_ctx.fragmentIdxB < m_ctx.trackStore->size();
+    const bool drawOrphan = m_ctx.orphanClusterVisible && m_ctx.orphanPoints && !m_ctx.orphanPoints->isEmpty();
+    if (!drawGate && !drawFrag && !drawOrphan)
+        return;
+
+    const QSize vp = size();
+    const GlobeCamera &cam = *m_ctx.camera;
+    const QFont lblFont = remFont(0.76, true);
+    const QFont smallFont = remFont(0.70, false);
+
+    auto diagRangeKm = [](double r) -> double {
+        if (!std::isfinite(r))
+            return 0.0;
+        return r > 20000.0 ? (r / 1000.0) : r;
+    };
+
+    bool hasAnchor = false;
+    double aLat = 0.0, aLon = 0.0;
+    if (m_ctx.radarSites) {
+        const RadarSite *site = m_ctx.radarSites->activeSite();
+        if (site && site->anchorLatLon(&aLat, &aLon))
+            hasAnchor = true;
+    }
+
+    p.save();
+
+    // 1) 断航波门尸检：预测轨迹 + 1x/2x 波门边界框 + 候选点标记
+    if (drawGate) {
+        const trackdiag::GateAutopsyResult &res = *m_ctx.gateAutopsy;
+        const QColor colGate1(0xf9, 0x73, 0x16);    // 亮橙：1x 关联波门
+        const QColor colGate2(0xfb, 0xbf, 0x24);    // 琥珀：2x 候选搜索框
+        const QColor colIn(0x22, 0xc5, 0x5e);       // 绿：门内未抢占/已关联
+        const QColor colStolen(0xec, 0x48, 0x99);   // 玫红：门内被其他批号抢占
+        const QColor colOutSafe(0xfa, 0xcc, 0x15);  // 黄：门外 2x 候选
+
+        auto drawGateBox = [&](const trackdiag::GateAutopsyFrame &fr, double scale,
+                               const QPen &pen, const QColor &fillCol) {
+            const double gRKm = qMax(0.5, diagRangeKm(double(fr.gateR)) * scale);
+            const double gAz = qMax(0.15, double(fr.gateAz) * scale);
+            QPolygonF poly;
+            bool allVis = true;
+            if (hasAnchor && std::isfinite(fr.predR) && std::isfinite(fr.predAz)) {
+                const double rCenter = diagRangeKm(double(fr.predR));
+                const double r0 = qMax(0.5, rCenter - gRKm);
+                const double r1 = rCenter + gRKm;
+                const double az0 = double(fr.predAz) - gAz;
+                const double az1 = double(fr.predAz) + gAz;
+                const int segs = 8;
+                auto pushPolar = [&](double rKm, double azDeg) {
+                    double la = 0.0, lo = 0.0;
+                    if (!geocalc::destination(aLat, aLon, azDeg, rKm, &la, &lo)) {
+                        allVis = false;
+                        return;
+                    }
+                    QPointF sp;
+                    if (cam.visiblePos(lo, la, TrackLayer::kAltitudeM, vp, &sp))
+                        poly.append(sp);
+                    else
+                        allVis = false;
+                };
+                for (int k = 0; k <= segs; ++k)
+                    pushPolar(r0, az0 + (az1 - az0) * double(k) / double(segs));
+                for (int k = 0; k <= segs; ++k)
+                    pushPolar(r1, az1 - (az1 - az0) * double(k) / double(segs));
+            } else if (std::isfinite(fr.predLat) && std::isfinite(fr.predLon)) {
+                const double dLat = gRKm / 111.0;
+                const double cosLat = qMax(0.2, std::cos(qDegreesToRadians(fr.predLat)));
+                const double dLon = gRKm / (111.0 * cosLat);
+                const double lats[4] = { fr.predLat - dLat, fr.predLat - dLat, fr.predLat + dLat, fr.predLat + dLat };
+                const double lons[4] = { fr.predLon - dLon, fr.predLon + dLon, fr.predLon + dLon, fr.predLon - dLon };
+                for (int k = 0; k < 4; ++k) {
+                    QPointF sp;
+                    if (cam.visiblePos(lons[k], lats[k], TrackLayer::kAltitudeM, vp, &sp))
+                        poly.append(sp);
+                    else
+                        allVis = false;
+                }
+            } else {
+                return;
+            }
+            if (poly.size() >= 3 && allVis) {
+                p.setPen(pen);
+                p.setBrush(fillCol.isValid() ? QBrush(fillCol) : QBrush(Qt::NoBrush));
+                p.drawPolygon(poly);
+                ++m_diagnosticsItemsDrawn;
+            }
+        };
+
+        // 预测外推折线
+        QPolygonF predLine;
+        for (const trackdiag::GateAutopsyFrame &fr : res.frames) {
+            if (!std::isfinite(fr.predLat) || !std::isfinite(fr.predLon))
+                continue;
+            QPointF sp;
+            if (cam.visiblePos(fr.predLon, fr.predLat, TrackLayer::kAltitudeM, vp, &sp))
+                predLine.append(sp);
+        }
+        if (predLine.size() >= 2) {
+            QPen pathPen(QColor(0xf9, 0x73, 0x16, 210), 2.0, Qt::DashLine);
+            p.setPen(pathPen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPolyline(predLine);
+            ++m_diagnosticsItemsDrawn;
+        }
+
+        const int nFrames = res.frames.size();
+        for (int fi = 0; fi < nFrames; ++fi) {
+            const trackdiag::GateAutopsyFrame &fr = res.frames.at(fi);
+            const bool isEdgeFrame = (fi == 0 || fi == nFrames - 1);
+
+            // 2x 虚线外框 + 1x 实线波门框
+            QPen pen2(QColor(colGate2.red(), colGate2.green(), colGate2.blue(), 135), 1.2, Qt::DashLine);
+            drawGateBox(fr, 2.0, pen2, QColor());
+            QPen pen1(QColor(colGate1.red(), colGate1.green(), colGate1.blue(), 225), isEdgeFrame ? 2.0 : 1.5);
+            drawGateBox(fr, 1.0, pen1, QColor(colGate1.red(), colGate1.green(), colGate1.blue(), 28));
+
+            // 预测点中心标记
+            if (std::isfinite(fr.predLat) && std::isfinite(fr.predLon)) {
+                QPointF sp;
+                if (cam.visiblePos(fr.predLon, fr.predLat, TrackLayer::kAltitudeM, vp, &sp)) {
+                    const double r = 4.2;
+                    p.setPen(QPen(Qt::black, 2.6));
+                    p.drawLine(QPointF(sp.x() - r, sp.y() - r), QPointF(sp.x() + r, sp.y() + r));
+                    p.drawLine(QPointF(sp.x() - r, sp.y() + r), QPointF(sp.x() + r, sp.y() - r));
+                    p.setPen(QPen(colGate1, 1.6));
+                    p.drawLine(QPointF(sp.x() - r, sp.y() - r), QPointF(sp.x() + r, sp.y() + r));
+                    p.drawLine(QPointF(sp.x() - r, sp.y() + r), QPointF(sp.x() + r, sp.y() - r));
+                    ++m_diagnosticsItemsDrawn;
+                    if (isEdgeFrame) {
+                        drawOutlinedText(p, sp + QPointF(8.0, -5.0),
+                                         QStringLiteral("波门 F%1").arg(fr.frameId),
+                                         smallFont, colGate2, Qt::black, 2.0);
+                    }
+                }
+            }
+
+            // 2x 波门候选检测点高亮标记
+            for (int ci = 0; ci < fr.candidates.size(); ++ci) {
+                const trackdiag::GateCandidate &c = fr.candidates.at(ci);
+                double cLat = fr.predLat;
+                double cLon = fr.predLon;
+                bool posOk = false;
+                if (hasAnchor && std::isfinite(c.range) && std::isfinite(c.az)) {
+                    posOk = geocalc::destination(aLat, aLon, double(c.az), diagRangeKm(double(c.range)), &cLat, &cLon);
+                } else if (std::isfinite(fr.predLat) && std::isfinite(fr.predLon)) {
+                    const double drKm = diagRangeKm(double(c.dR));
+                    const double cosLat = qMax(0.2, std::cos(qDegreesToRadians(fr.predLat)));
+                    cLat = fr.predLat + drKm / 111.0;
+                    cLon = fr.predLon + (std::isfinite(c.dAz) ? (c.dAz * 0.2) : 0.0) / cosLat;
+                    posOk = true;
+                }
+                if (!posOk)
+                    continue;
+                QPointF sp;
+                if (!cam.visiblePos(cLon, cLat, TrackLayer::kAltitudeM, vp, &sp))
+                    continue;
+                const QColor cCol = c.insideGate ? (c.ownerBatchNo > 0 ? colStolen : colIn) : colOutSafe;
+                p.setPen(QPen(Qt::black, 1.5));
+                p.setBrush(cCol);
+                if (c.insideGate) {
+                    const double r = 5.0;
+                    const QPointF dia[4] = {
+                        QPointF(sp.x(), sp.y() - r), QPointF(sp.x() + r, sp.y()),
+                        QPointF(sp.x(), sp.y() + r), QPointF(sp.x() - r, sp.y())
+                    };
+                    p.drawPolygon(dia, 4);
+                } else {
+                    p.drawEllipse(sp, 3.8, 3.8);
+                }
+                ++m_diagnosticsItemsDrawn;
+                if (ci < 3 && isEdgeFrame) {
+                    const QString tag = c.ownerBatchNo > 0
+                        ? QStringLiteral("P%1→T%2").arg(c.pointId).arg(c.ownerBatchNo)
+                        : QStringLiteral("P%1 %2dB").arg(c.pointId).arg(double(c.snr), 0, 'f', 0);
+                    drawOutlinedText(p, sp + QPointF(7.0, 4.0), tag, smallFont, cCol, Qt::black, 1.8);
+                }
+            }
+        }
+    }
+
+    // 2) 断批重起桥接：A 末点 -> B 起点 高亮虚线箭头与间隔标注
+    if (drawFrag) {
+        const Track &trA = m_ctx.trackStore->tracks().at(m_ctx.fragmentIdxA);
+        const Track &trB = m_ctx.trackStore->tracks().at(m_ctx.fragmentIdxB);
+        const RadarPointMode mode = m_ctx.trackLayer ? m_ctx.trackLayer->radarPointMode() : RadarPointMode::Smooth;
+        const QVector<TrackPoint> &ptsA = trA.pointsForMode(mode);
+        const QVector<TrackPoint> &ptsB = trB.pointsForMode(mode);
+        if (!ptsA.isEmpty() && !ptsB.isEmpty()) {
+            const TrackPoint &endA = ptsA.last();
+            const TrackPoint &startB = ptsB.first();
+            const QColor colBridge(0xf9, 0x73, 0x16);
+            QPen bridgePen(colBridge, 2.6, Qt::CustomDashLine, Qt::RoundCap, Qt::RoundJoin);
+            bridgePen.setDashPattern(QVector<qreal>() << 7.0 << 5.0);
+            p.setPen(bridgePen);
+            p.setBrush(Qt::NoBrush);
+            const QVector<QPolygonF> lines = cam.geodesicLines(endA.lat, endA.lon, startB.lat, startB.lon, vp);
+            for (const QPolygonF &line : lines) {
+                p.drawPolyline(line);
+                ++m_diagnosticsItemsDrawn;
+            }
+            QPointF spA, spB;
+            const bool visA = cam.visiblePos(endA.lon, endA.lat, TrackLayer::kAltitudeM, vp, &spA);
+            const bool visB = cam.visiblePos(startB.lon, startB.lat, TrackLayer::kAltitudeM, vp, &spB);
+            if (visA) {
+                p.setPen(QPen(Qt::black, 1.8));
+                p.setBrush(QColor(0xef, 0x44, 0x44));
+                p.drawEllipse(spA, 5.5, 5.5);
+                ++m_diagnosticsItemsDrawn;
+            }
+            if (visB) {
+                // 箭头指向 B 起点
+                QPointF prevPt = spA;
+                if (!lines.isEmpty() && lines.last().size() >= 2)
+                    prevPt = lines.last().at(lines.last().size() - 2);
+                const QPointF dir = spB - prevPt;
+                const double len = std::hypot(dir.x(), dir.y());
+                if (len > 2.0) {
+                    const QPointF u(dir.x() / len, dir.y() / len);
+                    const QPointF n(-u.y(), u.x());
+                    const double arrowLen = 12.0;
+                    const double arrowHalfW = 5.5;
+                    const QPointF tri[3] = {
+                        spB,
+                        spB - u * arrowLen + n * arrowHalfW,
+                        spB - u * arrowLen - n * arrowHalfW
+                    };
+                    p.setPen(QPen(Qt::black, 1.4));
+                    p.setBrush(colBridge);
+                    p.drawPolygon(tri, 3);
+                } else {
+                    p.setPen(QPen(Qt::black, 1.8));
+                    p.setBrush(QColor(0x22, 0xc5, 0x5e));
+                    p.drawEllipse(spB, 5.5, 5.5);
+                }
+                ++m_diagnosticsItemsDrawn;
+            }
+            if (visA && visB) {
+                const double gapSec = double(startB.t - endA.t) / 1000.0;
+                const double distKm = geocalc::vincentyKm(endA.lat, endA.lon, startB.lat, startB.lon);
+                const QPointF mid = 0.5 * (spA + spB);
+                const QString tag = QStringLiteral("断批桥接 %1→%2  Δt=%3s · %4km")
+                                        .arg(trA.id, trB.id)
+                                        .arg(gapSec, 0, 'f', 1)
+                                        .arg(distKm, 0, 'f', 1);
+                drawOutlinedText(p, mid + QPointF(8.0, -8.0), tag, lblFont, QColor(0xfd, 0xba, 0x74), Qt::black, 2.4);
+            }
+        }
+    }
+
+    // 3) 未关联漏网点迹链：经激活雷达站极坐标正算投影到地图
+    if (drawOrphan && hasAnchor) {
+        const QColor colChain(0xe8, 0x79, 0xf9);   // 亮品红
+        const QColor colDot(0x22, 0xd3, 0xee);     // 青色高亮点
+        QPolygonF chainPoly;
+        QVector<QPointF> dotPts;
+        dotPts.reserve(m_ctx.orphanPoints->size());
+        for (const DiagOrphanPoint &op : *m_ctx.orphanPoints) {
+            if (!std::isfinite(op.rangeKm) || !std::isfinite(op.azDeg) || op.rangeKm <= 0.0)
+                continue;
+            double la = 0.0, lo = 0.0;
+            if (!geocalc::destination(aLat, aLon, op.azDeg, op.rangeKm, &la, &lo))
+                continue;
+            QPointF sp;
+            if (cam.visiblePos(lo, la, TrackLayer::kAltitudeM, vp, &sp)) {
+                chainPoly.append(sp);
+                dotPts.append(sp);
+            }
+        }
+        if (chainPoly.size() >= 2) {
+            QPen chainPen(colChain, 2.2, Qt::DashLine);
+            p.setPen(chainPen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPolyline(chainPoly);
+            ++m_diagnosticsItemsDrawn;
+        }
+        p.setPen(QPen(Qt::black, 1.5));
+        p.setBrush(colDot);
+        for (const QPointF &sp : qAsConst(dotPts)) {
+            p.drawEllipse(sp, 4.5, 4.5);
+            ++m_diagnosticsItemsDrawn;
+        }
+        if (!dotPts.isEmpty()) {
+            const QString tag = QStringLiteral("漏批链 #%1（%2点 · SNR %3dB）")
+                                    .arg(m_ctx.orphanClusterId)
+                                    .arg(m_ctx.orphanPointCount)
+                                    .arg(double(m_ctx.orphanMeanSnr), 0, 'f', 1);
+            drawOutlinedText(p, dotPts.first() + QPointF(9.0, -7.0), tag, lblFont, colDot, Qt::black, 2.3);
+        }
+    }
+
     p.restore();
 }

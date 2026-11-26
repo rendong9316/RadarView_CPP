@@ -17,6 +17,7 @@
 #include "settingspanel.h"
 #include "sidepanels.h"
 #include "track.h"
+#include "trackdiag.h"
 #include "tracklayer.h"
 
 class GlobeWidget;
@@ -39,6 +40,8 @@ class SpatialLasso;
 class DrawingManager;
 class Point3dWindow;
 class TrackAnalysisWindow;
+class DiagnosticsPanel;
+struct Point3dDataset;
 class DrawingController;
 class MapSourceController;
 class Point3dCoordinator;
@@ -113,6 +116,8 @@ public:
     bool drawingBarVisible() const;
     ui::UndoToast *undoToast() const { return m_undoToast; }
     SettingsPanel *settingsPanel() const { return m_settingsPanel; }
+    DiagnosticsPanel *diagnosticsPanel() const { return m_diagPanel; }
+    const trackdiag::TrackDiagBundle &diagBundle() const { return m_diagBundle; }
     void toggleLabels();
     void togglePointDots(int index);     // 「显示/隐藏所有对应点迹」
     bool pointDotsShown(int index) const;
@@ -163,6 +168,9 @@ private:
     void applyAdsbVisibility();
     void syncReplayToLayer();
     void onTracksImported(int beforeCount, bool firstData);
+    const Point3dDataset *activeDiagDetDataset() const;
+    void syncDiagDetDataset();
+    void loadDetPointsForDiagnostics();
 
     ActivityBar   *m_activityBar = nullptr;
     SidePanel     *m_sidePanel = nullptr;
@@ -190,6 +198,9 @@ private:
     SpatialLasso *m_lasso = nullptr;
     FlagPanel *m_flagPanel = nullptr;
     SettingsPanel *m_settingsPanel = nullptr;
+    DiagnosticsPanel *m_diagPanel = nullptr;
+    trackdiag::TrackDiagBundle m_diagBundle;
+    QPointer<Point3dWindow> m_diagDetWin;
     ui::UndoToast *m_undoToast = nullptr;
 
     DrawingController *m_drawCtrl = nullptr;

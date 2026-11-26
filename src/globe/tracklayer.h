@@ -82,6 +82,9 @@ public:
     int isolatedTrack() const;
     void setIsolatedTracks(const QSet<int> &indices);   // 多选隔离对比（空=全部，大小1等价单条隔离）
     const QSet<int> &isolatedTracks() const { return m_isoTracks; }
+    // 门限沙盒弱化显示：被 mute 的疑假航迹以低透明度暗灰红线绘制；空集合走原高效路径零性能开销
+    void setMutedTracks(const QSet<int> &indices);
+    const QSet<int> &mutedTracks() const { return m_mutedTracks; }
     // 显示集合（RadarView displayTracks）：mask[i] 为 false 的航迹不画也不拾取；空表示全部
     void setTrackMask(const QVector<bool> &mask);
     bool isTrackShown(int index) const { return trackShown(index); }
@@ -233,6 +236,7 @@ private:
     // 悬停 / 单独显示 / 多选隔离：直接复用静态批次里该航迹的那几段，不另外上传
     int m_hoverTrack = -1;
     QSet<int> m_isoTracks;
+    QSet<int> m_mutedTracks;
     TrackColorMode m_colorMode = TrackColorMode::ByFile;
     QVector<QVector<Piece>> m_trackPieces;   // 每条航迹在静态批次中的位置
     GroupRange m_hoverHead;                  // 悬停航迹在动态缓冲中的头部段

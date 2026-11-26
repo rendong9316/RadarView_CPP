@@ -27,6 +27,7 @@ const PanelDef kPanels[] = {
     { LucideIcon::Flag, "旗标面板 (Ctrl+Shift+F)", "旗标面板" },
     { LucideIcon::Funnel, "时间筛选 (Ctrl+Shift+E)", "筛选" },
     { LucideIcon::Settings, "设置", "设置" },
+    { LucideIcon::TriangleAlert, "航迹诊断面板 (Ctrl+Shift+D)", "航迹诊断" },
 };
 
 // 活动栏按钮：48×48，24px 图标；悬停 / 选中为 --activitybar-active，选中时左侧 2px 竖条
@@ -98,18 +99,22 @@ ActivityBar::ActivityBar(QWidget *parent) : QWidget(parent)
     QVBoxLayout *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
+    m_buttons.reserve(int(PanelId::Count));
     for (int i = 0; i < int(PanelId::Count); ++i) {
         ActivityButton *b = new ActivityButton(kPanels[i].icon, this);
         b->setToolTip(QString::fromUtf8(kPanels[i].tooltip));
         b->setAccessibleName(QString::fromUtf8(kPanels[i].tooltip));
-        if (i == int(PanelId::Settings)) {
+        if (i == int(PanelId::Settings))
             b->setVisible(false);         // 设置入口改到标题栏菜单，侧栏不再显示；保留索引以维持 activatePanel(Settings)
-            lay->addStretch(1);           // 设置固定在底部
-        }
-        lay->addWidget(b);
         m_buttons << b;
         connect(b, &QAbstractButton::clicked, this, [this, i]() { emit iconClicked(i); });
     }
+    for (int i = 0; i < int(PanelId::Count); ++i) {
+        if (i != int(PanelId::Settings))
+            lay->addWidget(m_buttons[i]);
+    }
+    lay->addStretch(1);                   // 设置固定在底部
+    lay->addWidget(m_buttons[int(PanelId::Settings)]);
     connect(Theme::instance(), &Theme::changed, this, [this]() {
         update();
         for (QAbstractButton *b : qAsConst(m_buttons))

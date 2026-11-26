@@ -871,7 +871,7 @@ void runTrackTest(MainWindow *w, const QString &csv, const QString &mat)
                                     // 设置面板：字号全局缩放（10–20 钳制），回到 14 后 rem 换算还原
                                     w->activatePanel(PanelId::Settings);
                                     SettingsPanel *sp = w->settingsPanel();
-                                    check(int(PanelId::Count) == 4 && w->activePanel() == int(PanelId::Settings),
+                                    check(int(PanelId::Count) == 5 && w->activePanel() == int(PanelId::Settings),
                                           QStringLiteral("侧栏面板 %1 个，设置面板已打开").arg(int(PanelId::Count)));
                                     sp->setFontValue(18);
                                     check(UiScale::instance()->basePx() == 18 && ui::px(1.0) == 18 && ui::px(0.786) == 14,

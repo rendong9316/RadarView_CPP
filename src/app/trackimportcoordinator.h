@@ -9,6 +9,7 @@
 
 #include "radarsite.h"
 #include "track.h"
+#include "trackdiag.h"
 
 class DbSaveJob;
 class GlobeWidget;
@@ -47,6 +48,7 @@ signals:
     void dbStale();
     void radarPointModeSelected(RadarPointMode mode);
     void radarSiteDiscovered(const RadarSite &site);
+    void radarDiagBundleDiscovered(const trackdiag::TrackDiagBundle &bundle);
 
 private slots:
     void onImportDone();

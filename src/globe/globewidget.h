@@ -18,6 +18,7 @@
 #include "globesurface.h"
 #include "tilesource.h"
 #include "trackanalysis.h"
+#include "trackdiag.h"
 #include "tracklayer.h"
 
 class GlobeOverlay;
@@ -72,8 +73,14 @@ public:
     const GlobeOverlay::FilterOverlayState &filterOverlay() const { return m_filterOverlay; }
     // 两航迹误差对比连线叠加
     void setCompareLinks(const QVector<trackanalysis::TrackDiffSample> &samples, int maxErrIdx, bool visible);
+    // 航迹诊断叠加：断航波门尸检 / 断批重起桥接 / 未关联漏网点迹链
+    void setGateAutopsyOverlay(const trackdiag::GateAutopsyResult &res, bool visible);
+    void setFragmentBridgeOverlay(int idxA, int idxB, bool visible);
+    void setOrphanClusterOverlay(const trackdiag::OrphanDetCluster &cluster, const Point3dDataset *detData, bool visible);
+    void clearDiagnosticsOverlay();
     int filterOverlayItemsDrawn() const;
     int compareLinksDrawn() const;
+    int diagnosticsItemsDrawn() const;
     // 当前相机（WGS84 经纬度 + 离地高度 km），用于退出前保存 / 启动时恢复视角
     void cameraView(double *lonDeg, double *latDeg, double *altKm) const;
     void setCameraView(double lonDeg, double latDeg, double altKm);
@@ -210,6 +217,16 @@ private:
     QVector<trackanalysis::TrackDiffSample> m_compareSamples;
     int m_compareMaxIdx = -1;
     bool m_compareLinksVisible = false;
+    trackdiag::GateAutopsyResult m_gateAutopsy;
+    bool m_gateAutopsyVisible = false;
+    int m_fragmentIdxA = -1;
+    int m_fragmentIdxB = -1;
+    bool m_fragmentBridgeVisible = false;
+    QVector<GlobeOverlay::DiagOrphanPoint> m_orphanPoints;
+    int m_orphanClusterId = 0;
+    int m_orphanPointCount = 0;
+    float m_orphanMeanSnr = 0.0f;
+    bool m_orphanClusterVisible = false;
 
     std::unique_ptr<TileSource> m_tiles;
     NetTileSource *m_online = nullptr;       // 在线底图（天地图），为空表示离线模式

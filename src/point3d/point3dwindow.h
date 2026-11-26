@@ -78,6 +78,9 @@ public:
     bool regionAppliedForView(Point3dViewMode mode) const;
     // 自检/脚本用：设置当前视图的区域并按需应用
     bool setRegionForCurrentView(const Point3dRegion &r, bool apply);
+    // 诊断面板一键缩放：把当前视图缩放到指定局部 (R, V, Az, Frame) 盒并切到末端帧
+    void focusLocalBox(double rMin, double rMax, double vMin, double vMax,
+                       double azMin, double azMax, int frameStart, int frameEnd);
     void setViewMode(Point3dViewMode mode);   // 同步工具栏下拉（会触发视图切换逻辑）
 
     // 地图联动：地图单独显示 / 管理面板筛选出的航迹 → 本窗口里有对应叠加航迹就单独显示它们；

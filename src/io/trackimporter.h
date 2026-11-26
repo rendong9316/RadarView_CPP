@@ -6,6 +6,7 @@
 
 #include "radarsite.h"
 #include "track.h"
+#include "trackdiag.h"
 
 // 后台解析一个数据文件；完成后在主线程发 importDone，由调用方把结果合并进 TrackStore
 class TrackImporter : public QThread
@@ -22,6 +23,8 @@ public:
     QVector<Track> &tracks() { return m_tracks; }
     bool hasRadarSite() const { return m_radarSite.isValid(); }
     const RadarSite &radarSite() const { return m_radarSite; }
+    bool hasDiagBundle() const { return !m_diagBundle.isEmpty(); }
+    const trackdiag::TrackDiagBundle &diagBundle() const { return m_diagBundle; }
     QString errorString() const { return m_error; }
     bool ok() const { return m_ok; }
     qint64 elapsedMs() const { return m_elapsed; }
@@ -38,6 +41,7 @@ private:
     QString m_path, m_displayName, m_error;
     QVector<Track> m_tracks;
     RadarSite m_radarSite;
+    trackdiag::TrackDiagBundle m_diagBundle;
     bool m_ok = false;
     qint64 m_elapsed = 0;
 };
