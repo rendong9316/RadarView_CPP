@@ -40,6 +40,10 @@ SOURCES += \
     src/io/trackdb.cpp \
     # globe
     src/globe/globewidget.cpp \
+    src/globe/globecamera.cpp \
+    src/globe/globesurface.cpp \
+    src/globe/globedrawcontroller.cpp \
+    src/globe/globeoverlay.cpp \
     src/globe/tracklayer.cpp \
     src/globe/tilesource.cpp \
     src/globe/netmap.cpp \
@@ -83,6 +87,10 @@ HEADERS += \
     src/io/trackdb.h \
     # globe
     src/globe/globewidget.h \
+    src/globe/globecamera.h \
+    src/globe/globesurface.h \
+    src/globe/globedrawcontroller.h \
+    src/globe/globeoverlay.h \
     src/globe/tracklayer.h \
     src/globe/tilesource.h \
     src/globe/netmap.h \
