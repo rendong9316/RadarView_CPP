@@ -53,6 +53,10 @@ public:
     void setIsolatedBatches(const QSet<int> &batches);
     QSet<int> isolatedBatches() const { return m_isolatedBatches; }
 
+    // 侧栏勾选列表中取消勾选的航迹键（与临时独显解耦）
+    void setHiddenTrackKeys(const QSet<QString> &keys);
+    QSet<QString> hiddenTrackKeys() const { return m_hiddenTrackKeys; }
+
     void setTrackLineWidth(double w);
     double trackLineWidth() const { return m_trackLineWidth; }
     void setPointScale(double s);             // 点迹尺寸倍数
@@ -97,6 +101,7 @@ signals:
     void trackFocusChanged(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void trackActivated(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void trackClicked(int batchNo, TrackSource source, qint64 t0, qint64 t1);  // 左键单击某条航迹
+    void emptyClicked();          // 左键单击空白区域（无拖拽）
     void cameraChanged();
     void hoverChanged();
     void statsChanged();          // 重绘后统计文字变化（供窗口状态栏刷新）
@@ -167,6 +172,7 @@ private:
     bool m_showLabels = true;
     int m_highlightedBatch = -1;
     QSet<int> m_isolatedBatches;
+    QSet<QString> m_hiddenTrackKeys;
     double m_trackLineWidth = 2.0;
     double m_pointScale = 1.0;
     double m_labelScale = 1.0;

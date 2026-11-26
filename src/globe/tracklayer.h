@@ -46,6 +46,10 @@ public:
     void setSceneGcj(bool on);
     bool sceneGcj() const { return m_sceneGcj; }
 
+    // 雷达航迹点列模式（平滑 / 关联 / 预测）：一次导入后即时切换，触发静态/动态/拾取缓存重建
+    void setRadarPointMode(RadarPointMode mode);
+    RadarPointMode radarPointMode() const { return m_radarMode; }
+
     // 数据与显示状态（任何时候都可调用，下次 draw 时生效）
     void setStore(const TrackStore *store);
     void setGroupVisible(const QString &groupKey, bool visible);
@@ -134,6 +138,7 @@ private:
     // WGS84 经纬度 + 高度 → 场景坐标（按需做 GCJ 偏移）。
     // 所有顶点/拾取缓存/端点都必须走这里，否则坐标系一换就会出现半套偏移。
     QVector3D scenePos(double lonDeg, double latDeg, double altM) const;
+    const QVector<TrackPoint> &trackPoints(const Track &t) const { return t.pointsForMode(m_radarMode); }
 
     void rebuildStatic();
     void rebuildDynamic();
@@ -152,6 +157,7 @@ private:
     QVector3D m_eye;                     // 相机位置（场景单位），供着色器剔除地球背面
 
     bool m_sceneGcj = false;
+    RadarPointMode m_radarMode = RadarPointMode::Smooth;
     const TrackStore *m_store = nullptr;
     quint64 m_builtVersion = ~quint64(0);
     quint64 m_styleVersion = 0;   // 线宽/圆球等样式变化计数

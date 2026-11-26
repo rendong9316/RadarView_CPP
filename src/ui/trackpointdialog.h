@@ -6,6 +6,8 @@
 
 #include "track.h"
 
+class QLabel;
+class QPushButton;
 class QTableView;
 class QSortFilterProxyModel;
 
@@ -19,7 +21,10 @@ public:
     enum Column { Seq, Time, Lat, Lon, AltFt, Heading, Speed, VRate,
                   PRange, PAz, PVr, Snr, ColumnCount };
 
-    explicit TrackPointModel(const Track &track, QObject *parent = nullptr);
+    explicit TrackPointModel(const Track &track, QObject *parent = nullptr,
+                             RadarPointMode mode = RadarPointMode::Smooth);
+    void setPointMode(RadarPointMode mode);
+    RadarPointMode pointMode() const { return m_mode; }
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     int columnCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
@@ -32,17 +37,21 @@ public:
     bool isRadar() const { return m_radar; }
 
 private:
+    void loadMode(RadarPointMode mode);
+    Track m_track;
+    RadarPointMode m_mode = RadarPointMode::Smooth;
     QVector<TrackPoint> m_points;
     QVector<Column> m_columns;   // 本航迹显示的列，按显示顺序
     bool m_radar = false;
 };
 
-// 「查看点迹数据」：可按列排序，可导出 CSV（UTF-8 带 BOM，Excel 直接打开不乱码）
+// 「查看点迹数据」：可按列排序、切换平滑/关联/预测点列，可导出 CSV（UTF-8 带 BOM，Excel 直接打开不乱码）
 class TrackPointDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit TrackPointDialog(const Track &track, QWidget *parent = nullptr);
+    explicit TrackPointDialog(const Track &track, QWidget *parent = nullptr,
+                              RadarPointMode initialMode = RadarPointMode::Smooth);
 
     int rowCount() const;
     // 当前显示的列数与表头文字（自检用；雷达与 ADS-B 的列不同）
@@ -53,8 +62,13 @@ public:
 
 private:
     void onExport();
+    void switchMode(RadarPointMode mode);
+    void updateMetaText();
 
     Track m_track;
+    RadarPointMode m_mode = RadarPointMode::Smooth;
+    QLabel *m_meta = nullptr;
+    QPushButton *m_modeBtns[3] = { nullptr, nullptr, nullptr };
     TrackPointModel *m_model = nullptr;
     QSortFilterProxyModel *m_proxy = nullptr;
     QTableView *m_view = nullptr;

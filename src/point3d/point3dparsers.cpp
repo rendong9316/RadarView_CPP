@@ -401,9 +401,10 @@ bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
     out->color = color;      // 由调用方（数据库航迹选择器）决定颜色；无效时画布按序号生成
     out->points.clear();
     out->rawPoints.clear();
+    out->predPoints.clear();
 
-    // 雷达批次：主点列=平滑点列，rawPoints=同一 MAT 的关联点列（asscPointList）；
-    // 原始量测批次：它自己的主点列就是关联点列。点云窗口据此切换「平滑 / 关联」。
+    // 雷达批次：主点列=平滑点列，rawPoints=关联点列（asscPointList），predPoints=预测点列；
+    // 原始量测批次：主点列即关联点列。点云窗口据此一次导入后在「平滑 / 关联 / 预测」间切换。
     if (track.source == TrackSource::RadarRaw) {
         appendOverlayPoints(track.points, frames, &out->rawPoints);
     } else {
@@ -411,18 +412,22 @@ bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
         if (!track.rawPoints.isEmpty())
             appendOverlayPoints(track.rawPoints, frames, &out->rawPoints);
     }
+    if (!track.predPoints.isEmpty())
+        appendOverlayPoints(track.predPoints, frames, &out->predPoints);
     // 航迹距离缩放（对应 MATLAB TrackRangeScale）：只影响显示用的距离，不改原始数据
     if (rangeScale > 0.0 && !qFuzzyCompare(rangeScale, 1.0)) {
         for (TrackOverlayPoint &op : out->points)
             op.prange = float(op.prange * rangeScale);
         for (TrackOverlayPoint &op : out->rawPoints)
             op.prange = float(op.prange * rangeScale);
+        for (TrackOverlayPoint &op : out->predPoints)
+            op.prange = float(op.prange * rangeScale);
     }
 
-    // 联动匹配用的时间范围：取两套点列里"能落到帧上"的点
+    // 联动匹配用的时间范围：取三套点列里"能落到帧上"的点
     qint64 lo = 0, hi = 0;
     bool any = false;
-    for (const QVector<TrackOverlayPoint> *col : { &out->points, &out->rawPoints })
+    for (const QVector<TrackOverlayPoint> *col : { &out->points, &out->rawPoints, &out->predPoints })
         for (const TrackOverlayPoint &op : *col) {
             if (!any || op.timeMs < lo)
                 lo = op.timeMs;
@@ -432,5 +437,5 @@ bool overlayFromTrack(const Track &track, const QVector<DetPointFrame> &frames,
         }
     out->minTime = any ? lo : 0;
     out->maxTime = any ? hi : 0;
-    return !out->points.isEmpty() || !out->rawPoints.isEmpty();
+    return !out->points.isEmpty() || !out->rawPoints.isEmpty() || !out->predPoints.isEmpty();
 }

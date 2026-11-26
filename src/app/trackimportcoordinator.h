@@ -24,6 +24,7 @@ public:
                            QObject *parent = nullptr);
 
     void setImportActions(const QList<QAction *> &actions);
+    void setDefaultPointMode(RadarPointMode mode) { m_defaultPointMode = mode; }
     void importFile(TrackSource kind, const QString &path,
                     const QString &displayName = QString(), const QColor &color = QColor());
 
@@ -43,6 +44,7 @@ signals:
     void importFinished(bool ok, const QString &message);
     void persistFinished(bool ok, const QString &message);
     void dbStale();
+    void radarPointModeSelected(RadarPointMode mode);
 
 private slots:
     void onImportDone();
@@ -54,6 +56,9 @@ private:
     QWidget *m_dialogParent = nullptr;
     TrackImporter *m_importer = nullptr;
     QColor m_importColor;
+    RadarPointMode m_defaultPointMode = RadarPointMode::Smooth;
+    bool m_hasImportPointMode = false;
+    RadarPointMode m_importPointMode = RadarPointMode::Smooth;
     QHash<QString, QColor> m_customFileColors;
     QList<QAction *> m_importActions;
     DbSaveJob *m_saveJob = nullptr;

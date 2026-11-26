@@ -52,6 +52,7 @@ private:
     QSlider *m_font = nullptr;
     QSlider *m_lineWidth = nullptr;
     QSlider *m_pointScale = nullptr;
+    QWidget *m_rawDotRow = nullptr;
     QLabel *m_batchLabel = nullptr;
 };
 

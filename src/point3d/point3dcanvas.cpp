@@ -331,6 +331,14 @@ void Point3dCanvas::setIsolatedBatches(const QSet<int> &batches)
     }
 }
 
+void Point3dCanvas::setHiddenTrackKeys(const QSet<QString> &keys)
+{
+    if (keys != m_hiddenTrackKeys) {
+        m_hiddenTrackKeys = keys;
+        update();
+    }
+}
+
 void Point3dCanvas::setCamera(double yaw, double pitch, double zoom, double panX, double panY)
 {
     m_cam.yaw = yaw;
@@ -398,10 +406,12 @@ void Point3dCanvas::rebuildLimits()
         for (const DetPointItem &p : f.points)
             for (int m = 0; m < 3; ++m)
                 add(Point3dViewMode(m), p.range, p.vr, p.az);
-    for (const TrackOverlay &t : m_data->tracks)
-        for (const TrackOverlayPoint &p : t.points)
-            for (int m = 0; m < 3; ++m)
-                add(Point3dViewMode(m), p.prange, p.pvr, p.paz);
+    for (const TrackOverlay &t : m_data->tracks) {
+        for (const QVector<TrackOverlayPoint> *col : { &t.points, &t.rawPoints, &t.predPoints })
+            for (const TrackOverlayPoint &p : *col)
+                for (int m = 0; m < 3; ++m)
+                    add(Point3dViewMode(m), p.prange, p.pvr, p.paz);
+    }
 
     for (int m = 0; m < 3; ++m) {
         Limits &l = m_limits[m];
@@ -824,11 +834,13 @@ void Point3dCanvas::drawTracks(QPainter &p, double zlo, double zhi)
     p.setRenderHint(QPainter::Antialiasing, true);
     for (int ti = 0; ti < m_data->tracks.size(); ++ti) {
         const TrackOverlay &tr = m_data->tracks.at(ti);
-        // 地图单独显示/筛选联动：只画被选中的批次
+        // 侧栏勾选列表中取消勾选的航迹
+        if (!m_hiddenTrackKeys.isEmpty() && m_hiddenTrackKeys.contains(point3dOverlayKey(tr)))
+            continue;
+        // 地图单独显示/筛选联动或双击独显：只画被选中的批次
         if (!m_isolatedBatches.isEmpty() && !m_isolatedBatches.contains(tr.batchNo))
             continue;
-        // 点源：同一条航迹可能同时带平滑点列与关联点列，按当前模式取其中一列
-        // （平滑=主点列、关联=asscPointList 点列、预测=库中未存）
+        // 点源：同一条航迹可能同时带平滑、关联、预测三套点列，按当前模式取其中一列
         const QVector<TrackOverlayPoint> *pts = point3dOverlayPointsFor(tr, m_trackSource);
         if (!pts)
             continue;
@@ -1180,19 +1192,23 @@ void Point3dCanvas::mouseMoveEvent(QMouseEvent *e)
 void Point3dCanvas::mouseReleaseEvent(QMouseEvent *e)
 {
     if (m_dragging && e->button() == m_dragButton) {
-        const bool click = e->button() == Qt::LeftButton && !m_movedSincePress
-                           && m_pressTrack >= 0 && m_pressTrack < m_tracks.size();
+        const bool isLeftClick = e->button() == Qt::LeftButton && !m_movedSincePress;
+        const bool hitOnTrack = isLeftClick && m_pressTrack >= 0 && m_pressTrack < m_tracks.size();
         m_dragging = false;
         m_dragButton = Qt::NoButton;
         setCursor(Qt::ArrowCursor);
-        if (click) {
-            // 左键单击某条航迹：通知窗口"单独显示这一条"（并联动地图）
+        if (hitOnTrack) {
+            // 左键单击某条航迹：通知窗口高亮聚焦（双击才进入单独显示）
             const ProjectedTrack &t = m_tracks.at(m_pressTrack);
             m_pressTrack = -1;
             emit trackClicked(t.batchNo, t.source, t.t0, t.t1);
             return;
         }
         m_pressTrack = -1;
+        if (isLeftClick) {
+            emit emptyClicked();
+            return;
+        }
         emit cameraChanged();
         return;
     }

@@ -1,6 +1,7 @@
 #include "trackpointdialog.h"
 #include "theme.h"
 
+#include <QButtonGroup>
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -55,31 +56,45 @@ public:
 // ---------------------------------------------------------------
 //  TrackPointModel
 // ---------------------------------------------------------------
-TrackPointModel::TrackPointModel(const Track &track, QObject *parent)
-    : QAbstractTableModel(parent), m_points(track.points)
+TrackPointModel::TrackPointModel(const Track &track, QObject *parent, RadarPointMode mode)
+    : QAbstractTableModel(parent), m_track(track)
 {
     m_radar = track.source == TrackSource::Radar || track.source == TrackSource::RadarRaw;
     if (m_radar) {
         m_columns = QVector<Column>() << Seq << Time << Lat << Lon
                                       << PRange << PAz << PVr << Snr;
-        // 平滑/输出点列（smoothPointList / outputPointList）没有 SNR，关联点列
-        // （asscPointList，存在 Track::rawPoints）有：按同一帧时间补上，
-        // 否则从「雷达」入口导入的航迹这一列会整列为空
-        if (track.hasRawPoints()) {
-            QHash<qint64, float> snrByTime;
-            for (const TrackPoint &r : track.rawPoints)
-                if (std::isfinite(r.snr))
-                    snrByTime.insert(r.t, r.snr);
-            if (!snrByTime.isEmpty())
-                for (TrackPoint &p : m_points) {
-                    const auto it = snrByTime.constFind(p.t);
-                    if (!std::isfinite(p.snr) && it != snrByTime.constEnd())
-                        p.snr = it.value();
-                }
-        }
     } else {
         m_columns = QVector<Column>() << Seq << Time << Lat << Lon
                                       << AltFt << Heading << Speed << VRate;
+    }
+    loadMode(mode);
+}
+
+void TrackPointModel::setPointMode(RadarPointMode mode)
+{
+    if (mode == m_mode)
+        return;
+    beginResetModel();
+    loadMode(mode);
+    endResetModel();
+}
+
+void TrackPointModel::loadMode(RadarPointMode mode)
+{
+    m_mode = mode;
+    m_points = m_track.pointsForMode(mode);
+    if (m_radar && m_track.hasRawPoints()) {
+        // 平滑/预测点列没有 SNR，关联点列（asscPointList，存在 Track::rawPoints）有：按同一帧时间补上
+        QHash<qint64, float> snrByTime;
+        for (const TrackPoint &r : qAsConst(m_track.rawPoints))
+            if (std::isfinite(r.snr))
+                snrByTime.insert(r.t, r.snr);
+        if (!snrByTime.isEmpty())
+            for (TrackPoint &p : m_points) {
+                const auto it = snrByTime.constFind(p.t);
+                if (!std::isfinite(p.snr) && it != snrByTime.constEnd())
+                    p.snr = it.value();
+            }
     }
 }
 
@@ -171,68 +186,144 @@ QVariant TrackPointModel::headerData(int section, Qt::Orientation o, int role) c
 // ---------------------------------------------------------------
 //  TrackPointDialog
 // ---------------------------------------------------------------
-TrackPointDialog::TrackPointDialog(const Track &track, QWidget *parent)
-    : QDialog(parent), m_track(track)
+TrackPointDialog::TrackPointDialog(const Track &track, QWidget *parent, RadarPointMode initialMode)
+    : QDialog(parent), m_track(track), m_mode(initialMode)
 {
+    // 若指定点列为空而主点列非空，先回退到平滑点列，避免弹窗空白
+    if (m_track.source == TrackSource::Radar && m_track.pointsForMode(m_mode).isEmpty() && !m_track.points.isEmpty())
+        m_mode = RadarPointMode::Smooth;
+
     const QString title = track.flightNo.isEmpty() ? track.id : track.flightNo;
     setWindowTitle(tr("点迹数据 - %1").arg(title));
     setAttribute(Qt::WA_DeleteOnClose);
 
-    // 标题行：航班号 / ICAO / 来源色点 / 点数 + 导出按钮
+    // 标题行：航班号 / ICAO / 来源色点 / 点数 + 雷达点源切换 + 导出按钮
     QLabel *name = new QLabel(QStringLiteral("<b>%1</b>").arg(title.toHtmlEscaped()), this);
-    QStringList info;
-    if (!track.flightNo.isEmpty() && track.flightNo != track.id)
-        info << tr("ICAO: %1").arg(track.id);
-    info << tr("%1（%2）").arg(trackSourceName(track.source), track.fileName);
-    info << tr("%L1 个点迹").arg(track.points.size());
+    name->setObjectName(QStringLiteral("pointDialogTitle"));
     QLabel *dot = new QLabel(this);
-    dot->setFixedSize(ui::sz(10), ui::sz(10));
+    ui::bindSize(dot, ui::SizeKind::Fixed, 10, 10);
     dot->setStyleSheet(QStringLiteral("background:%1; border-radius:%2px;")
                            .arg(trackSourceColor(track.source).name()).arg(ui::sz(5)));
-    QLabel *meta = new QLabel(info.join(QStringLiteral("    ")), this);
+    m_meta = new QLabel(this);
+    m_meta->setObjectName(QStringLiteral("pointDialogMeta"));
     QPushButton *exportBtn = new QPushButton(tr("导出 CSV..."), this);
-    exportBtn->setToolTip(tr("按当前排序把点迹导出为 CSV 文件"));
+    exportBtn->setCursor(Qt::PointingHandCursor);
+    exportBtn->setToolTip(tr("按当前点列和排序导出为 CSV 文件"));
     connect(exportBtn, &QPushButton::clicked, this, &TrackPointDialog::onExport);
 
     QHBoxLayout *head = new QHBoxLayout;
+    ui::bindSpacing(head, 8);
     head->addWidget(name);
-    head->addSpacing(8);
     head->addWidget(dot);
-    head->addWidget(meta);
+    head->addWidget(m_meta);
     head->addStretch(1);
+
+    if (track.source == TrackSource::Radar && (track.hasRawPoints() || track.hasPredPoints())) {
+        QWidget *seg = new QWidget(this);
+        seg->setObjectName(QStringLiteral("pointDialogModeSeg"));
+        seg->setProperty("segmented", true);
+        seg->setAttribute(Qt::WA_StyledBackground);
+        QHBoxLayout *sl = new QHBoxLayout(seg);
+        ui::bindMargins(sl, 2, 2, 2, 2);
+        ui::bindSpacing(sl, 2);
+        QButtonGroup *grp = new QButtonGroup(seg);
+        grp->setExclusive(true);
+        const RadarPointMode modes[3] = { RadarPointMode::Smooth, RadarPointMode::Associated, RadarPointMode::Predicted };
+        const int counts[3] = { track.points.size(), track.rawPoints.size(), track.predPoints.size() };
+        for (int i = 0; i < 3; ++i) {
+            QPushButton *b = new QPushButton(
+                QStringLiteral("%1 (%2)").arg(radarPointModeName(modes[i])).arg(counts[i]), seg);
+            b->setObjectName(QStringLiteral("trackPointMode_%1").arg(i));
+            b->setCheckable(true);
+            b->setCursor(Qt::PointingHandCursor);
+            b->setEnabled(counts[i] > 0);
+            b->setChecked(modes[i] == m_mode);
+            grp->addButton(b, i);
+            sl->addWidget(b);
+            m_modeBtns[i] = b;
+            const RadarPointMode mode = modes[i];
+            connect(b, &QPushButton::clicked, this, [this, mode]() { switchMode(mode); });
+        }
+        head->addWidget(seg);
+    }
     head->addWidget(exportBtn);
 
-    m_model = new TrackPointModel(track, this);
+    m_model = new TrackPointModel(track, this, m_mode);
     m_proxy = new PointProxy(this);
     m_proxy->setSourceModel(m_model);
     m_proxy->setSortRole(Qt::UserRole);
 
     m_view = new QTableView(this);
+    m_view->setObjectName(QStringLiteral("pointTable"));
     m_view->setModel(m_proxy);
     m_view->setSortingEnabled(true);
     m_view->sortByColumn(TrackPointModel::Time, Qt::AscendingOrder);
     m_view->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_view->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_view->setAlternatingRowColors(true);
+    m_view->setShowGrid(false);
     m_view->setWordWrap(false);
     m_view->verticalHeader()->hide();
     // 行高固定：几万行时滚动也不卡
     m_view->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
-    m_view->verticalHeader()->setDefaultSectionSize(m_view->fontMetrics().height() + 6);
+    m_view->verticalHeader()->setDefaultSectionSize(m_view->fontMetrics().height() + ui::sz(8));
     m_view->horizontalHeader()->setStretchLastSection(true);
+    m_view->horizontalHeader()->setHighlightSections(false);
     QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     mono.setPointSizeF(m_view->font().pointSizeF());
     m_view->setFont(mono);
     m_view->resizeColumnsToContents();
 
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    buttons->button(QDialogButtonBox::Close)->setText(tr("关闭"));
+    buttons->button(QDialogButtonBox::Close)->setCursor(Qt::PointingHandCursor);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     QVBoxLayout *lay = new QVBoxLayout(this);
+    ui::bindMargins(lay, 14, 12, 14, 12);
+    ui::bindSpacing(lay, 10);
     lay->addLayout(head);
     lay->addWidget(m_view, 1);
     lay->addWidget(buttons);
+
+    setThemedStyle(this, ui::dialogQss() + ui::segmentedQss() + QStringLiteral(
+        "#pointDialogTitle { color: var(--text-primary); font-size: 14px; font-weight: 600; }"
+        "#pointDialogMeta { color: var(--text-secondary); font-size: 12px; }"
+        "#pointTable { background: var(--bg-primary); alternate-background-color: var(--bg-secondary);"
+        " color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 4px;"
+        " selection-background-color: var(--accent-primary); selection-color: var(--accent-fg);"
+        " font-family: %1; font-size: 12px; outline: none; }"
+        "#pointTable QHeaderView::section { background: var(--bg-secondary); color: var(--text-secondary);"
+        " border: none; border-bottom: 1px solid var(--border-primary); padding: 6px 8px;"
+        " font-family: %2; font-size: 11px; font-weight: 600; }"
+        "#pointTable QHeaderView::section:hover { color: var(--text-primary); }")
+        .arg(ui::monoFamilies(), ui::uiFamilies()));
+
+    updateMetaText();
     resize(1100, 700);
+}
+
+void TrackPointDialog::updateMetaText()
+{
+    QStringList info;
+    if (!m_track.flightNo.isEmpty() && m_track.flightNo != m_track.id)
+        info << tr("ICAO: %1").arg(m_track.id);
+    info << tr("%1（%2）").arg(trackSourceName(m_track.source), m_track.fileName);
+    if (m_track.source == TrackSource::Radar)
+        info << tr("%1：%L2 个点").arg(radarPointModeName(m_mode)).arg(m_model->rowCount());
+    else
+        info << tr("%L1 个点迹").arg(m_model->rowCount());
+    m_meta->setText(info.join(QStringLiteral("  ·  ")));
+}
+
+void TrackPointDialog::switchMode(RadarPointMode mode)
+{
+    if (mode == m_mode)
+        return;
+    m_mode = mode;
+    m_model->setPointMode(mode);
+    m_view->resizeColumnsToContents();
+    updateMetaText();
 }
 
 int TrackPointDialog::rowCount() const

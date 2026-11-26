@@ -308,6 +308,21 @@ void TrackLayer::setSceneGcj(bool on)
     m_rangesDirty = true;
 }
 
+void TrackLayer::setRadarPointMode(RadarPointMode mode)
+{
+    if (m_radarMode == mode)
+        return;
+    m_radarMode = mode;
+    ++m_styleVersion;
+    m_pick.clear();
+    m_pickVersion = ~quint64(0);
+    m_rangeVersion = ~quint64(0);
+    m_ptDotsBuiltVersion = ~quint64(0);
+    m_ptDotsDirty = true;
+    m_dynamicDirty = true;
+    m_rangesDirty = true;
+}
+
 void TrackLayer::setStore(const TrackStore *store)
 {
     m_store = store;
@@ -492,7 +507,7 @@ void TrackLayer::rebuildStatic()
         for (int ti : qAsConst(members[group])) {
             curTrack = ti;
             pieceFirst = quads;
-            const QVector<TrackPoint> &pts = tracks[ti].points;
+            const QVector<TrackPoint> &pts = trackPoints(tracks[ti]);
             for (int j = 1; j < pts.size(); ++j) {
                 const TrackPoint &a = pts[j - 1], &b = pts[j];
                 if (a.lat == b.lat && a.lon == b.lon)
@@ -542,7 +557,11 @@ void TrackLayer::ensureRanges() const
     m_lo = QVector<int>(tracks.size(), 0);
     m_hi = QVector<int>(tracks.size(), 0);
     for (int i = 0; i < tracks.size(); ++i) {
-        const QVector<TrackPoint> &pts = tracks[i].points;
+        const QVector<TrackPoint> &pts = trackPoints(tracks[i]);
+        if (pts.isEmpty()) {
+            m_hi[i] = -1;
+            continue;
+        }
         if (!m_filterOn) {
             m_hi[i] = pts.size() - 1;
             continue;
@@ -587,7 +606,7 @@ void TrackLayer::rebuildPointDots()
         DotTrack d;
         d.track = ti;
         d.first = v.size() / (4 * kDotStride);
-        const QVector<TrackPoint> &pts = tracks[ti].points;
+        const QVector<TrackPoint> &pts = trackPoints(tracks[ti]);
         for (int k = m_lo[ti]; k <= m_hi[ti]; ++k) {
             pushDot(v, scenePos(pts[k].lon, pts[k].lat, kAltitudeM));
             d.t.append(pts[k].t);
@@ -631,7 +650,9 @@ void TrackLayer::rebuildDynamic()
         for (int i = 0; i < tracks.size(); ++i) {
             if (m_trackGroup[i] != g || !trackShown(i) || m_lo[i] > m_hi[i])
                 continue;
-            const QVector<TrackPoint> &pts = tracks[i].points;
+            const QVector<TrackPoint> &pts = trackPoints(tracks[i]);
+            if (pts.isEmpty())
+                continue;
             double lon = 0.0, lat = 0.0;
             int last = 0;
             if (!m_replay) {
@@ -861,7 +882,9 @@ void TrackLayer::ensurePickCache() const
     const QVector<Track> &tracks = m_store->tracks();
     m_pick = QVector<PickTrack>(tracks.size());
     for (int i = 0; i < tracks.size(); ++i) {
-        const QVector<TrackPoint> &pts = tracks[i].points;
+        const QVector<TrackPoint> &pts = trackPoints(tracks[i]);
+        if (pts.isEmpty())
+            continue;
         PickTrack &pk = m_pick[i];
         pk.pos.reserve(pts.size());
         pk.t.reserve(pts.size());
@@ -935,6 +958,8 @@ int TrackLayer::pick(const QMatrix4x4 &mvp, const QVector3D &eye, const QSizeF &
         if (!trackShown(i))
             continue;
         const PickTrack &pk = m_pick[i];
+        if (pk.pos.isEmpty())
+            continue;
         const QVector3D c = (pk.bmin + pk.bmax) * 0.5f;
         const float rad = (pk.bmax - pk.bmin).length() * 0.5f + 1e-4f;
         bool outside = false;
@@ -967,8 +992,8 @@ int TrackLayer::pick(const QMatrix4x4 &mvp, const QVector3D &eye, const QSizeF &
         }
 
         // 端点（回放时为插值位置）和回放头部段；端点按圆点半径算命中
-        const QVector<TrackPoint> &pts = tracks[i].points;
-        if (m_lo[i] > m_hi[i])
+        const QVector<TrackPoint> &pts = trackPoints(tracks[i]);
+        if (pts.isEmpty() || m_lo[i] > m_hi[i])
             continue;
         double lon = pts[m_hi[i]].lon, lat = pts[m_hi[i]].lat;
         int last = m_hi[i];

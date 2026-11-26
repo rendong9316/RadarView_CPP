@@ -101,6 +101,7 @@ int main(int argc, char *argv[])
     }
 
     UiScale::instance()->applyAppFont();   // 按保存的根字号缩放默认字体（自检时读的是临时设置）
+    Theme::instance()->installGlobalStyle();   // 全局基础样式：QToolTip / QMessageBox / 滚动条随主题统一
 
     MainWindow w;
     // 启动自动最大化（保留任务栏）；自检/tracktest 保持普通窗口，便于断言布局

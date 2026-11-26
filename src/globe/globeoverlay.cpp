@@ -634,9 +634,10 @@ void GlobeOverlay::drawPointTip(QPainter &p)
             || m_ctx.tipTrack >= m_ctx.trackStore->size())
         return;
     const Track &t = m_ctx.trackStore->tracks()[m_ctx.tipTrack];
-    if (m_ctx.tipPoint < 0 || m_ctx.tipPoint >= t.points.size())
+    const QVector<TrackPoint> &pts = t.pointsForMode(m_ctx.trackLayer->radarPointMode());
+    if (m_ctx.tipPoint < 0 || m_ctx.tipPoint >= pts.size())
         return;
-    const TrackPoint &pt = t.points[m_ctx.tipPoint];
+    const TrackPoint &pt = pts[m_ctx.tipPoint];
     QPointF sp;
     if (!m_ctx.camera->visiblePos(pt.lon, pt.lat, TrackLayer::kAltitudeM, size(), &sp))
         return;

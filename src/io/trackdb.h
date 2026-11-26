@@ -40,6 +40,8 @@ struct DbTrackSummary {
     bool hasMeasure = false;    // 主点列是否带 prange/pvr/paz（v2 旧数据为 false，需重新导入）
     bool hasRaw = false;        // 是否带关联点列（v4 起，同一 MAT 的 asscPointList）
     int rawCount = 0;           // 关联点列的原始点数
+    bool hasPred = false;       // 是否带预测点列（v7 起，同一 MAT 的 predictRes）
+    int predCount = 0;          // 预测点列的原始点数
 };
 
 // 管理面板筛选条件（RadarView types/manage.ts TrackMetaFilter + SortConfig）

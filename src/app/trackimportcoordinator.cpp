@@ -94,6 +94,7 @@ void TrackImportCoordinator::importFile(TrackSource kind, const QString &path,
         return;
     QString name = displayName;
     QColor selectedColor = color;
+    m_hasImportPointMode = false;
     if (name.isEmpty() && (kind != TrackSource::Adsb || !app::testMode())) {
         QSet<QString> used;   // 数据库里已有的同类批次名也要避开
         for (const BatchInfo &b : trackdb::batches())
@@ -112,12 +113,16 @@ void TrackImportCoordinator::importFile(TrackSource kind, const QString &path,
         if (!app::testMode()) {
             ui::RadarImportDialog dlg(path, name,
                                       QColor(kind == TrackSource::Radar ? "#FF0000" : "#FFC000"),
-                                      used.values(), m_dialogParent, adsb);
+                                      used.values(), m_dialogParent, adsb,
+                                      kind == TrackSource::RadarRaw ? RadarPointMode::Associated : m_defaultPointMode);
             if (dlg.exec() != QDialog::Accepted)
                 return;
             name = dlg.trackName();
-            if (!adsb)
+            if (!adsb) {
                 selectedColor = dlg.trackColor();
+                m_hasImportPointMode = true;
+                m_importPointMode = dlg.pointMode();
+            }
         }
     }
     m_importColor = selectedColor;
@@ -164,6 +169,10 @@ void TrackImportCoordinator::onImportDone()
         msg = tr("%1：新增 %2 条航迹（共 %3 条，%4 个点），解析 %5 ms")
                   .arg(QFileInfo(imp->path()).fileName()).arg(added)
                   .arg(m_store->size()).arg(m_store->pointCount()).arg(imp->elapsedMs());
+        if (m_hasImportPointMode) {
+            emit radarPointModeSelected(m_importPointMode);
+            m_hasImportPointMode = false;
+        }
         emit tracksImported(before, firstData);
     } else {
         msg = imp->errorString();

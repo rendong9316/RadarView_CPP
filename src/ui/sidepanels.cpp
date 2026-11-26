@@ -481,23 +481,26 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
     static const char *const labels[3] = { "ADS-B", "Radar", "Raw" };
     static const char *const colors[3] = { "source-adsb", "source-radar", "source-radar_raw" };
     for (int i = 0; i < 3; ++i) {
-        QHBoxLayout *row = new QHBoxLayout;
+        QWidget *rowW = new QWidget(this);
+        rowW->setObjectName(QStringLiteral("pfRow_%1").arg(i));
+        QHBoxLayout *row = new QHBoxLayout(rowW);
+        row->setContentsMargins(0, 0, 0, 0);
         row->setSpacing(4);
-        row->addWidget(new Dot(colors[i], this));
-        m_pcCheck[i] = new CheckBox(this);
+        row->addWidget(new Dot(colors[i], rowW));
+        m_pcCheck[i] = new CheckBox(rowW);
         m_pcCheck[i]->setToolTip(QStringLiteral("启用此数据源的点数筛选"));
         row->addWidget(m_pcCheck[i]);
-        QLabel *l = new QLabel(QLatin1String(labels[i]), this);
+        QLabel *l = new QLabel(QLatin1String(labels[i]), rowW);
         l->setObjectName(QStringLiteral("pfLabel"));
         ui::bindSize(l, ui::SizeKind::MinWidth, 52);
         row->addWidget(l);
-        m_pcMin[i] = new QLineEdit(this);
-        m_pcMax[i] = new QLineEdit(this);
+        m_pcMin[i] = new QLineEdit(rowW);
+        m_pcMax[i] = new QLineEdit(rowW);
         m_pcMin[i]->setPlaceholderText(QStringLiteral("最小"));
         m_pcMax[i]->setPlaceholderText(QStringLiteral("最大"));
         m_pcMin[i]->setToolTip(QStringLiteral("最小航迹点数阈值"));
         m_pcMax[i]->setToolTip(QStringLiteral("最大航迹点数阈值"));
-        QLabel *dash = new QLabel(QStringLiteral("-"), this);
+        QLabel *dash = new QLabel(QStringLiteral("-"), rowW);
         dash->setObjectName(QStringLiteral("pfSep"));
         for (QLineEdit *e : { m_pcMin[i], m_pcMax[i] }) {
             e->setObjectName(QStringLiteral("pfInput"));
@@ -508,7 +511,10 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
         row->addWidget(dash);
         row->addWidget(m_pcMax[i]);
         row->addStretch(1);
-        v->addLayout(row);
+        v->addWidget(rowW);
+        m_pcRow[i] = rowW;
+        if (i == 2)
+            rowW->setVisible(m_showRaw || m_state->pc[2].enabled);
         connect(m_pcCheck[i], &QCheckBox::toggled, this, [this, i](bool on) {
             m_state->pc[i].enabled = on;
             m_state->save();
@@ -572,59 +578,61 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
 
     v->addStretch(1);
 
-    // TimeFilterPanel.vue 样式
+    // 统一侧栏筛选面板样式（圆角 4px、输入走 input-bg/input-border、禁用态走主题变量）
     setThemedStyle(this, QStringLiteral(
         "QLabel { background: transparent; %1 }"
-        "#indicator { font-size: 9px; color: var(--accent-primary); }"
+        "#indicator { font-size: 10px; color: var(--accent-primary); font-weight: 600; }"
         "#rangeInfo { font-size: 10px; color: var(--text-tertiary); }"
-        "#timeInput { padding: 4px 6px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 2px;"
+        "#timeInput { padding: 4px 6px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 4px;"
         " color: var(--input-fg); font-family: %2; font-size: 11px; }"
         "#timeInput:focus { border-color: var(--accent-primary); }"
         "#timeInput[invalid=\"true\"] { border-color: var(--error); }"
-        "#timeSep { color: var(--text-tertiary); font-size: 11px; }"
+        "#timeSep { color: var(--text-secondary); font-size: 11px; }"
         "#timeHint { color: var(--text-tertiary); font-size: 10px; }"
         "#timeHint[invalid=\"true\"] { color: var(--error); }"
-        "#presetBtn { padding: 3px 4px; background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--border-primary);"
-        " border-radius: 2px; %1 font-size: 10px; }"
-        "#presetBtn:hover { background: var(--button-hover); border-color: var(--accent-primary); }"
-        "#presetBtn:disabled { color: var(--text-tertiary); }"
+        "#presetBtn { padding: 4px 6px; background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--border-primary);"
+        " border-radius: 4px; %1 font-size: 10px; }"
+        "#presetBtn:hover { background: var(--button-hover); border-color: var(--accent-primary); color: var(--text-primary); }"
+        "#presetBtn:disabled { color: var(--text-muted); border-color: var(--border-secondary); }"
         "#calBox { background: var(--bg-primary); border: 1px solid var(--accent-primary); border-radius: 4px; }"
         "#calTitle { color: var(--accent-primary); font-size: 11px; font-weight: 600; }"
-        "QCalendarWidget QWidget#qt_calendar_navigationbar { background: var(--bg-secondary); border-radius: 2px; }"
-        "QCalendarWidget QToolButton { background: transparent; color: var(--text-primary); border: none; border-radius: 2px;"
+        "QCalendarWidget QWidget#qt_calendar_navigationbar { background: var(--bg-secondary); border-radius: 3px; }"
+        "QCalendarWidget QToolButton { background: transparent; color: var(--text-primary); border: none; border-radius: 3px;"
         " padding: 2px 6px; %1 font-size: 12px; font-weight: 600; }"
         "QCalendarWidget QToolButton:hover { background: var(--button-hover); }"
         "QCalendarWidget QToolButton::menu-indicator { image: none; width: 0px; }"
         "QCalendarWidget QSpinBox { background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--input-border);"
-        " %1 font-size: 12px; padding: 1px 2px; }"
-        "QCalendarWidget QMenu { background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-primary);"
-        " %1 font-size: 11px; }"
-        "QCalendarWidget QMenu::item:selected { background: var(--accent-primary); color: #ffffff; }"
+        " border-radius: 3px; %1 font-size: 12px; padding: 1px 2px; }"
+        "QCalendarWidget QMenu { background: var(--menu-bg); color: var(--menu-fg); border: 1px solid var(--border-primary);"
+        " border-radius: 4px; %1 font-size: 11px; }"
+        "QCalendarWidget QMenu::item:selected { background: var(--accent-primary); color: var(--accent-fg); }"
         "QCalendarWidget QAbstractItemView { background: var(--bg-primary); color: var(--text-primary); outline: none;"
-        " selection-background-color: var(--accent-primary); selection-color: #ffffff; %1 font-size: 11px; }"
-        "QCalendarWidget QAbstractItemView:disabled { color: var(--text-tertiary); }"
-        "#applyBtn { padding: 4px 8px; background: var(--accent-primary); color: #ffffff; border: none; border-radius: 2px;"
-        " %1 font-size: 11px; font-weight: 600; }"
-        "#applyBtn:disabled { background: #66007acc; color: #66ffffff; }"
-        "#clearBtn { padding: 4px 8px; background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--border-primary);"
-        " border-radius: 2px; %1 font-size: 11px; }"
-        "#clearBtn:hover { background: var(--button-hover); }"
-        "#spatialBtn { padding: 4px 8px; background: var(--button-bg); color: var(--button-fg);"
-        " border: 1px solid var(--accent-primary); border-radius: 2px; %1 font-size: 11px; }"
-        "#spatialBtn:hover { background: var(--button-hover); }"
-        "#spatialBtn[active=\"true\"] { background: var(--accent-primary); color: #ffffff; border: none; }"
-        "#spatialClearBtn { padding: 4px 8px; background: var(--button-bg); color: var(--button-fg);"
-        " border: 1px solid var(--border-primary); border-radius: 2px; %1 font-size: 11px; }"
-        "#spatialClearBtn:hover { background: var(--button-hover); }"
+        " selection-background-color: var(--accent-primary); selection-color: var(--accent-fg); %1 font-size: 11px; }"
+        "QCalendarWidget QAbstractItemView:disabled { color: var(--text-muted); }"
+        "#applyBtn { padding: 5px 10px; background: var(--accent-primary); color: var(--accent-fg); border: 1px solid var(--accent-primary);"
+        " border-radius: 4px; %1 font-size: 11px; font-weight: 600; }"
+        "#applyBtn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
+        "#applyBtn:disabled { background: var(--button-bg); color: var(--text-muted); border-color: var(--border-secondary); }"
+        "#clearBtn { padding: 5px 10px; background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--border-primary);"
+        " border-radius: 4px; %1 font-size: 11px; }"
+        "#clearBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "#spatialBtn { padding: 5px 10px; background: var(--button-bg); color: var(--button-fg);"
+        " border: 1px solid var(--accent-primary); border-radius: 4px; %1 font-size: 11px; }"
+        "#spatialBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "#spatialBtn[active=\"true\"] { background: var(--accent-primary); color: var(--accent-fg); border-color: var(--accent-primary); font-weight: 600; }"
+        "#spatialClearBtn { padding: 5px 10px; background: var(--button-bg); color: var(--button-fg);"
+        " border: 1px solid var(--border-primary); border-radius: 4px; %1 font-size: 11px; }"
+        "#spatialClearBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "#spatialClearBtn:disabled { color: var(--text-muted); border-color: var(--border-secondary); }"
         "#spatialHint { color: var(--text-tertiary); font-size: 10px; }"
         "#errorMsg { color: var(--error); font-size: 11px; }"
-        "#divider { background: var(--border-primary); border: none; }"
-        "#sectionLabel { font-size: 11px; color: var(--text-tertiary); font-weight: 600; }"
+        "#divider { background: var(--border-secondary); border: none; }"
+        "#sectionLabel { font-size: 11px; color: var(--text-secondary); font-weight: 600; }"
         "#pfLabel { color: var(--text-secondary); font-size: 11px; }"
-        "#pfInput { padding: 2px 4px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 2px;"
+        "#pfInput { padding: 3px 5px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 4px;"
         " color: var(--input-fg); %1 font-size: 11px; }"
         "#pfInput:focus { border-color: var(--accent-primary); }"
-        "#pfInput:disabled { color: #4dffffff; border-color: #4d555555; background: #4d3c3c3c; }"
+        "#pfInput:disabled { color: var(--text-muted); border-color: var(--border-secondary); background: var(--input-disabled-bg); }"
         "#pfSep { color: var(--text-tertiary); font-size: 11px; }")
         .arg(panelFont(), ui::monoFamilies()));
 
@@ -640,6 +648,13 @@ FilterPanel::FilterPanel(TrackFilterState *state, QWidget *parent) : QWidget(par
     if (m_state->timeActive)
         setInputs(m_state->timeMin, m_state->timeMax);
     syncUi();
+}
+
+void FilterPanel::setShowRawSource(bool show)
+{
+    m_showRaw = show;
+    if (m_pcRow[2])
+        m_pcRow[2]->setVisible(m_showRaw || m_state->pc[2].enabled);
 }
 
 void FilterPanel::setDataRange(qint64 minMs, qint64 maxMs)
@@ -1094,50 +1109,53 @@ FlagPanel::FlagPanel(FlagStore *flags, RulerState *ruler, QWidget *parent)
     setThemedStyle(this, QStringLiteral(
         "QLabel { background: transparent; %1 }"
         "#panelScroll, #scrollInner { background: transparent; }"
-        "#coordInput { padding: 4px 6px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 2px;"
+        "#coordInput { padding: 4px 6px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 4px;"
         " color: var(--input-fg); %1 font-size: 11px; }"
         "#coordInput:focus { border-color: var(--accent-primary); }"
-        "#placeBtn { padding: 4px 10px; background: var(--accent-primary); color: #ffffff; border: none; border-radius: 2px;"
-        " %1 font-size: 11px; font-weight: 600; }"
+        "#placeBtn { padding: 5px 10px; background: var(--accent-primary); color: var(--accent-fg); border: 1px solid var(--accent-primary);"
+        " border-radius: 4px; %1 font-size: 11px; font-weight: 600; }"
+        "#placeBtn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }"
         "#coordError { color: var(--error); font-size: 11px; }"
-        "#geoResult { padding: 6px 8px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 2px;"
+        "#geoResult { padding: 6px 8px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 4px;"
         " font-size: 11px; color: var(--accent-primary); }"
         "#emptyText { color: var(--text-tertiary); font-size: 11px; padding: 8px 0px; }"
         "#clearAllBtn { padding: 5px 10px; background: var(--error-bg); color: var(--error); border: 1px solid var(--error);"
-        " border-radius: 2px; %1 font-size: 12px; }"
-        "#clearAllBtn:hover { background: #40f44747; }"
+        " border-radius: 4px; %1 font-size: 11px; }"
+        "#clearAllBtn:hover { background: var(--error); color: #ffffff; }"
         "#flagRow, #rulerRow { border-bottom: 1px solid var(--border-secondary); }"
         "#flagLabel { font-size: 11px; color: var(--text-primary); font-weight: 500; }"
         "#flagLabel:hover { color: var(--accent-primary); }"
-        "#renameInput { padding: 2px 4px; background: var(--input-bg); border: 1px solid var(--accent-primary); border-radius: 2px;"
+        "#renameInput { padding: 2px 5px; background: var(--input-bg); border: 1px solid var(--accent-primary); border-radius: 4px;"
         " color: var(--input-fg); %1 font-size: 11px; }"
         "#flagCoords { font-size: 10px; color: var(--text-tertiary); font-family: %2; }"
-        "#rulerSection { border-top: 1px solid var(--border-primary); }"
+        "#rulerSection { border-top: 1px solid var(--border-secondary); }"
         "#rulerTitle { font-size: 12px; font-weight: 600; color: var(--text-primary); }"
-        "#rulerToggle { padding: 3px 10px; border: 1px solid var(--border-primary); border-radius: 3px; background: var(--button-bg);"
-        " color: var(--text-secondary); %1 font-size: 10px; }"
+        "#rulerToggle { padding: 4px 10px; border: 1px solid var(--border-primary); border-radius: 4px; background: var(--button-bg);"
+        " color: var(--button-fg); %1 font-size: 11px; }"
         "#rulerToggle:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "#rulerToggle[active=\"true\"] { background: #f59e0b; border-color: #f59e0b; color: #000000; font-weight: 600; }"
+        "#rulerToggle[active=\"true\"] { background: var(--warning); border-color: var(--warning); color: #000000; font-weight: 600; }"
         "#rulerHint { font-size: 10px; color: var(--text-tertiary); }"
-        "#rulerIndex { background: #f59e0b; color: #000000; font-size: 9px; font-weight: 700; border-radius: 9px; }"
+        "#rulerIndex { background: var(--warning); color: #000000; font-size: 10px; font-weight: 700; border-radius: 9px; }"
         "#rulerCoords { font-size: 10px; color: var(--text-secondary); font-family: %2; }"
-        "#rulerSeg, #rulerDirect { background: var(--bg-tertiary); border-radius: 2px; }"
+        "#rulerSeg, #rulerDirect { background: var(--bg-tertiary); border-radius: 4px; }"
         "#segLabel { font-size: 10px; color: var(--text-tertiary); }"
         "#segDist { font-size: 10px; color: var(--accent-primary); font-weight: 600; }"
         "#segBearing { font-size: 10px; color: var(--text-secondary); }"
-        "#rulerTotal { background: #1ff59e0b; border: 1px solid #4df59e0b; border-radius: 3px; }"
+        "#rulerTotal { background: var(--warning-bg); border: 1px solid var(--warning-border); border-radius: 4px; }"
         "#totalLabel { font-size: 10px; color: var(--text-secondary); }"
-        "#totalVal { font-size: 12px; font-weight: 700; color: #f59e0b; }"
-        "#rulerAction, #rulerDanger { padding: 4px 0px; border: 1px solid var(--border-primary); border-radius: 2px;"
-        " background: var(--button-bg); color: var(--text-secondary); %1 font-size: 10px; }"
+        "#totalVal { font-size: 12px; font-weight: 700; color: var(--warning); }"
+        "#rulerAction, #rulerDanger { padding: 4px 0px; border: 1px solid var(--border-primary); border-radius: 4px;"
+        " background: var(--button-bg); color: var(--button-fg); %1 font-size: 11px; }"
         "#rulerAction:hover:!disabled { background: var(--button-hover); color: var(--text-primary); }"
-        "#rulerDanger { color: var(--error); border-color: var(--error); }"
+        "#rulerDanger { color: var(--error); border-color: var(--error); background: transparent; }"
         "#rulerDanger:hover:!disabled { background: var(--error-bg); }"
-        "#rulerAction:disabled, #rulerDanger:disabled { color: #66808080; border-color: #66808080; }")
+        "#rulerAction:disabled, #rulerDanger:disabled { color: var(--text-muted); border-color: var(--border-secondary); }")
         .arg(panelFont(), ui::monoFamilies()));
 
     connect(m_flags, &FlagStore::changed, this, &FlagPanel::rebuildFlags);
     connect(m_ruler, &RulerState::changed, this, &FlagPanel::rebuildRuler);
+    connect(Theme::instance(), &Theme::changed, this, &FlagPanel::rebuildFlags);
+    connect(UiScale::instance(), &UiScale::changed, this, &FlagPanel::rebuildFlags);
     rebuildFlags();
     rebuildRuler();
 }
@@ -1192,7 +1210,8 @@ void FlagPanel::rebuildFlags()
     clearAll->setObjectName(QStringLiteral("clearAllBtn"));
     clearAll->setToolTip(QStringLiteral("清除所有旗标，此操作不可撤销"));
     clearAll->setCursor(Qt::PointingHandCursor);
-    clearAll->setIcon(lucideQIcon(LucideIcon::Trash2, 13, themeColor("error")));
+    clearAll->setIcon(lucideQIcon(LucideIcon::Trash2, ui::sz(13), themeColor("error"), QColor(Qt::white)));
+    clearAll->setIconSize(QSize(ui::sz(13), ui::sz(13)));
     connect(clearAll, &QPushButton::clicked, this, [this]() {
         if (ui::confirm(this, QStringLiteral("确定要清除地图上所有旗标吗？此操作不可撤销。"), QStringLiteral("清除旗标")))
             m_flags->clearAll();
@@ -1240,8 +1259,8 @@ void FlagPanel::rebuildFlags()
             lbl->setFlat(true);
             lbl->setToolTip(QStringLiteral("点击修改旗标名称"));
             lbl->setCursor(Qt::PointingHandCursor);
-            lbl->setIcon(lucideQIcon(LucideIcon::Pencil, 11, themeColor("text-primary"), themeColor("accent-primary")));
-            lbl->setIconSize(QSize(11, 11));
+            lbl->setIcon(lucideQIcon(LucideIcon::Pencil, ui::sz(11), themeColor("text-primary"), themeColor("accent-primary")));
+            lbl->setIconSize(QSize(ui::sz(11), ui::sz(11)));
             lbl->setStyleSheet(QStringLiteral("text-align: left; border: none; background: transparent; padding: 0px;"));
             connect(lbl, &QPushButton::clicked, this, [this, id]() {
                 m_editingId = id;

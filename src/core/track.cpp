@@ -87,6 +87,43 @@ QColor trackSourceColor(TrackSource s)
     return QColor(Qt::white);
 }
 
+QString radarPointModeName(RadarPointMode m)
+{
+    switch (m) {
+    case RadarPointMode::Smooth: return QStringLiteral("平滑");
+    case RadarPointMode::Associated: return QStringLiteral("关联");
+    case RadarPointMode::Predicted: return QStringLiteral("预测");
+    }
+    return QStringLiteral("平滑");
+}
+
+QString radarPointModeKey(RadarPointMode m)
+{
+    switch (m) {
+    case RadarPointMode::Smooth: return QStringLiteral("smooth");
+    case RadarPointMode::Associated: return QStringLiteral("associated");
+    case RadarPointMode::Predicted: return QStringLiteral("predicted");
+    }
+    return QStringLiteral("smooth");
+}
+
+bool radarPointModeFromKey(const QString &key, RadarPointMode *out)
+{
+    if (key == QLatin1String("smooth")) {
+        if (out) *out = RadarPointMode::Smooth;
+        return true;
+    }
+    if (key == QLatin1String("associated")) {
+        if (out) *out = RadarPointMode::Associated;
+        return true;
+    }
+    if (key == QLatin1String("predicted")) {
+        if (out) *out = RadarPointMode::Predicted;
+        return true;
+    }
+    return false;
+}
+
 bool trackSourceFromName(const QString &name, TrackSource *out)
 {
     for (TrackSource s : { TrackSource::Adsb, TrackSource::Radar, TrackSource::RadarRaw })
@@ -122,6 +159,35 @@ QString Track::key() const
     return id + QStringLiteral("::") + trackSourceName(source) + QStringLiteral("::") + fileName;
 }
 
+const QVector<TrackPoint> &Track::pointsForMode(RadarPointMode mode) const
+{
+    if (source == TrackSource::Adsb)
+        return points;
+    if (source == TrackSource::RadarRaw) {
+        if (mode == RadarPointMode::Predicted)
+            return predPoints;
+        return points;
+    }
+    switch (mode) {
+    case RadarPointMode::Smooth: return points;
+    case RadarPointMode::Associated: return rawPoints;
+    case RadarPointMode::Predicted: return predPoints;
+    }
+    return points;
+}
+
+qint64 Track::minTimeForMode(RadarPointMode mode) const
+{
+    const QVector<TrackPoint> &pts = pointsForMode(mode);
+    return pts.isEmpty() ? 0 : pts.first().t;
+}
+
+qint64 Track::maxTimeForMode(RadarPointMode mode) const
+{
+    const QVector<TrackPoint> &pts = pointsForMode(mode);
+    return pts.isEmpty() ? 0 : pts.last().t;
+}
+
 void Track::normalize()
 {
     auto norm = [](QVector<TrackPoint> &pts) {
@@ -134,6 +200,8 @@ void Track::normalize()
     norm(points);
     if (!rawPoints.isEmpty())
         norm(rawPoints);
+    if (!predPoints.isEmpty())
+        norm(predPoints);
 }
 
 bool parseBeijingTime(const char *s, int len, qint64 *ms)
@@ -233,16 +301,20 @@ int TrackStore::addTracks(QVector<Track> tracks)
         for (const TrackPoint &p : qAsConst(t.points))
             if (!seen.contains(p.t))
                 dst.points.append(p);
-        // 关联点列同样合并（同一 MAT 重复导入时增量补齐）
-        if (!t.rawPoints.isEmpty()) {
-            QSet<qint64> seenRaw;
-            seenRaw.reserve(dst.rawPoints.size());
-            for (const TrackPoint &p : qAsConst(dst.rawPoints))
-                seenRaw.insert(p.t);
-            for (const TrackPoint &p : qAsConst(t.rawPoints))
-                if (!seenRaw.contains(p.t))
-                    dst.rawPoints.append(p);
-        }
+        // 关联 / 预测点列同样合并（同一 MAT 重复导入时增量补齐）
+        auto mergeList = [](QVector<TrackPoint> &dstPts, const QVector<TrackPoint> &srcPts) {
+            if (srcPts.isEmpty())
+                return;
+            QSet<qint64> seenT;
+            seenT.reserve(dstPts.size());
+            for (const TrackPoint &p : qAsConst(dstPts))
+                seenT.insert(p.t);
+            for (const TrackPoint &p : qAsConst(srcPts))
+                if (!seenT.contains(p.t))
+                    dstPts.append(p);
+        };
+        mergeList(dst.rawPoints, t.rawPoints);
+        mergeList(dst.predPoints, t.predPoints);
         dst.normalize();
         QString *fields[] = { &dst.flightNo, &dst.icaoFlightNo, &dst.aircraftType, &dst.registration,
                               &dst.airline, &dst.origin, &dst.destination };

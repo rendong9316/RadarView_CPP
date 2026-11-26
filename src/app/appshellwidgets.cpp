@@ -169,14 +169,12 @@ SidePanel::SidePanel(QWidget *parent) : QWidget(parent)
     setThemedStyle(this, QStringLiteral(
         "#sidePanel { background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border); }"
         "#sidebarHeader { background: var(--sidebar-bg); border-bottom: 1px solid var(--sidebar-border); }"
-        "#sidebarTitle { color: var(--sidebar-header); font-family: %1; font-size: 11px; font-weight: 600; background: transparent; }"
-        "#sidebarClose { border: none; border-radius: 3px; background: transparent; }"
+        "#sidebarTitle { color: var(--sidebar-header); font-family: %1; font-size: 12px; font-weight: 600; background: transparent; }"
+        "#sidebarClose { border: none; border-radius: 4px; background: transparent; }"
         "#sidebarClose:hover { background: var(--button-hover); }"
         "#sidebarBody { background: var(--sidebar-bg); }"
-        "#panelScroll, #panelScroll > QWidget > QWidget { background: transparent; border: none; }"
-        "#panelScroll QScrollBar:vertical { background: var(--scrollbar-bg); width: 10px; margin: 0px; }"
-        "#panelScroll QScrollBar::handle:vertical { background: var(--scrollbar-thumb); min-height: 20px; border-radius: 3px; }"
-        "#sidebarBody QToolTip { font-size: 11px; }").arg(ui::uiFamilies()));
+        "#panelScroll, #panelScroll > QWidget > QWidget { background: transparent; border: none; }").arg(ui::uiFamilies())
+        + ui::scrollbarQss());
 }
 
 void SidePanel::addPanel(QWidget *w)

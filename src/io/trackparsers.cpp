@@ -182,6 +182,14 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
     const QStringList ptFields = raw ? QStringList{QStringLiteral("asscPointList")}
                                      : QStringList{QStringLiteral("smoothPointList"),
                                                    QStringLiteral("outputPointList")};
+    // 预测点列：首选 predictRes，兼容旧版/备选命名
+    const QStringList predFields = {
+        QStringLiteral("predictRes"),
+        QStringLiteral("predPointList"),
+        QStringLiteral("predictPointList"),
+        QStringLiteral("predictedPointList"),
+        QStringLiteral("prePointList"),
+    };
     const QString prefix = raw ? QStringLiteral("RAW") : QStringLiteral("RADAR");
     const QString fileName = displayName.isEmpty() ? QFileInfo(path).fileName() : displayName;
 
@@ -235,7 +243,21 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
                 break;
             }
         }
-        if (!pts.isValid())
+        MatArray assc;
+        if (!raw) {
+            const MatArray cand = list.field(QStringLiteral("asscPointList"), i);
+            if (cand.isStruct() && cand.numel() > 0)
+                assc = cand;
+        }
+        MatArray pred;
+        for (const QString &fName : predFields) {
+            const MatArray cand = list.field(fName, i);
+            if (cand.isStruct() && cand.numel() > 0) {
+                pred = cand;
+                break;
+            }
+        }
+        if (!pts.isValid() && !assc.isValid() && !pred.isValid())
             continue;
 
         const int batchNo = int(list.field(QStringLiteral("BatchNo"), i).scalar());
@@ -248,15 +270,20 @@ bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
         tr.source = raw ? TrackSource::RadarRaw : TrackSource::Radar;
         tr.fileName = fileName;
 
-        parseList(pts, &tr.points);
-        if (tr.points.isEmpty())
-            continue;
-        if (!raw) {
-            // 同一 MAT 里的关联点列（asscPointList）一起入库：点云窗口才能在
-            // 同一份数据上切换「平滑 / 关联」两种点源，不用把文件导入两遍
-            const MatArray assc = list.field(QStringLiteral("asscPointList"), i);
-            if (assc.isStruct() && assc.numel() > 0)
-                parseList(assc, &tr.rawPoints);
+        if (pts.isValid())
+            parseList(pts, &tr.points);
+        if (assc.isValid())
+            parseList(assc, &tr.rawPoints);
+        if (pred.isValid())
+            parseList(pred, &tr.predPoints);
+        // 极端情况：MAT 中缺失平滑点列但存在关联或预测点列时，用可用点列兜底主点列，避免整条航迹丢弃
+        if (tr.points.isEmpty()) {
+            if (!tr.rawPoints.isEmpty())
+                tr.points = tr.rawPoints;
+            else if (!tr.predPoints.isEmpty())
+                tr.points = tr.predPoints;
+            else
+                continue;
         }
         tr.normalize();
         out->append(std::move(tr));

@@ -60,18 +60,17 @@ QFont monoFont(int px)
 
 StatusTheme themeById(const QString &id)
 {
-    StatusTheme t;
-    if (id == QLatin1String("light")) {
-        t = StatusTheme{ id, QColor("#005fb8"), QColor("#ffffff"), QColor("#004c9a"),
-                         QColor("#ececec"), QColor("#005fb8"), QColor("#e51400") };
-    } else if (id == QLatin1String("hc")) {
-        t = StatusTheme{ id, QColor("#000000"), QColor("#ffffff"), QColor("#6fc3df"),
-                         QColor("#111111"), QColor("#1aebff"), QColor("#f44747") };
-    } else {
-        t = StatusTheme{ QStringLiteral("dark"), QColor("#1f2330"), QColor("#e0e0e0"), QColor("#2d3240"),
-                         QColor("#2d2d2d"), QColor("#007acc"), QColor("#f44747") };
-    }
-    return t;
+    Theme::instance()->setId(id);
+    Theme *th = Theme::instance();
+    return StatusTheme{
+        th->id(),
+        th->color(QStringLiteral("statusbar-bg")),
+        th->color(QStringLiteral("statusbar-fg")),
+        th->color(QStringLiteral("statusbar-border")),
+        th->color(QStringLiteral("border-primary")),
+        th->color(QStringLiteral("accent-primary")),
+        th->color(QStringLiteral("error")),
+    };
 }
 
 QColor withAlpha(QColor c, double a)
@@ -225,8 +224,8 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         if (isEnabled() && underMouse()) {
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor(255, 255, 255, 38));
-            p.drawRoundedRect(rect(), 3, 3);
+            p.setBrush(withAlpha(m_color, 0.14));
+            p.drawRoundedRect(rect(), 4, 4);
         }
         p.setOpacity(isEnabled() ? 1.0 : 0.4);
         const double ic = ui::sz(14);
@@ -289,10 +288,10 @@ protected:
         }
         if (isEnabled() && (underMouse() || m_dragging)) {
             const QPointF c(x, height() / 2.0);
-            p.setBrush(QColor(0, 0, 0, 60));               // box-shadow: 0 0 4px rgba(0,0,0,0.4)
+            p.setBrush(withAlpha(m_fg, 0.20));
             p.drawEllipse(c, double(ui::sz(8)), double(ui::sz(8)));
             p.setBrush(m_fg);
-            p.setPen(QPen(QColor(255, 255, 255, 230), 2.0));
+            p.setPen(QPen(themeColor("statusbar-bg"), 1.5));
             p.drawEllipse(c, double(ui::sz(5)), double(ui::sz(5)));
         }
     }
@@ -366,9 +365,9 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        p.setPen(QPen(QColor(255, 255, 255, 38), 1.0));
-        p.setBrush(QColor(255, 255, 255, 20));
-        p.drawRoundedRect(r, 2, 2);
+        p.setPen(QPen(withAlpha(m_fg, 0.22), 1.0));
+        p.setBrush(withAlpha(m_fg, 0.08));
+        p.drawRoundedRect(r, 3, 3);
         p.setPen(m_fg);
         p.setFont(font());
         const QRect textRect = rect().adjusted(ui::sz(3), 0, -ui::sz(11), 0);
@@ -409,7 +408,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const QRectF r = QRectF(rect()).adjusted(1, 1, -1, -1);
-        p.setPen(QPen(QColor(255, 255, 255, 51), 2.0));
+        p.setPen(QPen(withAlpha(themeColor("statusbar-fg"), 0.22), 2.0));
         p.drawEllipse(r);
         p.setPen(QPen(m_color, 2.0, Qt::SolidLine, Qt::FlatCap));
         // border-top 着色的圆：45°~135° 那一段，整体按 m_angle 顺时针旋转
@@ -776,14 +775,17 @@ void AppStatusBar::updateSourceBtnStyle()
     if (!m_sourceBtn)
         return;
     const QString fg = m_theme.fg.name();
-    // 展开时用「半透明白底 + 描边」高亮：深色/浅色/高对比三套主题下都看得清
+    const QString bgOpen = cssColor(withAlpha(m_theme.accent, 0.18));
+    const QString bdOpen = cssColor(withAlpha(m_theme.accent, 0.55));
+    const QString hov = cssColor(withAlpha(m_theme.fg, 0.14));
     m_sourceBtn->setStyleSheet(
-        QStringLiteral("QPushButton { background: %1; color: %2; border: 1px solid %3;"
-                       " border-radius: 3px; padding: 0px 6px; }"
-                       "QPushButton:hover { background: rgba(255,255,255,0.28); }")
-            .arg(m_stripOpen ? QStringLiteral("rgba(255,255,255,0.24)") : QStringLiteral("transparent"),
-                 fg,
-                 m_stripOpen ? QStringLiteral("rgba(255,255,255,0.45)") : QStringLiteral("transparent")));
+        Theme::scalePx(QStringLiteral("QPushButton { background: %1; color: %2; border: 1px solid %3;"
+                                      " border-radius: 3px; padding: 0px 6px; }"
+                                      "QPushButton:hover { background: %4; }")
+                           .arg(m_stripOpen ? bgOpen : QStringLiteral("transparent"),
+                                m_stripOpen ? m_theme.accent.name() : fg,
+                                m_stripOpen ? bdOpen : QStringLiteral("transparent"),
+                                hov)));
 }
 
 void AppStatusBar::setTrackCount(int count)
@@ -856,14 +858,15 @@ void AppStatusBar::applyTheme()
     m_themeBtn->setColor(m_theme.fg);
     m_themeBtn->setIcon(m_theme.id == QLatin1String("dark") ? Icon::Moon
                         : m_theme.id == QLatin1String("light") ? Icon::Sun : Icon::Contrast);
-    m_seek->setColors(m_theme.fg, m_theme.track);
+    m_seek->setColors(m_theme.accent, m_theme.track);
     m_speed->setColors(m_theme.fg, m_theme.bg);
-    m_speed->view()->setStyleSheet(QStringLiteral("QAbstractItemView { background: %1; color: %2;"
-                                                  " selection-background-color: %3; selection-color: %2; }")
-                                       .arg(m_theme.bg.name(), m_theme.fg.name(), cssColor(withAlpha(m_theme.fg, 0.2))));
-    m_customSpeed->setStyleSheet(Theme::scalePx(QStringLiteral("QLineEdit { padding: 0px 4px; background: rgba(255,255,255,0.08);"
-                                                " border: 1px solid rgba(255,255,255,0.15); border-radius: 2px; color: %1; }")
-                                     .arg(m_theme.fg.name())));
+    m_speed->view()->setStyleSheet(Theme::instance()->qss(QStringLiteral(
+        "QAbstractItemView { background: var(--dropdown-bg); color: var(--dropdown-fg);"
+        " border: 1px solid var(--border-primary); selection-background-color: var(--dropdown-hover);"
+        " selection-color: var(--text-primary); }")));
+    m_customSpeed->setStyleSheet(Theme::scalePx(QStringLiteral(
+        "QLineEdit { padding: 0px 4px; background: %1; border: 1px solid %2; border-radius: 3px; color: %3; }")
+        .arg(cssColor(withAlpha(m_theme.fg, 0.08)), cssColor(withAlpha(m_theme.fg, 0.22)), m_theme.fg.name())));
     setLabelColor(m_time, 1.0);
     for (QLabel *l : { m_height, m_lonLat, m_fps })
         setLabelColor(l, 0.85);

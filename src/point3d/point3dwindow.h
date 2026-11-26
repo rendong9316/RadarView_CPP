@@ -82,6 +82,7 @@ public:
     // 地图悬停某条航迹 → 本窗口里对应的叠加航迹同时高亮；batchNo < 0 清除
     void setLinkedHighlight(int batchNo, qint64 t0, qint64 t1);
     QSet<int> isolatedBatches() const;
+    void clearIsolation();
     void setCurrentFrame(int index);
 
 signals:
@@ -89,6 +90,7 @@ signals:
     void dataChanged();
     void trackFocusChanged(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void trackActivated(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    void isolationCleared();
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -110,7 +112,11 @@ private:
     void syncPlaybackUi();               // 把当前帧同步到进度条/时间标签
     void updatePlaybackUi();             // 播放/暂停按钮文字
     void reloadOverlaysFromKeys();
+    void autoLoadMatchingTracks();
     void applyLinkedSelection();
+    void toggleTrackHighlight(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    void toggleTrackIsolation(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    void updateBackAllButton();
     void startPendingLoad();
 
     Point3dCanvas *m_canvas = nullptr;
@@ -120,6 +126,7 @@ private:
     Point3dAdvancedPanel *m_sideAdvanced = nullptr;
     QPushButton *m_settingsBtn = nullptr;   // 顶部「设置」按钮：切换设置侧栏
     QPushButton *m_advancedBtn = nullptr;   // 顶部「高级」按钮：切换高级参数侧栏
+    QPushButton *m_backAllBtn = nullptr;    // 顶部「返回全部」按钮：仅在单独显示时出现
     QAction *m_viewActions[3] = { nullptr, nullptr, nullptr };
     QAction *m_importAction = nullptr;   // 文件 → 导入点迹（导入中禁用）
     QWidget *m_statusBar = nullptr;
@@ -142,7 +149,10 @@ private:
     Point3dImportJob *m_job = nullptr;
     QStringList m_pendingFiles;
     QStringList m_files;
-    QStringList m_trackKeys;             // 已选航迹的 Track::key()（从数据库选择）
+    QStringList m_trackKeys;             // 已选航迹的 Track::key()（自动匹配或从数据库选择）
+    QSet<QString> m_hiddenTrackKeys;     // 侧栏列表中取消勾选的航迹键
+    bool m_manualTracksChosen = false;   // 用户手动在「从库选择…」确认过，不再自动覆盖
+    int m_pinnedBatch = -1;              // 单击高亮锁定的批号（-1 = 未锁定）
     int m_skippedTracks = 0;             // 与点迹时间窗对不上、被忽略的航迹条数（一致性校验结果）
     QVector<LinkedTrackRef> m_linkedSelection;   // 地图当前的选中/筛选（重载数据后重新套用）
     std::function<QColor(TrackSource, const QString &)> m_colorProvider;

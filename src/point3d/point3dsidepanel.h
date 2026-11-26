@@ -3,6 +3,7 @@
 
 #include <QJsonArray>
 #include <QScrollArea>
+#include <QSet>
 
 #include "point3dtypes.h"
 
@@ -10,6 +11,9 @@ class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
+class QListWidget;
+class QListWidgetItem;
 class QPushButton;
 class QSpinBox;
 
@@ -33,6 +37,7 @@ public:
     void setViewMode(Point3dViewMode mode);
     void setWindowLength(int len);
 
+    void setTrackSource(Point3dTrackSource src);
     void toggleTrackSource();
     void toggleDetections();
     void toggleTracks();
@@ -40,6 +45,10 @@ public:
 
     void applySnrRange();
     void syncSnrControls();
+
+    // 内嵌叠加航迹列表：刷新列表项 / 同步高亮行
+    void refreshTrackList(const QSet<QString> &hiddenKeys, int highlightedBatch = -1);
+    void setHighlightedTrackBatch(int batchNo);
 
     // 区域筛选：每个三轴视图各存一套（切换视图时原样恢复）
     Point3dRegion regionForView(Point3dViewMode mode) const;
@@ -54,6 +63,10 @@ signals:
     void viewModeChanged(Point3dViewMode mode);
     void statusChanged();
     void statusMessage(const QString &text);
+    void chooseTracksRequested();
+    void hiddenTracksChanged(const QSet<QString> &hiddenKeys);
+    void trackRowClicked(int batchNo, TrackSource source, qint64 t0, qint64 t1);
+    void trackRowDoubleClicked(int batchNo, TrackSource source, qint64 t0, qint64 t1);
 
 private:
     struct ViewRegion {
@@ -66,6 +79,10 @@ private:
     void onViewModeChanged();
     void onWindowLengthChanged();
     void applyWindowLength(int len);
+    void onTrackFilterChanged(const QString &text);
+    void onTrackItemChanged(QListWidgetItem *item);
+    void setAllTracksChecked(bool checked);
+    void updateTrackSummary();
     void onRegionSpinEdited();
     void applyRegion();
     void resetRegion();
@@ -79,10 +96,19 @@ private:
     QComboBox *m_viewCombo = nullptr;
     QComboBox *m_windowCombo = nullptr;
     QSpinBox *m_windowSpin = nullptr;
-    QPushButton *m_sourceBtn = nullptr;   // 点源切换：弹起=平滑，按下=关联
+    QPushButton *m_sourceBtns[3] = { nullptr, nullptr, nullptr };   // 点源分段切换：平滑 / 关联 / 预测
     QPushButton *m_pointBtn = nullptr;
     QPushButton *m_trackBtn = nullptr;
     QPushButton *m_labelBtn = nullptr;
+
+    // 叠加航迹快速勾选列表
+    QPushButton *m_trackAllBtn = nullptr;
+    QPushButton *m_trackNoneBtn = nullptr;
+    QPushButton *m_trackChooseBtn = nullptr;
+    QLineEdit *m_trackFilter = nullptr;
+    QLabel *m_trackSummary = nullptr;
+    QListWidget *m_trackList = nullptr;
+    bool m_trackListSyncing = false;
     QDoubleSpinBox *m_pointSizeSpin = nullptr;
     QDoubleSpinBox *m_lineWidthSpin = nullptr;
     QDoubleSpinBox *m_labelSizeSpin = nullptr;

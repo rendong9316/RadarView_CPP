@@ -124,6 +124,7 @@ int runStateCheck()
         t.points.append(p);
         w.trackStore()->addTracks(QVector<Track>() << t);
         w.globe()->trackLayer()->setGroupVisible(QStringLiteral("Radar::StateTest"), false);
+        w.setRadarPointMode(RadarPointMode::Predicted);
         w.activatePanel(PanelId::Settings);
         w.setSourceStripOpen(true);      // 展开数据源条，第二遍应恢复成展开
         w.close();                       // closeEvent 里保存并落盘
@@ -149,7 +150,7 @@ int runStateCheck()
                 check(q.next() && q.value(0).toString() == QLatin1String("bytes"),
                       QStringLiteral("窗口几何按二进制类型存取"));
                 q.exec(QStringLiteral("PRAGMA user_version"));
-                check(q.next() && q.value(0).toInt() == 6, QStringLiteral("库结构版本 user_version=6"));
+                check(q.next() && q.value(0).toInt() == 7, QStringLiteral("库结构版本 user_version=7"));
                 db.close();
             } else {
                 check(false, QStringLiteral("打开设置数据库"));
@@ -172,6 +173,9 @@ int runStateCheck()
         check(w.activePanel() == int(PanelId::Settings), QStringLiteral("侧栏面板恢复"));
         check(!w.globe()->trackLayer()->isGroupVisible(QStringLiteral("Radar::StateTest")),
               QStringLiteral("数据源文件显隐恢复"));
+        check(w.radarPointMode() == RadarPointMode::Predicted
+                  && w.globe()->trackLayer()->radarPointMode() == RadarPointMode::Predicted,
+              QStringLiteral("雷达点源模式恢复（预测点）"));
         check(!w.sourceStrip()->isHidden() && w.appStatusBar()->sourceStripOpen(),
               QStringLiteral("数据源条展开状态恢复"));
         w.close();

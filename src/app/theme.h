@@ -29,14 +29,19 @@ public:
     QString qss(const QString &tmpl) const;
     // 只做 px 尺寸缩放（不经主题替换的样式表用）
     static QString scalePx(const QString &css);
+    // 给 QApplication 安装统一基础样式（QToolTip / QMessageBox / QScrollBar / 通用弹窗），
+    // 主题或字号变化时自动刷新，消除原生未着色控件带来的风格割裂
+    void installGlobalStyle();
 
 signals:
     void changed();
 
 private:
     explicit Theme(QObject *parent = nullptr);
+    void applyGlobalStyle();
     QString m_id;
     QHash<QString, QString> m_vars;
+    bool m_globalInstalled = false;
 };
 
 // 给控件套主题样式模板：立即生效，主题切换后自动重新套用
@@ -95,6 +100,12 @@ void bindSpacing(QLayout *l, int spacing);
 QString uiFamilies();
 // 等宽：'Cascadia Code', 'JetBrains Mono', 'Consolas', 'Courier New', monospace
 QString monoFamilies();
+
+// 跨窗口 / 跨面板共用的统一样式片段（菜单栏、滚动条、弹窗、分段切换条）
+QString menuBarQss();
+QString scrollbarQss();
+QString dialogQss();
+QString segmentedQss();
 }
 
 #endif // THEME_H

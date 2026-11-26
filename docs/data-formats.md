@@ -15,7 +15,7 @@
 
 ## 2. 输入文件格式
 
-- **MATLAB `.mat` v5**：由自研只读解析器 `MatFile` 读取，支持小端、`miCOMPRESSED`（zlib）、数值矩阵、结构体数组、元胞与字符数组。雷达航迹导入时同步提取 `smoothPointList`/`outputPointList`（主点列）与 `asscPointList`（关联点列，含 `snr`）。
+- **MATLAB `.mat` v5**：由自研只读解析器 `MatFile` 读取，支持小端、`miCOMPRESSED`（zlib）、数值矩阵、结构体数组、元胞与字符数组。雷达航迹一次导入时同步提取 `smoothPointList`/`outputPointList`（平滑点列）、`asscPointList`（关联点列，含 `snr`）与 `predictRes`（预测点列），后续可在三维地球、点迹表与三维点云视图中随时切换。
 - **ADS-B CSV**：批量历史位置格式，包含航班元数据与位置/高度/航向/地速/垂直率。
 - **离线瓦片 `.mbtiles`**：SQLite 瓦片库，对外统一 XYZ 编号，内部按 `metadata.scheme`（默认 `tms`）与 `metadata.crs`（`gcj` 或默认 `wgs84`）自适应处理。
 
@@ -30,6 +30,7 @@
 | v4 | 同行新增关联点列 `raw_points`（`asscPointList`）及 `has_raw` / `raw_point_count` |
 | v5 | `batches` 新增 `display_name TEXT`（重命名仅改显示名，`file_name` 保持唯一键） |
 | v6 | 点列扩展至 56 字节/点（追加 `snr` dB）及 `has_snr` 列；老库迁移补 `NaN`，重导同文件原地补列 |
+| v7 | 同行新增预测点列 `pred_points`（`predictRes`）及 `has_pred` / `pred_point_count`，支持一次导入后在平滑/关联/预测之间切换 |
 
 ## 4. 本地数据目录与旧版迁移
 
