@@ -30,3 +30,8 @@
 | v4 | 同行新增关联点列 `raw_points`（`asscPointList`）及 `has_raw` / `raw_point_count` |
 | v5 | `batches` 新增 `display_name TEXT`（重命名仅改显示名，`file_name` 保持唯一键） |
 | v6 | 点列扩展至 56 字节/点（追加 `snr` dB）及 `has_snr` 列；老库迁移补 `NaN`，重导同文件原地补列 |
+
+## 4. 本地数据目录与旧版迁移
+
+- 默认用户数据目录位于 `QStandardPaths::GenericDataLocation` 下的 `RadarView/RadarView/`，存放 `radarview.db`、`drawings.json` 及在线底图缓存 `tilecache/`。
+- 首次启动时若检测到历史目录 `RadarView/HelloVscode/` 存在且新目录缺失对应数据，程序会自动迁移数据库（含 `-wal`/`-shm`）、绘图文件与瓦片缓存（数据库与绘图按复制迁入、保留旧文件，且不覆盖新目录已有文件）。自检模式（`app::setTestMode(true)`）完全隔离在可执行文件同目录的临时文件内。

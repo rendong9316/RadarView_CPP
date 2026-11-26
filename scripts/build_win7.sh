@@ -65,7 +65,7 @@ echo "TILE:   ${TILE_SRC:-<未找到，跳过拷贝>}"
 # PATH 必须用 /d/... 或 /h/... 形式；盘符中的冒号会把 PATH 切碎
 export PATH="$MINGW:$QTBIN:/usr/bin:/bin"
 
-taskkill //IM HelloVscode.exe //F >/dev/null 2>&1 || true
+taskkill //IM RadarView.exe //F >/dev/null 2>&1 || true
 
 BUILD="build/win7"
 rm -rf "$BUILD"
@@ -73,7 +73,7 @@ mkdir -p "$BUILD"
 cd "$BUILD"
 
 # 1) qmake（全路径调用 Qt5 的 qmake，.pro 用绝对路径）
-"$QTBIN/qmake.exe" "$SRC/HelloVscode.pro" -spec win32-g++ -o Makefile
+"$QTBIN/qmake.exe" "$SRC/RadarView.pro" -spec win32-g++ -o Makefile
 
 # 2) 编译
 "$MINGW/mingw32-make.exe" -j8
@@ -107,7 +107,7 @@ fi
 # 5) 自检（写 selftest.log）
 rm -f selftest.log
 set +e
-./HelloVscode.exe --selftest
+./RadarView.exe --selftest
 RC=$?
 set -e
 echo ""

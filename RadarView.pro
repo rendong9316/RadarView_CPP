@@ -1,6 +1,6 @@
 QT       += core gui widgets sql network
 
-TARGET = HelloVscode
+TARGET = RadarView
 TEMPLATE = app
 
 # ---- 兼容 Windows 7 ----
@@ -14,10 +14,14 @@ INCLUDEPATH += \
     $$PWD/src/io \
     $$PWD/src/globe \
     $$PWD/src/ui \
-    $$PWD/src/point3d \
-    $$PWD/src/selftest
+    $$PWD/src/point3d
 
-include(src/selftest/selftest.pri)
+# 默认启用内置自检套件；正式发布如需裁掉自检，qmake 时加 CONFIG+=no_selftest
+!contains(CONFIG, no_selftest) {
+    DEFINES += RADARVIEW_WITH_SELFTEST
+    INCLUDEPATH += $$PWD/src/selftest
+    include(src/selftest/selftest.pri)
+}
 
 SOURCES += \
     # app

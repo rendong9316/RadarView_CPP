@@ -5,7 +5,7 @@
 #   QTDIR     Qt 5.14.2 gcc_64 目录（默认 ~/Qt5.14.2/5.14.2/gcc_64）
 #   TILE_SRC  含 .mbtiles 的目录（默认 ./tiles）
 #   FONT_SRC  中文字体文件（默认依次找文泉驿微米黑 / Noto CJK）
-# 产物: build/linux/HelloVscode/（整个目录拷到目标机，运行 ./HelloVscode.sh）
+# 产物: build/linux/RadarView/（整个目录拷到目标机，运行 ./RadarView.sh）
 set -e
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$SRC"
@@ -31,15 +31,15 @@ fi
 echo "编译器: $(g++ --version | head -1)"
 
 BUILD="$SRC/build/linux"
-OUT="$BUILD/HelloVscode"
+OUT="$BUILD/RadarView"
 rm -rf "$BUILD"
 mkdir -p "$BUILD/obj" "$OUT"
 
 # 1) 编译
 cd "$BUILD/obj"
-"$QTDIR/bin/qmake" "$SRC/HelloVscode.pro" -spec linux-g++ CONFIG+=release -o Makefile
+"$QTDIR/bin/qmake" "$SRC/RadarView.pro" -spec linux-g++ CONFIG+=release -o Makefile
 make -j"$(nproc)"
-cp HelloVscode "$OUT/"
+cp RadarView "$OUT/"
 cd "$OUT"
 
 # 2) Qt 运行库（含 ICU、xcb 平台抽象层）
@@ -76,23 +76,23 @@ fi
 cp "$TILE_SRC"/*.mbtiles tiles/ 2>/dev/null || echo "警告：$TILE_SRC 下没有 .mbtiles" >&2
 
 # 6) 启动脚本：库路径兜底（rpath 已指向 lib/），并允许强制软件渲染
-cat > HelloVscode.sh <<'EOF'
+cat > RadarView.sh <<'EOF'
 #!/bin/bash
-# 用法: ./HelloVscode.sh            正常启动
-#       SOFTWARE_GL=1 ./HelloVscode.sh   强制 Mesa 软件渲染（无显卡驱动 / 远程桌面时）
+# 用法: ./RadarView.sh            正常启动
+#       SOFTWARE_GL=1 ./RadarView.sh   强制 Mesa 软件渲染（无显卡驱动 / 远程桌面时）
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export QT_PLUGIN_PATH="$HERE/plugins"
 [ -n "$SOFTWARE_GL" ] && export LIBGL_ALWAYS_SOFTWARE=1
-exec "$HERE/HelloVscode" "$@"
+exec "$HERE/RadarView" "$@"
 EOF
-chmod +x HelloVscode.sh HelloVscode
+chmod +x RadarView.sh RadarView
 
 # 7) ABI 检查：不能依赖高于 RHEL 7 的 glibc / libstdc++ 符号版本
 echo ""
 echo "===== ABI 检查（RHEL 7: GLIBC <= 2.17, GLIBCXX <= 3.4.19, CXXABI <= 1.3.7）====="
 ABI_FAIL=0
-for f in HelloVscode lib/*.so* plugins/*/*.so; do
+for f in RadarView lib/*.so* plugins/*/*.so; do
     [ -L "$f" ] && continue
     bad=$(objdump -T "$f" 2>/dev/null | grep -oE '(GLIBC_2\.[0-9]+|GLIBCXX_3\.4\.[0-9]+|CXXABI_1\.3\.[0-9]+)' | sort -u | \
         awk -F'[_.]' '
@@ -106,7 +106,7 @@ for f in HelloVscode lib/*.so* plugins/*/*.so; do
 done
 [ $ABI_FAIL -eq 0 ] && echo "  [OK] 所有文件均兼容 RHEL 7"
 echo "缺失的系统库（应为空）:"
-LD_LIBRARY_PATH="$OUT/lib" ldd HelloVscode plugins/platforms/libqxcb.so | grep "not found" || echo "  无"
+LD_LIBRARY_PATH="$OUT/lib" ldd RadarView plugins/platforms/libqxcb.so | grep "not found" || echo "  无"
 
 # 8) 自检（需要图形环境；无显示时用 xvfb-run）
 echo ""
@@ -124,7 +124,7 @@ for mode in "" "1"; do
     rm -f selftest.log
     if [ -n "$mode" ]; then label="软件渲染"; else label="默认渲染"; fi
     set +e
-    eval SOFTWARE_GL="$mode" $RUN ./HelloVscode.sh --selftest
+    eval SOFTWARE_GL="$mode" $RUN ./RadarView.sh --selftest
     r=$?
     set -e
     echo "===== selftest（$label）exit=$r ====="
@@ -132,6 +132,6 @@ for mode in "" "1"; do
     [ $r -ne 0 ] && RC=$r
 done
 echo ""
-echo "产物目录: $OUT（整个目录拷到目标机，运行 ./HelloVscode.sh）"
+echo "产物目录: $OUT（整个目录拷到目标机，运行 ./RadarView.sh）"
 [ $ABI_FAIL -ne 0 ] && exit 3
 exit $RC

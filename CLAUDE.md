@@ -1,4 +1,4 @@
-# HelloVscode
+# RadarView
 
 VSCode 风格的 Qt 外壳 + 自研 3D 地球（WGS84 椭球，加载本地 mbtiles 瓦片），目标是用 C++ 复刻 `D:/Desktop/RadarView_BiuldByTauri`（雷达/ADS-B 航迹导入、绘制、回放）。
 
@@ -158,20 +158,20 @@ Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）�
 
 ### 部署
 
-- **Windows**：`scripts/build_win7.sh` 部署到 `build/win7/release`。新增 Qt 模块或插件时，同步在部署段里拷贝对应 dll。
-- **Linux**：`scripts/build_linux.sh` 部署到 `build/linux/HelloVscode/`，整包带走，不依赖目标机上的 Qt：
+- **Windows**：`scripts/build_win7.sh` 部署到 `build/win7/release`（产物 `RadarView.exe`）。新增 Qt 模块或插件时，同步在部署段里拷贝对应 dll。默认启用自检，正式发布可用 `qmake RadarView.pro CONFIG+=no_selftest` 裁掉自检模块。
+- **Linux**：`scripts/build_linux.sh` 部署到 `build/linux/RadarView/`，整包带走，不依赖目标机上的 Qt：
   - `lib/`：Qt `.so`（含 `libicu*`）；
   - `plugins/`：`platforms/libqxcb.so`、`xcbglintegrations/`、`sqldrivers/libqsqlite.so`、`imageformats/`；
   - `fonts/`：中文字体，启动时用 `QFontDatabase::addApplicationFont` 加载；
-  - `HelloVscode.sh`：启动脚本，设置 `LD_LIBRARY_PATH` / `QT_PLUGIN_PATH`；exe 同时带 `$ORIGIN/lib` 的 rpath。
+  - `RadarView.sh`：启动脚本，设置 `LD_LIBRARY_PATH` / `QT_PLUGIN_PATH`；exe 同时带 `$ORIGIN/lib` 的 rpath。
   - 目标机需有系统库：glibc 2.17、libstdc++、libGL（Mesa）、libX11/libxcb、fontconfig、freetype、zlib（RHEL 7 默认图形安装都有）。
 
 ### 每次改动后的验证
 
 1. `bash scripts/build_win7.sh`：用 7.3 重编、部署到 `build/win7/release` 并跑 `--selftest`，必须 `RESULT OK`。
-2. 在 `build/win7/release` 下分别用默认、`QT_OPENGL=angle`、`QT_OPENGL=software`、`QT_OPENGL=angle QT_ANGLE_PLATFORM=d3d9` 跑 `./HelloVscode.exe --selftest`，都要 `RESULT OK` 且 GL 错误数为 0。
-3. 航迹/回放自检（同样四种渲染模式）：`./HelloVscode.exe --tracktest "D:/Desktop/RadarView_BiuldByTauri/2026-04-27 09-30-00.csv" "D:/Desktop/RadarView_BiuldByTauri/track_20251210175946.mat"`，看 `tracktest.log`。纯解析自检用 `--parsetest <csv> <mat>`，看 `parsetest.log`。
-4. 点迹可视化自检：`./HelloVscode.exe --pointtest "<detPoint 目录或文件>" --track "<track_*.mat>"` 与 `./HelloVscode.exe --dbtest`（数据库 v2→v4 迁移与重导补列），均须 `RESULT OK`，分别看 `pointtest.log` / `dbtest.log`。
+2. 在 `build/win7/release` 下分别用默认、`QT_OPENGL=angle`、`QT_OPENGL=software`、`QT_OPENGL=angle QT_ANGLE_PLATFORM=d3d9` 跑 `./RadarView.exe --selftest`，都要 `RESULT OK` 且 GL 错误数为 0。
+3. 航迹/回放自检（同样四种渲染模式）：`./RadarView.exe --tracktest "D:/Desktop/RadarView_BiuldByTauri/2026-04-27 09-30-00.csv" "D:/Desktop/RadarView_BiuldByTauri/track_20251210175946.mat"`，看 `tracktest.log`。纯解析自检用 `--parsetest <csv> <mat>`，看 `parsetest.log`。
+4. 点迹可视化自检：`./RadarView.exe --pointtest "<detPoint 目录或文件>" --track "<track_*.mat>"`、`./RadarView.exe --dbtest`（数据库 v2→v6 迁移与重导补列）与 `./RadarView.exe --statecheck`（状态持久化与旧目录迁移），均须 `RESULT OK`，分别看 `pointtest.log` / `dbtest.log` / `statecheck.log`。
 5. `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_win7_compat.ps1`：检查所有 exe/dll 的导入表，必须全部 `[OK]`。
 6. Linux（有 CentOS/RHEL 7 环境时）：`bash scripts/build_linux.sh`，会编译、部署、跑 `--selftest`，并检查产物不依赖高于 GLIBC_2.17 / GLIBCXX_3.4.19 的符号。软件渲染用 `LIBGL_ALWAYS_SOFTWARE=1` 再跑一遍。
 7. 最终确认需在 Win7 SP1 x64 虚拟机和 CentOS/RHEL 7.6 虚拟机里分别运行整包。
@@ -190,7 +190,7 @@ Win7 老驱动会回退到 ANGLE（D3D11/D3D9）或软件渲染（opengl32sw）�
 ### 环境注意事项
 
 - Git Bash 里 PATH 必须写 `/d/...` 形式，`D:/...` 中的冒号会把 PATH 拆坏。
-- 重编前先 `taskkill //IM HelloVscode.exe //F`，否则 exe 被占用无法覆盖。
+- 重编前先 `taskkill //IM RadarView.exe //F`，否则 exe 被占用无法覆盖。
 - `check_win7_compat.ps1` 要保存为 UTF-8 带 BOM，否则 Windows PowerShell 5 会按 GBK 读坏中文。
 - 瓦片来自 `D:/Desktop/RadarView_BiuldByTauri/src-tauri`，两个构建脚本都会拷到 `tiles/`。
 - 这台 Win11 上目前没有可用的 Linux 环境（Docker 引擎未运行、没有 WSL 发行版），Linux 构建只能在 CentOS 7 虚拟机或目标机上做。

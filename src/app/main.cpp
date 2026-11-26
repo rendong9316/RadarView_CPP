@@ -4,7 +4,9 @@
 #include "mainwindow.h"
 #include "point3dcanvas.h"
 #include "point3dwindow.h"
+#ifdef RADARVIEW_WITH_SELFTEST
 #include "selftest/selftest.h"
+#endif
 #include "splashscreen.h"
 #include "theme.h"
 #include "uiwidgets.h"
@@ -46,6 +48,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     loadBundledFonts();
     const QStringList args = app.arguments();
+#ifdef RADARVIEW_WITH_SELFTEST
     const int pt = args.indexOf(QStringLiteral("--parsetest"));
     if (pt >= 0 && pt + 2 < args.size())
         return selftest::runParseTest(args.at(pt + 1), args.at(pt + 2));
@@ -62,7 +65,7 @@ int main(int argc, char *argv[])
         return selftest::runPointTest(args.at(p3t + 1), trackFile);
     }
 
-    // 数据库迁移自检：--dbtest（造 v2 旧库 → 迁移到 v3）
+    // 数据库迁移自检：--dbtest（造 v2 旧库 → 迁移到 v6）
     if (args.contains(QStringLiteral("--dbtest")))
         return selftest::runDbMigrationTest();
 
@@ -71,6 +74,7 @@ int main(int argc, char *argv[])
         ui::setAutoConfirm(true);
         return selftest::runStateCheck();
     }
+#endif
 
     // 只用临时数据目录跑一遍（截图/回归用，不碰真实数据库和设置）
     if (args.contains(QStringLiteral("--testmode"))) {
@@ -79,7 +83,11 @@ int main(int argc, char *argv[])
     }
 
     // 自检：数据库和设置用 exe 旁的临时文件（启动时清空），确认框自动通过
+#ifdef RADARVIEW_WITH_SELFTEST
     const bool testRun = args.contains(QStringLiteral("--selftest")) || args.contains(QStringLiteral("--tracktest"));
+#else
+    const bool testRun = false;
+#endif
     if (testRun) {
         app::setTestMode(true);
         ui::setAutoConfirm(true);
@@ -222,11 +230,13 @@ int main(int argc, char *argv[])
         });
     }
 
+#ifdef RADARVIEW_WITH_SELFTEST
     if (app.arguments().contains(QStringLiteral("--selftest")))
         selftest::runSelfTest(&w);
     const int tt = args.indexOf(QStringLiteral("--tracktest"));
     if (tt >= 0 && tt + 2 < args.size())
         selftest::runTrackTest(&w, args.at(tt + 1), args.at(tt + 2));
+#endif
 
     return app.exec();
 }

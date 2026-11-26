@@ -16,6 +16,13 @@ bool testMode();
 QString databasePath();
 // 绘图内容（DrawingManager 的 GeoJSON）自动保存文件，与数据库同目录
 QString drawingPath();
+// 在线底图磁盘缓存根目录（正常模式：app_data_dir/tilecache；自检模式：exe 旁 test_tilecache）
+QString tileCacheDir();
+// 旧版 HelloVscode 数据目录（仅用于迁移与只读回退）
+QString legacyDataDir();
+// 将旧数据目录（HelloVscode）中的数据库、绘图与瓦片缓存迁移到新目录（RadarView）。
+// 仅在新目录尚缺对应条目时执行，不覆盖已存在的新数据；返回是否全部成功（无拷贝/迁移失败）。
+bool migrateLegacyDataDir(const QString &legacyDir, const QString &newDir);
 
 // 键值设置，存在航迹数据库的 app_settings(key, value, type) 表里：
 // 和航迹数据同一个文件，整包拷走就带走全部状态；value 存明文，SQL 里能直接看。

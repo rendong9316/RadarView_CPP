@@ -71,7 +71,7 @@
 namespace selftest {
 
 // ---------------------------------------------------------------
-//  状态持久化自检：HelloVscode.exe --statecheck
+//  状态持久化自检：RadarView.exe --statecheck
 //  第一遍造状态并关闭窗口（走 closeEvent 保存），第二遍新窗口应完整恢复。
 //  结果写到 exe 旁 statecheck.log
 // ---------------------------------------------------------------
@@ -149,7 +149,7 @@ int runStateCheck()
                 check(q.next() && q.value(0).toString() == QLatin1String("bytes"),
                       QStringLiteral("窗口几何按二进制类型存取"));
                 q.exec(QStringLiteral("PRAGMA user_version"));
-                check(q.next() && q.value(0).toInt() == 2, QStringLiteral("库结构版本 user_version=2"));
+                check(q.next() && q.value(0).toInt() == 6, QStringLiteral("库结构版本 user_version=6"));
                 db.close();
             } else {
                 check(false, QStringLiteral("打开设置数据库"));
@@ -175,6 +175,93 @@ int runStateCheck()
         check(!w.sourceStrip()->isHidden() && w.appStatusBar()->sourceStripOpen(),
               QStringLiteral("数据源条展开状态恢复"));
         w.close();
+    }
+
+    // ---- 旧版 HelloVscode 数据目录迁移自检（完全隔离在 exe 旁临时目录，不碰真实用户目录）----
+    {
+        const QString tmpRoot = QCoreApplication::applicationDirPath() + QStringLiteral("/test_legacy_migrate");
+        const QString legacyDir = tmpRoot + QStringLiteral("/HelloVscode");
+        const QString newDir = tmpRoot + QStringLiteral("/RadarView");
+        QDir(tmpRoot).removeRecursively();
+        QDir().mkpath(legacyDir + QStringLiteral("/tilecache/amap/5/10"));
+
+        // 构造旧版数据库、绘图文件与瓦片缓存
+        const QString legacyDbPath = legacyDir + QStringLiteral("/radarview.db");
+        {
+            const QString conn = QStringLiteral("statecheck_legacy_seed");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                db.setDatabaseName(legacyDbPath);
+                if (db.open()) {
+                    QSqlQuery q(db);
+                    q.exec(QStringLiteral("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT, type TEXT NOT NULL DEFAULT 'string')"));
+                    q.exec(QStringLiteral("INSERT INTO app_settings (key, value, type) VALUES ('migrate.sentinel', 'from_legacy', 'string')"));
+                    db.close();
+                }
+            }
+            QSqlDatabase::removeDatabase(conn);
+        }
+        {
+            QFile f(legacyDir + QStringLiteral("/drawings.json"));
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write("{\"type\":\"FeatureCollection\",\"features\":[{\"id\":1}]}");
+        }
+        const QByteArray mockTile("PNG_MOCK_TILE_DATA");
+        {
+            QFile f(legacyDir + QStringLiteral("/tilecache/amap/5/10/12.png"));
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write(mockTile);
+        }
+
+        const bool migratedOk = app::migrateLegacyDataDir(legacyDir, newDir);
+        check(migratedOk, QStringLiteral("旧目录 HelloVscode -> RadarView 迁移成功"));
+        check(QFileInfo::exists(legacyDbPath), QStringLiteral("旧目录数据库保留不删除"));
+
+        // 校验新目录数据库可读且内容完整
+        {
+            const QString conn = QStringLiteral("statecheck_legacy_verify");
+            QString sentinel;
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                db.setDatabaseName(newDir + QStringLiteral("/radarview.db"));
+                if (db.open()) {
+                    QSqlQuery q(db);
+                    if (q.exec(QStringLiteral("SELECT value FROM app_settings WHERE key = 'migrate.sentinel'")) && q.next())
+                        sentinel = q.value(0).toString();
+                    db.close();
+                }
+            }
+            QSqlDatabase::removeDatabase(conn);
+            check(sentinel == QLatin1String("from_legacy"), QStringLiteral("迁移后数据库内容完整"));
+        }
+
+        // 校验绘图文件与瓦片缓存已迁移
+        {
+            QFile f(newDir + QStringLiteral("/drawings.json"));
+            const bool okDraw = f.open(QIODevice::ReadOnly)
+                             && f.readAll().contains("FeatureCollection");
+            check(okDraw, QStringLiteral("迁移后 drawings.json 完整"));
+        }
+        {
+            QFile f(newDir + QStringLiteral("/tilecache/amap/5/10/12.png"));
+            const bool okTile = f.open(QIODevice::ReadOnly) && f.readAll() == mockTile;
+            check(okTile, QStringLiteral("迁移后 tilecache 完整"));
+        }
+
+        // 幂等性：新目录已有更新数据时，再次迁移绝不覆盖
+        {
+            QFile f(newDir + QStringLiteral("/drawings.json"));
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write("{\"newer\":true}");
+        }
+        app::migrateLegacyDataDir(legacyDir, newDir);
+        {
+            QFile f(newDir + QStringLiteral("/drawings.json"));
+            const bool kept = f.open(QIODevice::ReadOnly) && f.readAll() == QByteArray("{\"newer\":true}");
+            check(kept, QStringLiteral("重复迁移不覆盖新目录已有文件"));
+        }
+
+        QDir(tmpRoot).removeRecursively();
     }
 
     out << (failures == 0 ? QStringLiteral("RESULT OK")

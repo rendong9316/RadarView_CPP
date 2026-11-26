@@ -1,4 +1,5 @@
 #include "netmap.h"
+#include "apppaths.h"
 
 #include <QDir>
 #include <QFile>
@@ -7,7 +8,6 @@
 #include <QNetworkRequest>
 #include <QPainter>
 #include <QElapsedTimer>
-#include <QStandardPaths>
 #include <QUrl>
 
 namespace {
@@ -104,10 +104,9 @@ QString NetTileSource::url(int z, int x, int y, int layer) const
 
 QString NetTileSource::cachePath(int z, int x, int y) const
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                         + QStringLiteral("/RadarView/HelloVscode/tilecache/")
-                         + (m_source == Source::Amap ? QStringLiteral("amap") : QStringLiteral("tdt"));
-    return QStringLiteral("%1/%2/%3/%4.png").arg(base).arg(z).arg(x).arg(y);
+    const QString sub = (m_source == Source::Amap ? QStringLiteral("amap") : QStringLiteral("tdt"));
+    return QStringLiteral("%1/%2/%3/%4/%5.png")
+        .arg(app::tileCacheDir(), sub).arg(z).arg(x).arg(y);
 }
 
 // 取一张瓦片。不再同步返回 QImage —— 磁盘 PNG 的解码要 5ms 上下，
@@ -125,6 +124,17 @@ void NetTileSource::startLoad(int z, int x, int y)
         m_decoding.insert(k);
         m_pool.start(new DecodeTask(path, z, x, y, this));
         return;
+    }
+    // 若旧版 HelloVscode 缓存目录仍有残留瓦片（如未移动或双版本共存），只读回退命中
+    if (!app::testMode()) {
+        const QString sub = (m_source == Source::Amap ? QStringLiteral("amap") : QStringLiteral("tdt"));
+        const QString legacyPath = QStringLiteral("%1/tilecache/%2/%3/%4/%5.png")
+            .arg(app::legacyDataDir(), sub).arg(z).arg(x).arg(y);
+        if (QFileInfo::exists(legacyPath)) {
+            m_decoding.insert(k);
+            m_pool.start(new DecodeTask(legacyPath, z, x, y, this));
+            return;
+        }
     }
     request(z, x, y);
 }

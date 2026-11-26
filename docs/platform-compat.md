@@ -9,6 +9,8 @@
 | Qt | 5.14.2 `mingw73_64` | 5.14.2 `gcc_64` |
 | 编译器 | 干净的 MinGW 7.3.0 (`x86_64-posix-seh-rt_v5-rev0`) | `devtoolset-7` 及以上（禁止系统 GCC 4.8.5） |
 | 语言标准 | `CONFIG += c++11` | `CONFIG += c++11` |
+| 工程与产物 | `RadarView.pro` → `RadarView.exe`（`build/win7/release/`） | `RadarView.pro` → `RadarView` + `RadarView.sh`（`build/linux/RadarView/`） |
+| 可选构建开关 | 默认内置自检；正式包可加 `CONFIG+=no_selftest` 裁掉自检 | 同左 |
 | ABI 上限 | 禁止静态导入 Win8+ API / API Set DLL | `GLIBC <= 2.17`、`GLIBCXX <= 3.4.19`、`CXXABI <= 1.3.7` |
 
 ## 2. 依赖边界

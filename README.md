@@ -13,7 +13,7 @@
 
 ```text
 RadarView_CPP/
-├── HelloVscode.pro          # Qt qmake 工程文件
+├── RadarView.pro            # Qt qmake 工程文件
 ├── README.md                # 项目总览与构建指南
 ├── CLAUDE.md                # 开发约束与 AI 协作规范
 ├── docs/                    # 架构、双平台兼容性与数据格式文档
@@ -60,15 +60,15 @@ QTDIR=~/Qt5.14.2/5.14.2/gcc_64 bash scripts/build_linux.sh
 
 ### 内置自检模式
 
-构建产物支持在目标机直接执行以下命令行自检：
+构建产物默认包含内置自检套件，支持在目标机直接执行以下命令行自检（正式发布如需裁掉自检代码，可在 `qmake` 时传入 `CONFIG+=no_selftest`）：
 
 ```bash
-./HelloVscode.exe --selftest                                    # 3D 地球与 UI 自检（selftest.log）
-./HelloVscode.exe --dbtest                                      # SQLite 迁移与批次管理自检（dbtest.log）
-./HelloVscode.exe --statecheck                                  # 状态持久化自检
-./HelloVscode.exe --parsetest <adsb.csv> <radar.mat>            # 纯解析自检（parsetest.log）
-./HelloVscode.exe --tracktest <adsb.csv> <radar.mat>            # 航迹与回放自检（tracktest.log）
-./HelloVscode.exe --pointtest <detPoint目录> --track <track.mat> # 点迹三维自检（pointtest.log）
+./RadarView.exe --selftest                                    # 3D 地球与 UI 自检（selftest.log）
+./RadarView.exe --dbtest                                      # SQLite 迁移与批次管理自检（dbtest.log）
+./RadarView.exe --statecheck                                  # 状态持久化与旧目录迁移自检（statecheck.log）
+./RadarView.exe --parsetest <adsb.csv> <radar.mat>            # 纯解析自检（parsetest.log）
+./RadarView.exe --tracktest <adsb.csv> <radar.mat>            # 航迹与回放自检（tracktest.log）
+./RadarView.exe --pointtest <detPoint目录> --track <track.mat> # 点迹三维自检（pointtest.log）
 ```
 
 ## 文档索引
