@@ -59,6 +59,11 @@ public:
     QString headerText(int column) const;
     // 按当前排序导出；成功返回 true
     bool exportCsv(const QString &path, QString *error = nullptr) const;
+    // 模拟双击某显示行（自检与快捷键共用）
+    void activateRow(int proxyRow);
+
+signals:
+    void pointActivated(const QString &trackKey, qint64 timeMs, double lonDeg, double latDeg, const QString &label);
 
 private:
     void onExport();

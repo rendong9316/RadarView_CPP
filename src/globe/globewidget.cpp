@@ -1,4 +1,5 @@
 #include "globewidget.h"
+#include "geocalc.h"
 #include "globeoverlay.h"
 #include "maptools.h"
 #include "netmap.h"
@@ -264,6 +265,40 @@ void GlobeWidget::lookAt(double lonDeg, double latDeg, double altKm)
     emit cameraChanged();
 }
 
+void GlobeWidget::fitGeoBounds(double minLon, double maxLon, double minLat, double maxLat)
+{
+    if (!std::isfinite(minLon) || !std::isfinite(maxLon)
+            || !std::isfinite(minLat) || !std::isfinite(maxLat))
+        return;
+    const double cLon = 0.5 * (minLon + maxLon);
+    const double cLat = 0.5 * (minLat + maxLat);
+    const double spanKm = geocalc::vincentyKm(minLat, minLon, maxLat, maxLon);
+    const double aspect = height() > 0 ? qMax(0.5, double(width()) / double(height())) : 1.5;
+    const double halfFovTan = std::tan(qDegreesToRadians(double(GlobeCamera::kFovDeg) * 0.5));
+    const double needed = spanKm > 1e-3 ? (0.5 * spanKm / qMax(0.1, halfFovTan * qMin(1.0, aspect))) * 1.45 : 30.0;
+    lookAt(cLon, cLat, qBound(8.0, needed, 8000.0));
+}
+
+void GlobeWidget::setFocusPoint(double lonDeg, double latDeg, const QString &label)
+{
+    m_focusValid = std::isfinite(lonDeg) && std::isfinite(latDeg);
+    m_focusLon = lonDeg;
+    m_focusLat = latDeg;
+    m_focusLabel = label;
+    syncOverlayContext();
+    update();
+}
+
+void GlobeWidget::clearFocusPoint()
+{
+    if (!m_focusValid)
+        return;
+    m_focusValid = false;
+    m_focusLabel.clear();
+    syncOverlayContext();
+    update();
+}
+
 void GlobeWidget::setTrackStore(const TrackStore *store)
 {
     m_trackStore = store;
@@ -441,6 +476,10 @@ void GlobeWidget::syncOverlayContext()
     ctx.cursorLatRad = m_cursorLat;
     ctx.tipTrack = m_tipTrack;
     ctx.tipPoint = m_tipPoint;
+    ctx.focusValid = m_focusValid;
+    ctx.focusLon = m_focusLon;
+    ctx.focusLat = m_focusLat;
+    ctx.focusLabel = m_focusLabel;
     m_overlay->setContext(ctx);
 }
 
@@ -550,6 +589,7 @@ void GlobeWidget::paintGL()
                          || (m_lasso && !m_lasso->vertices().isEmpty())
                          || (m_draw && !m_draw->features().isEmpty())
                          || m_drawCtrl.hasOverlayContent()
+                         || m_focusValid
                          || m_tipTrack >= 0;
     if (overlay || (m_overlay && m_overlay->isWanted())) {
         syncOverlayContext();
@@ -688,7 +728,11 @@ void GlobeWidget::mouseReleaseEvent(QMouseEvent *e)
             if (geoAt(e->pos(), &lon, &lat))
                 m_ruler->addWaypoint(lat, lon);
         } else {
-            emit trackClicked(trackAt(e->pos()));
+            const int hit = trackAt(e->pos());
+            if (e->modifiers() & Qt::ControlModifier)
+                emit trackMultiSelectClicked(hit);
+            else
+                emit trackClicked(hit);
         }
     }
     updateHover(e->pos(), e->globalPos());

@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QHash>
 #include <QPointF>
+#include <QSet>
 #include <QSize>
 #include <QSizeF>
 #include <QString>
@@ -65,11 +66,19 @@ public:
     // 文件/数据源级颜色覆盖：地图右键「设置颜色」改的是该航迹所属文件（数据源）的全部航迹
     void setFileColorOverride(const QString &key, const QColor &color) { m_fileColor[key] = color; ++m_styleVersion; }
 
+    // 航迹着色模式：默认按数据源文件统一配色（兼容 CLAUDE.md 约定），可切换为按航迹批号分色
+    enum class TrackColorMode { ByFile = 0, ByTrack = 1 };
+    void setColorMode(TrackColorMode mode);
+    TrackColorMode colorMode() const { return m_colorMode; }
+    static QColor trackBatchColor(const Track &t);
+
     // 交互：参数为 TrackStore::tracks() 的下标，-1 表示无
     void setHoveredTrack(int index);
     int hoveredTrack() const { return m_hoverTrack; }
     void setIsolatedTrack(int index);       // 单独显示该航迹（不受分组显隐影响）
-    int isolatedTrack() const { return m_isoTrack; }
+    int isolatedTrack() const;
+    void setIsolatedTracks(const QSet<int> &indices);   // 多选隔离对比（空=全部，大小1等价单条隔离）
+    const QSet<int> &isolatedTracks() const { return m_isoTracks; }
     // 显示集合（RadarView displayTracks）：mask[i] 为 false 的航迹不画也不拾取；空表示全部
     void setTrackMask(const QVector<bool> &mask);
     bool isTrackShown(int index) const { return trackShown(index); }
@@ -218,11 +227,19 @@ private:
     bool m_rangesDirty = true;
     void rebuildDrawRanges();
 
-    // 悬停 / 单独显示：直接复用静态批次里该航迹的那几段，不另外上传
-    int m_hoverTrack = -1, m_isoTrack = -1;
+    // 悬停 / 单独显示 / 多选隔离：直接复用静态批次里该航迹的那几段，不另外上传
+    int m_hoverTrack = -1;
+    QSet<int> m_isoTracks;
+    TrackColorMode m_colorMode = TrackColorMode::ByFile;
     QVector<QVector<Piece>> m_trackPieces;   // 每条航迹在静态批次中的位置
     GroupRange m_hoverHead;                  // 悬停航迹在动态缓冲中的头部段
     int m_hoverDot = -1;                     // 悬停航迹在动态缓冲中的端点序号
+    QVector<int> m_dotTracks;                // m_dotVbo 中每个端点对应的航迹下标（按批号分色用）
+    struct TrackHeadSpan {
+        int track, first, count;
+        TrackHeadSpan(int t = -1, int f = 0, int c = 0) : track(t), first(f), count(c) {}
+    };
+    QVector<TrackHeadSpan> m_headSpans;      // m_headVbo 中每条航迹对应的头部段范围
     bool m_hoverDrawn = false;
 
     mutable QVector<PickTrack> m_pick;

@@ -6,10 +6,12 @@
 
 class GlobeWidget;
 class QLabel;
+class QPushButton;
 class QSlider;
 class QVBoxLayout;
 class TrackStore;
 class ManageState;
+class ReplayController;
 
 // 设置面板（RadarView SettingsPanel.vue）：线条颜色 / 线宽 / 圆球直径 / 点迹大小 / 旗标大小 / 字号大小 / 工具。
 // 各项保存在设置 display.*（app_settings 表），构造时读回并立即应用到地图。
@@ -21,10 +23,13 @@ public:
         TrackStore *store = nullptr;
         GlobeWidget *globe = nullptr;
         ManageState *manage = nullptr;
+        ReplayController *replay = nullptr;
     };
     explicit SettingsPanel(const Host &host, QWidget *parent = nullptr);
 
     void refresh();              // 刷新批次 / 航迹数
+    void syncTrailSeconds(double seconds);
+    void syncColorMode(int mode);   // 0=ByFile, 1=ByTrack
 
     // ---- 自检用 ----
     int fontValue() const;
@@ -38,6 +43,8 @@ signals:
     void fontValueChanged(int px);
     void lineWidthValueChanged(double px);
     void pointScaleValueChanged(double scale);
+    void trailSecondsChanged(double seconds);
+    void colorModeChanged(int mode);
     void toggleLabelsRequested();
     void resetViewRequested();
     void clearDisplayRequested();
@@ -52,6 +59,9 @@ private:
     QSlider *m_font = nullptr;
     QSlider *m_lineWidth = nullptr;
     QSlider *m_pointScale = nullptr;
+    QSlider *m_trailSlider = nullptr;
+    QLabel *m_trailVal = nullptr;
+    QPushButton *m_colorModeBtns[2] = { nullptr, nullptr };
     QWidget *m_rawDotRow = nullptr;
     QLabel *m_batchLabel = nullptr;
 };

@@ -49,6 +49,7 @@ Point3dWindow *Point3dCoordinator::createWindow()
     connect(win, &Point3dWindow::isolationCleared, this, [this]() {
         emit isolateTrackRequested(-1);
     });
+    connect(win, &Point3dWindow::frameTimeActivated, this, &Point3dCoordinator::masterSeekRequested);
     return win;
 }
 
@@ -114,6 +115,14 @@ void Point3dCoordinator::closeAllAndSave()
 // id 前缀不同（RADAR-/RAW-），但编号与时间一致，三方据此互相对应。
 void Point3dCoordinator::syncLinkedSelection(const QSet<QString> &visibleKeys, int isolatedIndex)
 {
+    QSet<int> iso;
+    if (isolatedIndex >= 0)
+        iso.insert(isolatedIndex);
+    syncLinkedSelection(visibleKeys, iso);
+}
+
+void Point3dCoordinator::syncLinkedSelection(const QSet<QString> &visibleKeys, const QSet<int> &isolatedIndices)
+{
     QVector<LinkedTrackRef> refs;
     if (!visibleKeys.isEmpty()) {
         for (int i = 0; i < m_store->size(); ++i) {
@@ -126,29 +135,43 @@ void Point3dCoordinator::syncLinkedSelection(const QSet<QString> &visibleKeys, i
                 refs.append(r);
             }
         }
-    } else if (isolatedIndex >= 0 && isolatedIndex < m_store->size()) {
-        const Track &t = m_store->tracks().at(isolatedIndex);
-        LinkedTrackRef r;
-        r.batchNo = point3dBatchNo(t);
-        r.t0 = t.minTime();
-        r.t1 = t.maxTime();
-        refs.append(r);
+    } else if (!isolatedIndices.isEmpty()) {
+        for (int idx : isolatedIndices) {
+            if (idx < 0 || idx >= m_store->size())
+                continue;
+            const Track &t = m_store->tracks().at(idx);
+            LinkedTrackRef r;
+            r.batchNo = point3dBatchNo(t);
+            r.t0 = t.minTime();
+            r.t1 = t.maxTime();
+            refs.append(r);
+        }
     }
     for (const QPointer<Point3dWindow> &win : qAsConst(m_windows))
         if (win)
             win->setLinkedSelection(refs);
 
-    // 单独显示的航迹同时作为高亮（悬停也会走同一套广播）；返回全部时清掉高亮
-    if (isolatedIndex >= 0 && isolatedIndex < m_store->size()) {
-        const Track &t = m_store->tracks().at(isolatedIndex);
-        for (const QPointer<Point3dWindow> &win : qAsConst(m_windows))
-            if (win)
-                win->setLinkedHighlight(point3dBatchNo(t), t.minTime(), t.maxTime());
-    } else {
-        for (const QPointer<Point3dWindow> &win : qAsConst(m_windows))
-            if (win)
-                win->setLinkedHighlight(-1, 0, 0);
+    // 单条单独显示的航迹同时作为高亮；多选或返回全部时清掉单条高亮
+    if (isolatedIndices.size() == 1) {
+        const int idx = *isolatedIndices.constBegin();
+        if (idx >= 0 && idx < m_store->size()) {
+            const Track &t = m_store->tracks().at(idx);
+            for (const QPointer<Point3dWindow> &win : qAsConst(m_windows))
+                if (win)
+                    win->setLinkedHighlight(point3dBatchNo(t), t.minTime(), t.maxTime());
+            return;
+        }
     }
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_windows))
+        if (win)
+            win->setLinkedHighlight(-1, 0, 0);
+}
+
+void Point3dCoordinator::onMasterTimeChanged(qint64 timeMs)
+{
+    for (const QPointer<Point3dWindow> &win : qAsConst(m_windows))
+        if (win)
+            win->syncToMasterTime(timeMs);
 }
 
 // 地图上悬停的航迹 → 所有点迹窗口里"同一条航迹"同步高亮（id 前缀可能不同，用编号+时间匹配）

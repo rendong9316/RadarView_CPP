@@ -361,6 +361,36 @@ void TrackLayer::setTrailSeconds(double seconds)
     m_dynamicDirty = true;
 }
 
+void TrackLayer::setColorMode(TrackColorMode mode)
+{
+    if (m_colorMode == mode)
+        return;
+    m_colorMode = mode;
+    m_dynamicDirty = true;
+    m_ptDotsDirty = true;
+}
+
+QColor TrackLayer::trackBatchColor(const Track &t)
+{
+    // 确定性黄金角 HSV 分色：避开纯红悬停高亮区（0°±16°），高辨识度且同一批号跨帧颜色稳定
+    quint32 seed = 0;
+    const int dash = t.id.lastIndexOf(QLatin1Char('-'));
+    bool ok = false;
+    if (dash >= 0) {
+        const int batch = t.id.mid(dash + 1).toInt(&ok);
+        if (ok && batch > 0)
+            seed = quint32(batch);
+    }
+    if (!ok)
+        seed = quint32(qHash(t.id));
+    // 映射到 [20°, 340°] 共 320° 色相区间，避开纯红
+    const double frac = std::fmod(double(seed) * 0.6180339887498949, 1.0);
+    const int hue = 20 + int(std::floor(frac * 320.0));
+    const int sat = 200 + int((seed * 37u) % 45u);
+    const int val = 225 + int((seed * 23u) % 30u);
+    return QColor::fromHsv(hue % 360, qBound(180, sat, 245), qBound(210, val, 255));
+}
+
 void TrackLayer::setHoveredTrack(int index)
 {
     if (index == m_hoverTrack)
@@ -371,9 +401,26 @@ void TrackLayer::setHoveredTrack(int index)
 
 void TrackLayer::setIsolatedTrack(int index)
 {
-    if (index == m_isoTrack)
+    QSet<int> next;
+    if (index >= 0)
+        next.insert(index);
+    setIsolatedTracks(next);
+}
+
+int TrackLayer::isolatedTrack() const
+{
+    return m_isoTracks.size() == 1 ? *m_isoTracks.constBegin() : -1;
+}
+
+void TrackLayer::setIsolatedTracks(const QSet<int> &indices)
+{
+    QSet<int> clean;
+    for (int idx : indices)
+        if (idx >= 0)
+            clean.insert(idx);
+    if (clean == m_isoTracks)
         return;
-    m_isoTrack = index;
+    m_isoTracks = clean;
     m_dynamicDirty = true;
     m_ptDotsDirty = true;
 }
@@ -420,15 +467,15 @@ int TrackLayer::groupIndex(const QString &key) const
     return -1;
 }
 
-// 单独显示时只显示那一条（不管它所在的组是否隐藏），否则按组显隐
+// 单独显示 / 多选隔离时只显示集合内的航迹（不管它所在的组是否隐藏），否则按组显隐
 bool TrackLayer::trackShown(int index) const
 {
     if (index < 0 || index >= m_trackGroup.size())
         return false;
     if (!m_mask.isEmpty() && (index >= m_mask.size() || !m_mask[index]))
         return false;
-    if (m_isoTrack >= 0)
-        return index == m_isoTrack;
+    if (!m_isoTracks.isEmpty())
+        return m_isoTracks.contains(index);
     return m_groups[m_trackGroup[index]].visible;
 }
 
@@ -450,8 +497,12 @@ void TrackLayer::rebuildStatic()
     m_trackPieces = QVector<QVector<Piece>>(tracks.size());
     if (m_hoverTrack >= tracks.size())
         m_hoverTrack = -1;
-    if (m_isoTrack >= tracks.size())
-        m_isoTrack = -1;
+    for (auto it = m_isoTracks.begin(); it != m_isoTracks.end();) {
+        if (*it < 0 || *it >= tracks.size())
+            it = m_isoTracks.erase(it);
+        else
+            ++it;
+    }
 
     QVector<QVector<int>> members;
     for (int i = 0; i < tracks.size(); ++i) {
@@ -613,7 +664,7 @@ void TrackLayer::rebuildPointDots()
             d.pos.append(scenePos(pts[k].lon, pts[k].lat, kAltitudeM));
         }
         d.count = d.t.size();
-        d.color = m_groups[m_trackGroup[ti]].color;
+        d.color = trackColor(ti);
         m_ptDots.append(d);
     }
     m_gl->glBindBuffer(GL_ARRAY_BUFFER, m_ptDotVbo);
@@ -638,6 +689,8 @@ void TrackLayer::rebuildDynamic()
     QVector<float> heads, dots;
     m_headRanges = QVector<GroupRange>(m_groups.size());
     m_dotRanges = QVector<GroupRange>(m_groups.size());
+    m_dotTracks.clear();
+    m_headSpans.clear();
     m_hoverHead = GroupRange();
     m_hoverDot = -1;
     m_visibleTracks = 0;
@@ -668,12 +721,16 @@ void TrackLayer::rebuildDynamic()
                     forEachPiece(a.lon, a.lat, lon, lat, [&](const QVector3D &p0, const QVector3D &p1) {
                         pushQuad(heads, p0, p1, nowRel, t0);
                     }, m_sceneGcj);
+                const int headCount = heads.size() / (4 * kLineStride) - headFirst;
+                if (headCount > 0)
+                    m_headSpans.append(TrackHeadSpan{i, headFirst, headCount});
                 if (i == m_hoverTrack)
-                    m_hoverHead = GroupRange{headFirst, heads.size() / (4 * kLineStride) - headFirst};
+                    m_hoverHead = GroupRange{headFirst, headCount};
             }
             if (i == m_hoverTrack)
                 m_hoverDot = dots.size() / (4 * kDotStride);
             pushDot(dots, scenePos(lon, lat, kAltitudeM));
+            m_dotTracks.append(i);
             m_endpoints.append(EndPoint(i, lon, lat));
             ++m_visibleTracks;
         }
@@ -746,6 +803,11 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
         const Group &grp = m_groups[g];
         return QVector4D(float(grp.color.redF()), float(grp.color.greenF()), float(grp.color.blueF()), grp.alpha);
     };
+    auto trackColorVec = [this](int ti) {
+        const QColor c = trackColor(ti);
+        const float alpha = (ti >= 0 && ti < m_trackGroup.size()) ? m_groups[m_trackGroup[ti]].alpha : 0.88f;
+        return QVector4D(float(c.redF()), float(c.greenF()), float(c.blueF()), alpha);
+    };
     // 某条航迹的静态线段：属性指针移到它在批次里的起点，共用同一份索引
     auto drawTrackPieces = [&](int ti) {
         for (const Piece &p : m_trackPieces[ti]) {
@@ -754,10 +816,19 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
             gl->glDrawElements(GL_TRIANGLES, p.count * 6, GL_UNSIGNED_SHORT, nullptr);
         }
     };
-    if (m_isoTrack >= 0) {
-        if (trackShown(m_isoTrack)) {
-            m_lineProg->setUniformValue(m_uLineColor, groupColor(m_trackGroup[m_isoTrack]));
-            drawTrackPieces(m_isoTrack);
+    if (!m_isoTracks.isEmpty()) {
+        for (int ti : qAsConst(m_isoTracks)) {
+            if (!trackShown(ti))
+                continue;
+            m_lineProg->setUniformValue(m_uLineColor, trackColorVec(ti));
+            drawTrackPieces(ti);
+        }
+    } else if (m_colorMode == TrackColorMode::ByTrack) {
+        for (int ti = 0; ti < m_trackGroup.size(); ++ti) {
+            if (!trackShown(ti) || m_trackPieces[ti].isEmpty())
+                continue;
+            m_lineProg->setUniformValue(m_uLineColor, trackColorVec(ti));
+            drawTrackPieces(ti);
         }
     } else {
         for (const Batch &b : qAsConst(m_batches)) {
@@ -800,8 +871,16 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
     };
     if (m_replay) {
         m_lineProg->setUniformValue(m_uLineWindow, allTime);
-        drawRanges(m_headVbo, m_headRanges, kLineStride, setLineAttribs,
-                   [&](int g) { m_lineProg->setUniformValue(m_uLineColor, groupColor(g)); });
+        if (m_colorMode == TrackColorMode::ByTrack) {
+            gl->glBindBuffer(GL_ARRAY_BUFFER, m_headVbo);
+            for (const TrackHeadSpan &sp : qAsConst(m_headSpans)) {
+                m_lineProg->setUniformValue(m_uLineColor, trackColorVec(sp.track));
+                drawRange(GroupRange{sp.first, sp.count}, kLineStride, setLineAttribs);
+            }
+        } else {
+            drawRanges(m_headVbo, m_headRanges, kLineStride, setLineAttribs,
+                       [&](int g) { m_lineProg->setUniformValue(m_uLineColor, groupColor(g)); });
+        }
     }
     // 悬停：同一条航迹用红色宽线再画一遍，压在其他航迹上面
     if (hover) {
@@ -832,11 +911,22 @@ void TrackLayer::draw(const QMatrix4x4 &mvp, const QSize &viewportPx, float dpr)
         gl->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void *>(off));
         gl->glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void *>(off + 3 * sizeof(float)));
     };
-    drawRanges(m_dotVbo, m_dotRanges, kDotStride, setDotAttribs,
-               [&](int g) {
-                   m_dotProg->setUniformValue(m_uDotColor, QVector4D(groupColor(g).toVector3D(), 1.0f));
-                   m_dotProg->setUniformValue(m_uDotRadius, m_groups[g].radiusPx * dpr);
-               });
+    if (m_colorMode == TrackColorMode::ByTrack) {
+        gl->glBindBuffer(GL_ARRAY_BUFFER, m_dotVbo);
+        for (int dIdx = 0; dIdx < m_dotTracks.size(); ++dIdx) {
+            const int ti = m_dotTracks[dIdx];
+            const QColor c = trackColor(ti);
+            m_dotProg->setUniformValue(m_uDotColor, QVector4D(float(c.redF()), float(c.greenF()), float(c.blueF()), 1.0f));
+            m_dotProg->setUniformValue(m_uDotRadius, m_groups[m_trackGroup[ti]].radiusPx * dpr);
+            drawRange(GroupRange{dIdx, 1}, kDotStride, setDotAttribs);
+        }
+    } else {
+        drawRanges(m_dotVbo, m_dotRanges, kDotStride, setDotAttribs,
+                   [&](int g) {
+                       m_dotProg->setUniformValue(m_uDotColor, QVector4D(groupColor(g).toVector3D(), 1.0f));
+                       m_dotProg->setUniformValue(m_uDotRadius, m_groups[g].radiusPx * dpr);
+                   });
+    }
     if (hover && m_hoverDot >= 0) {
         m_dotProg->setUniformValue(m_uDotColor, kHoverColor);
         m_dotProg->setUniformValue(m_uDotRadius, m_groups[m_trackGroup[m_hoverTrack]].radiusPx * kHoverDotScale * dpr);
@@ -1026,7 +1116,7 @@ bool TrackLayer::isTrackShownIgnoringGroups(int index) const
         return false;
     if (!m_mask.isEmpty() && (index >= m_mask.size() || !m_mask[index]))
         return false;
-    return m_isoTrack < 0 || index == m_isoTrack;
+    return m_isoTracks.isEmpty() || m_isoTracks.contains(index);
 }
 
 int TrackLayer::pointDotCount() const
@@ -1036,7 +1126,11 @@ int TrackLayer::pointDotCount() const
 
 QColor TrackLayer::trackColor(int index) const
 {
-    if (index < 0 || index >= m_trackGroup.size())
+    if (!m_store || index < 0 || index >= m_store->size())
+        return QColor(Qt::white);
+    if (m_colorMode == TrackColorMode::ByTrack)
+        return trackBatchColor(m_store->tracks()[index]);
+    if (index >= m_trackGroup.size())
         return QColor(Qt::white);
     return m_groups[m_trackGroup[index]].color;
 }

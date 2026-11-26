@@ -31,6 +31,7 @@
 #include <QPushButton>
 #include <QSet>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -221,8 +222,53 @@ void Point3dWindow::seekToFrame(int index)
 {
     if (m_data.frames.isEmpty())
         return;
-    setFrameInternal(qBound(0, index, m_data.frames.size() - 1));
+    const int clamped = qBound(0, index, m_data.frames.size() - 1);
+    setFrameInternal(clamped);
     m_frameClock.restart();                   // 拖拽后重新计时，避免刚拖完就跳帧
+    if (m_syncMasterClock && !m_applyingMasterTime)
+        emit frameTimeActivated(m_data.frames.at(clamped).timeMs);
+}
+
+void Point3dWindow::setSyncMasterClock(bool on)
+{
+    if (m_syncMasterClock == on)
+        return;
+    m_syncMasterClock = on;
+    if (m_syncClockBtn) {
+        QSignalBlocker blk(m_syncClockBtn);
+        m_syncClockBtn->setChecked(on);
+    }
+    if (on)
+        setPlaying(false);                    // 跟随主时钟时暂停本地播放器，避免互相抢帧
+    updateStatus();
+}
+
+void Point3dWindow::syncToMasterTime(qint64 masterTimeMs)
+{
+    if (!m_syncMasterClock || m_data.frames.isEmpty())
+        return;
+    // 二分找与 masterTimeMs 最近的检测帧
+    int lo = 0, hi = m_data.frames.size() - 1;
+    while (lo < hi) {
+        const int mid = (lo + hi) / 2;
+        if (m_data.frames.at(mid).timeMs < masterTimeMs)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    int best = lo;
+    if (best > 0) {
+        const qint64 dCur = std::llabs(m_data.frames.at(best).timeMs - masterTimeMs);
+        const qint64 dPrev = std::llabs(m_data.frames.at(best - 1).timeMs - masterTimeMs);
+        if (dPrev <= dCur)
+            best = best - 1;
+    }
+    if (best == m_canvas->currentFrame())
+        return;
+    m_applyingMasterTime = true;
+    setPlaying(false);
+    setFrameInternal(best);
+    m_applyingMasterTime = false;
 }
 
 void Point3dWindow::setFrameInternal(int index)
@@ -580,6 +626,7 @@ QJsonObject Point3dWindow::sessionJson() const
     o.insert(QStringLiteral("geometry"),
              QString::fromLatin1(saveGeometry().toBase64()));
     o.insert(QStringLiteral("number"), m_number);
+    o.insert(QStringLiteral("sync_master_clock"), m_syncMasterClock);
     return o;
 }
 
@@ -628,6 +675,7 @@ void Point3dWindow::restoreSession(const QJsonObject &obj)
     for (const QJsonValue &v : obj.value(QStringLiteral("hidden_tracks")).toArray())
         m_hiddenTrackKeys.insert(v.toString());
     m_manualTracksChosen = obj.value(QStringLiteral("manual_tracks")).toBool(!m_trackKeys.isEmpty());
+    setSyncMasterClock(obj.value(QStringLiteral("sync_master_clock")).toBool(false));
 
     m_sideSettings->setRestoring(false);
     m_restoring = false;
@@ -797,6 +845,14 @@ void Point3dWindow::buildUi()
             "本窗口回放倍速：每帧停留 = 相邻帧时间差 / 倍速（1× 为数据真实节奏）"));
         m_speedCombo->setFixedWidth(ui::sz(100));
         transport->addWidget(m_speedCombo);
+        m_syncClockBtn = new QPushButton(QStringLiteral("同步主时钟"), m_statusBar);
+        m_syncClockBtn->setObjectName(QStringLiteral("point3dSyncClockBtn"));
+        m_syncClockBtn->setCheckable(true);
+        m_syncClockBtn->setChecked(false);
+        m_syncClockBtn->setCursor(Qt::PointingHandCursor);
+        m_syncClockBtn->setToolTip(QStringLiteral(
+            "开启后本窗口帧号与主地图回放时间轴双向同步（默认关闭，保持独立逐帧回放）"));
+        transport->addWidget(m_syncClockBtn);
         statusLay->addLayout(transport);
     }
     root->addWidget(m_statusBar);
@@ -896,6 +952,7 @@ void Point3dWindow::buildUi()
         if (!m_syncing)
             seekToFrame(v);
     });
+    connect(m_syncClockBtn, &QPushButton::toggled, this, &Point3dWindow::setSyncMasterClock);
     connect(m_speedCombo, &QComboBox::currentTextChanged, this, [this](const QString &text) {
         if (m_restoring)
             return;
@@ -921,6 +978,8 @@ void Point3dWindow::buildUi()
     bindKey(Qt::Key_T, [this]() { m_sideSettings->toggleTracks(); });
     bindKey(Qt::Key_L, [this]() { m_sideSettings->toggleLabels(); });
     bindKey(Qt::Key_Space, [this]() { togglePlay(); });
+    bindKey(Qt::Key_Left, [this]() { seekToFrame(currentFrame() - 1); });
+    bindKey(Qt::Key_Right, [this]() { seekToFrame(currentFrame() + 1); });
     bindKey(Qt::Key_Escape, [this]() { clearIsolation(); });
 
     // 没有点迹数据前先禁用播放控制（导入完成后 syncPlaybackUi 打开）

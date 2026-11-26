@@ -28,14 +28,17 @@ public:
     void restoreSessions();
     void closeAllAndSave();
 
+    void syncLinkedSelection(const QSet<QString> &visibleKeys, const QSet<int> &isolatedIndices);
     void syncLinkedSelection(const QSet<QString> &visibleKeys, int isolatedIndex);
     void onMapHoverTrack(int index);
+    void onMasterTimeChanged(qint64 timeMs);
     void refreshOverlayColors();
     void populateWindowMenu(QMenu *menu);
 
 signals:
     void isolateTrackRequested(int index);
     void replayRangeInvalidated();
+    void masterSeekRequested(qint64 timeMs);
 
 private:
     int trackIndexForBatch(int batchNo, TrackSource source, qint64 t0, qint64 t1) const;

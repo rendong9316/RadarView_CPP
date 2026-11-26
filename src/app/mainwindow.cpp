@@ -117,6 +117,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_point3d = new Point3dCoordinator(&m_store, m_globe, this);
     m_importCtrl = new TrackImportCoordinator(&m_store, m_globe, this, this);
 
+    m_replay = new ReplayController(this);
     m_manage = new ManageState(&m_store, this);
 
     // 侧栏面板（顺序同 PanelId）
@@ -129,11 +130,15 @@ MainWindow::MainWindow(QWidget *parent)
     host.store = &m_store;
     host.globe = m_globe;
     host.manage = m_manage;
+    host.replay = m_replay;
     m_settingsPanel = new SettingsPanel(host, this);
     connect(m_settingsPanel, &SettingsPanel::toggleLabelsRequested, this, &MainWindow::toggleLabels);
     connect(m_settingsPanel, &SettingsPanel::resetViewRequested, this, [this]() { m_globe->resetView(); });
     connect(m_settingsPanel, &SettingsPanel::clearDisplayRequested, this, [this]() { m_manage->clearVisible(); });
     connect(m_settingsPanel, &SettingsPanel::openManageRequested, this, [this]() { activatePanel(PanelId::Manage); });
+    connect(m_settingsPanel, &SettingsPanel::colorModeChanged, this, [this](int m) {
+        setTrackColorMode(m == 1 ? TrackLayer::TrackColorMode::ByTrack : TrackLayer::TrackColorMode::ByFile);
+    });
     connect(m_manage, &ManageState::dataChanged, m_settingsPanel, &SettingsPanel::refresh);
     for (int i = 0; i < int(PanelId::Count); ++i) {
         QWidget *w = i == int(PanelId::Manage) ? static_cast<QWidget *>(m_managePanel)
@@ -152,7 +157,6 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     // 状态栏：常驻的自绘控件（不用 QStatusBar，它的 showMessage() 会把左侧控件整体隐藏）
-    m_replay = new ReplayController(this);
     m_statusBar = new AppStatusBar(m_replay, central);
     // 数据源条：横向一排 chip，放在状态栏正上方（展开时压缩地图高度，不盖住地图）
     m_sourceStrip = new SourceStrip(central);
@@ -177,12 +181,21 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_replay, &ReplayController::timeChanged, this, &MainWindow::syncReplayToLayer);
     connect(m_replay, &ReplayController::stateChanged, this, &MainWindow::syncReplayToLayer);
+    connect(m_replay, &ReplayController::trailSecondsChanged, this, [this](double sec) {
+        m_globe->trackLayer()->setTrailSeconds(sec);
+        m_settingsPanel->syncTrailSeconds(sec);
+        m_globe->update();
+    });
+    m_globe->trackLayer()->setTrailSeconds(m_replay->trailSeconds());
+    m_settingsPanel->syncTrailSeconds(m_replay->trailSeconds());
+    connect(m_statusBar, &AppStatusBar::stepRequested, this, &MainWindow::stepReplay);
 
     // 协调器信号接入状态栏与主窗口联动
     connect(m_drawCtrl, &DrawingController::errorMessage, m_statusBar, &AppStatusBar::setError);
     connect(m_drawCtrl, &DrawingController::uiStateChanged, this, &MainWindow::scheduleSaveUiState);
     connect(m_point3d, &Point3dCoordinator::isolateTrackRequested, this, &MainWindow::isolateTrack);
     connect(m_point3d, &Point3dCoordinator::replayRangeInvalidated, this, &MainWindow::resetReplayRange);
+    connect(m_point3d, &Point3dCoordinator::masterSeekRequested, m_replay, &ReplayController::seekTime);
     connect(m_importCtrl, &TrackImportCoordinator::loadingStateChanged, m_statusBar, &AppStatusBar::setLoading);
     connect(m_importCtrl, &TrackImportCoordinator::persistingStateChanged, m_statusBar, &AppStatusBar::setPersisting);
     connect(m_importCtrl, &TrackImportCoordinator::errorMessage, this, [this](const QString &msg, int clearAfterMs) {
@@ -204,12 +217,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_drawCtrl->buildToolBar(this);
     setThemedStyle(menuBar(), ui::menuBarQss());
 
-    // 地图交互：单击航迹单独显示，单击空白处返回全部；右键菜单；双击放旗标（GlobeWidget 内处理）
+    // 地图交互：单击航迹单独显示，Ctrl+单击多选对比隔离，单击空白处返回全部；右键菜单；双击放旗标
     connect(m_globe, &GlobeWidget::trackClicked, this, [this](int index) {
         if (index >= 0)
             isolateTrack(index);
-        else if (isolatedTrack() >= 0)
+        else if (!m_isoKeys.isEmpty())
             isolateTrack(-1);
+    });
+    connect(m_globe, &GlobeWidget::trackMultiSelectClicked, this, [this](int index) {
+        if (index >= 0)
+            toggleIsolatedTrack(index);
     });
     connect(m_globe, &GlobeWidget::trackContextMenuRequested, this, &MainWindow::onTrackContextMenu);
     // 地图悬停某条航迹 → 所有点迹窗口里的同一条航迹同步高亮
@@ -271,6 +288,10 @@ MainWindow::MainWindow(QWidget *parent)
         addAction(a);
     };
     shortcut(Qt::Key_Space, [this]() { m_replay->togglePlay(); });
+    shortcut(Qt::Key_Left, [this]() { stepReplay(-1); });
+    shortcut(Qt::Key_Right, [this]() { stepReplay(+1); });
+    shortcut(QKeySequence(Qt::SHIFT + Qt::Key_Left), [this]() { stepReplayByMs(-10000); });
+    shortcut(QKeySequence(Qt::SHIFT + Qt::Key_Right), [this]() { stepReplayByMs(10000); });
     shortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_R), [this]() { m_ruler->toggle(); });
 
     // 全局字号变化：侧栏宽度按比例跟随，地图顶部按钮重新居中
@@ -376,9 +397,22 @@ void MainWindow::loadPersisted()
         }
     }
     {
-        const QString isoKey = s.value(QStringLiteral("track.isolated_key")).toString();
-        if (!isoKey.isEmpty() && m_store.indexOf(isoKey) >= 0)
-            m_isoKey = isoKey;
+        const int colorMode = s.value(QStringLiteral("display.color_mode"), 0).toInt();
+        setTrackColorMode(colorMode == 1 ? TrackLayer::TrackColorMode::ByTrack : TrackLayer::TrackColorMode::ByFile);
+    }
+    {
+        const QJsonArray isoArr = QJsonDocument::fromJson(
+            s.value(QStringLiteral("track.isolated_keys")).toString().toUtf8()).array();
+        for (const QJsonValue &v : isoArr) {
+            const QString k = v.toString();
+            if (!k.isEmpty() && m_store.indexOf(k) >= 0)
+                m_isoKeys.insert(k);
+        }
+        if (m_isoKeys.isEmpty()) {
+            const QString isoKey = s.value(QStringLiteral("track.isolated_key")).toString();
+            if (!isoKey.isEmpty() && m_store.indexOf(isoKey) >= 0)
+                m_isoKeys.insert(isoKey);
+        }
     }
 
     applyAdsbVisibility();
@@ -434,7 +468,13 @@ void MainWindow::saveUiState()
     app::setValue(QStringLiteral("display.dot_keys"),
                   QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(dots)).toJson(QJsonDocument::Compact)));
 
-    app::setValue(QStringLiteral("track.isolated_key"), m_isoKey);
+    app::setValue(QStringLiteral("display.color_mode"), int(trackColorMode()));
+    const QString singleIso = m_isoKeys.size() == 1 ? *m_isoKeys.constBegin() : QString();
+    app::setValue(QStringLiteral("track.isolated_key"), singleIso);
+    QStringList isoList = m_isoKeys.values();
+    isoList.sort();
+    app::setValue(QStringLiteral("track.isolated_keys"),
+                  QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(isoList)).toJson(QJsonDocument::Compact)));
 
     app::setValue(QStringLiteral("panel.active"), m_panel);
     QJsonObject widths;
@@ -533,7 +573,7 @@ QList<Point3dWindow *> MainWindow::point3dWindows() const { return m_point3d->wi
 void MainWindow::onTracksImported(int beforeCount, bool firstData)
 {
     // 管理面板有可见集合时，新导入的航迹也加入（RadarView revealImportedTracks）
-    if (isolatedTrack() >= 0)
+    if (!m_isoKeys.isEmpty())
         isolateTrack(-1);
     if (!m_manage->visibleKeys().isEmpty()) {
         QStringList keys;
@@ -556,7 +596,20 @@ void MainWindow::onTracksImported(int beforeCount, bool firstData)
 // ---------------------------------------------------------------
 int MainWindow::isolatedTrack() const
 {
-    return m_isoKey.isEmpty() ? -1 : m_store.indexOf(m_isoKey);
+    if (m_isoKeys.size() != 1)
+        return -1;
+    return m_store.indexOf(*m_isoKeys.constBegin());
+}
+
+QSet<int> MainWindow::isolatedTracks() const
+{
+    QSet<int> out;
+    for (const QString &k : qAsConst(m_isoKeys)) {
+        const int idx = m_store.indexOf(k);
+        if (idx >= 0)
+            out.insert(idx);
+    }
+    return out;
 }
 
 // 回放范围跟随地图显示集合（RadarView useReplay(displayTracks)），时间筛选时取窗口内的部分
@@ -565,7 +618,7 @@ void MainWindow::resetReplayRange()
     qint64 lo = 0, hi = 0;
     bool any = false;
     TrackLayer *layer = m_globe->trackLayer();
-    const bool timeClip = m_manage->visibleKeys().isEmpty() && isolatedTrack() < 0 && m_filter.timeActive;
+    const bool timeClip = m_manage->visibleKeys().isEmpty() && isolatedTracks().isEmpty() && m_filter.timeActive;
     for (int i = 0; i < m_store.size(); ++i) {
         if (!layer->isTrackShownIgnoringGroups(i))
             continue;
@@ -593,9 +646,15 @@ void MainWindow::applyDisplay()
 {
     TrackLayer *layer = m_globe->trackLayer();
     const QSet<QString> &vis = m_manage->visibleKeys();
-    const int iso = isolatedTrack();
-    if (iso < 0) {
-        m_isoKey.clear();
+    // 清理已不存在于内存中的孤立键
+    for (auto it = m_isoKeys.begin(); it != m_isoKeys.end();) {
+        if (m_store.indexOf(*it) < 0)
+            it = m_isoKeys.erase(it);
+        else
+            ++it;
+    }
+    const QSet<int> isoSet = isolatedTracks();
+    if (isoSet.isEmpty()) {
         if (m_haveOverviewDots) {
             m_dotKeys = m_overviewDotKeys;
             m_overviewDotKeys.clear();
@@ -622,13 +681,13 @@ void MainWindow::applyDisplay()
         mask.resize(m_store.size());
         for (int i = 0; i < m_store.size(); ++i)
             mask[i] = vis.contains(m_store.tracks()[i].key());
-        layer->setIsolatedTrack(-1);
+        layer->setIsolatedTracks(QSet<int>());
         layer->setTimeFilter(false, 0, 0);
-    } else if (iso >= 0) {
-        layer->setIsolatedTrack(iso);
+    } else if (!isoSet.isEmpty()) {
+        layer->setIsolatedTracks(isoSet);
         layer->setTimeFilter(false, 0, 0);
     } else {
-        layer->setIsolatedTrack(-1);
+        layer->setIsolatedTracks(QSet<int>());
         if (m_filter.timeActive || m_filter.hasPointCountFilter() || m_filter.hasSpatialFilter()) {
             mask.resize(m_store.size());
             for (int i = 0; i < m_store.size(); ++i)
@@ -637,12 +696,16 @@ void MainWindow::applyDisplay()
         layer->setTimeFilter(m_filter.timeActive, m_filter.timeMin, m_filter.timeMax);
     }
     layer->setTrackMask(mask);
-    // 单独显示提示按钮只在单独显示真正生效时出现
-    const bool isoShown = vis.isEmpty() && iso >= 0;
+    // 单独显示 / 多选对比提示按钮只在隔离真正生效时出现
+    const bool isoShown = vis.isEmpty() && !isoSet.isEmpty();
     m_backAllBtn->setVisible(isoShown);
     if (isoShown) {
-        const Track &t = m_store.tracks()[iso];
-        m_backAllBtn->setText(tr("← 返回全部（单独显示：%1）").arg(t.flightNo.isEmpty() ? t.id : t.flightNo));
+        if (isoSet.size() == 1) {
+            const Track &t = m_store.tracks()[*isoSet.constBegin()];
+            m_backAllBtn->setText(tr("← 返回全部（单独显示：%1）").arg(t.flightNo.isEmpty() ? t.id : t.flightNo));
+        } else {
+            m_backAllBtn->setText(tr("← 返回全部（多选对比：%1 条，Ctrl+点击增减）").arg(isoSet.size()));
+        }
         m_backAllBtn->adjustSize();
         placeBackAllButton();
         m_backAllBtn->raise();
@@ -661,7 +724,7 @@ void MainWindow::applyDisplay()
     std::sort(dots.begin(), dots.end());
     layer->setPointDotTracks(dots);
 
-    m_point3d->syncLinkedSelection(vis, iso);
+    m_point3d->syncLinkedSelection(vis, isoSet);
     resetReplayRange();
     m_globe->update();
 }
@@ -679,19 +742,112 @@ void MainWindow::isolateTrack(int index)
 {
     if (index >= m_store.size())
         index = -1;
-    if (index == isolatedTrack())
+    QSet<QString> next;
+    if (index >= 0)
+        next.insert(m_store.tracks()[index].key());
+    if (next == m_isoKeys)
         return;
-    if (index >= 0 && isolatedTrack() < 0) {
+    if (!next.isEmpty() && m_isoKeys.isEmpty()) {
         m_overviewDotKeys = m_dotKeys;
         m_haveOverviewDots = true;
-    } else if (index < 0 && m_haveOverviewDots) {
+    } else if (next.isEmpty() && m_haveOverviewDots) {
         m_dotKeys = m_overviewDotKeys;
         m_overviewDotKeys.clear();
         m_haveOverviewDots = false;
     }
-    m_isoKey = index >= 0 ? m_store.tracks()[index].key() : QString();
+    m_isoKeys = next;
     applyDisplay();
     scheduleSaveUiState();
+}
+
+void MainWindow::toggleIsolatedTrack(int index)
+{
+    if (index < 0 || index >= m_store.size())
+        return;
+    const QString key = m_store.tracks()[index].key();
+    const bool wasEmpty = m_isoKeys.isEmpty();
+    if (m_isoKeys.contains(key))
+        m_isoKeys.remove(key);
+    else
+        m_isoKeys.insert(key);
+    if (!m_isoKeys.isEmpty() && wasEmpty) {
+        m_overviewDotKeys = m_dotKeys;
+        m_haveOverviewDots = true;
+    } else if (m_isoKeys.isEmpty() && m_haveOverviewDots) {
+        m_dotKeys = m_overviewDotKeys;
+        m_overviewDotKeys.clear();
+        m_haveOverviewDots = false;
+    }
+    applyDisplay();
+    scheduleSaveUiState();
+}
+
+void MainWindow::zoomToTrack(int index)
+{
+    if (index < 0 || index >= m_store.size())
+        return;
+    const QVector<TrackPoint> &pts = m_store.tracks()[index].pointsForMode(m_radarMode);
+    if (pts.isEmpty())
+        return;
+    double minLon = pts.first().lon, maxLon = minLon;
+    double minLat = pts.first().lat, maxLat = minLat;
+    for (const TrackPoint &p : pts) {
+        minLon = qMin(minLon, p.lon);
+        maxLon = qMax(maxLon, p.lon);
+        minLat = qMin(minLat, p.lat);
+        maxLat = qMax(maxLat, p.lat);
+    }
+    m_globe->fitGeoBounds(minLon, maxLon, minLat, maxLat);
+}
+
+void MainWindow::setTrackColorMode(TrackLayer::TrackColorMode mode)
+{
+    m_globe->trackLayer()->setColorMode(mode);
+    if (m_batchColorAction) {
+        QSignalBlocker blk(m_batchColorAction);
+        m_batchColorAction->setChecked(mode == TrackLayer::TrackColorMode::ByTrack);
+    }
+    if (m_settingsPanel)
+        m_settingsPanel->syncColorMode(int(mode));
+    m_globe->update();
+    scheduleSaveUiState();
+}
+
+TrackLayer::TrackColorMode MainWindow::trackColorMode() const
+{
+    return m_globe->trackLayer()->colorMode();
+}
+
+void MainWindow::stepReplay(int dir)
+{
+    if (m_replay->end() <= m_replay->start() || dir == 0)
+        return;
+    QVector<qint64> times;
+    TrackLayer *layer = m_globe->trackLayer();
+    const QSet<int> iso = isolatedTracks();
+    // 优先使用隔离/多选航迹的采样时间戳；否则采集当前显示航迹的去重时间戳
+    for (int i = 0; i < m_store.size(); ++i) {
+        if (!iso.isEmpty() ? !iso.contains(i) : !layer->isTrackShown(i))
+            continue;
+        const QVector<TrackPoint> &pts = m_store.tracks()[i].pointsForMode(m_radarMode);
+        for (const TrackPoint &p : pts)
+            if (p.t >= m_replay->start() && p.t <= m_replay->end())
+                times.append(p.t);
+        if (times.size() > 100000)
+            break;
+    }
+    if (times.isEmpty()) {
+        m_replay->stepByMs(dir > 0 ? 1000 : -1000);
+        return;
+    }
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    m_replay->stepToTimestamp(times, dir);
+}
+
+void MainWindow::stepReplayByMs(qint64 deltaMs)
+{
+    m_replay->stepByMs(deltaMs);
 }
 
 // 与 RadarView statusSources 相同：ADS-B 一项（整体），雷达 / 原始量测按导入文件各一项（按首次出现顺序）
@@ -837,7 +993,8 @@ void MainWindow::resetAllFilters()
         m_filterPanel->clickSpatialClear();                         // 空间套索
         m_filterPanel->refreshUi();
     }
-    m_isoKey.clear();                       // 地图单独显示
+    m_isoKeys.clear();                      // 地图单独显示 / 多选对比
+    m_globe->clearFocusPoint();
     m_manage->clearVisible();               // 管理系统可见集合（单独显示）
     m_manage->clearHighlights();
     if (m_managePanel)
@@ -899,6 +1056,19 @@ QDialog *MainWindow::showTrackPoints(int index)
     if (index < 0 || index >= m_store.size())
         return nullptr;
     TrackPointDialog *dlg = new TrackPointDialog(m_store.tracks()[index], this, m_radarMode);
+    connect(dlg, &TrackPointDialog::pointActivated, this,
+            [this](const QString &trackKey, qint64 timeMs, double lonDeg, double latDeg, const QString &label) {
+                const int idx = m_store.indexOf(trackKey);
+                if (idx >= 0 && !pointDotsShown(idx))
+                    togglePointDots(idx);
+                double curLon = 0.0, curLat = 0.0, curAlt = 600.0;
+                m_globe->cameraView(&curLon, &curLat, &curAlt);
+                m_globe->lookAt(lonDeg, latDeg, qMin(curAlt, 300.0));
+                m_globe->setFocusPoint(lonDeg, latDeg, label);
+                if (m_replay->end() > m_replay->start()
+                        && timeMs >= m_replay->start() && timeMs <= m_replay->end())
+                    m_replay->seekTime(timeMs);
+            });
     dlg->show();
     return dlg;
 }
@@ -992,6 +1162,7 @@ void MainWindow::onTrackContextMenu(int index, const QPoint &globalPos)
         menu.addItem(LucideIcon::Dot, QStringLiteral("显示所有对应点迹"), [this, index]() { togglePointDots(index); });
     else
         menu.addItem(LucideIcon::Circle, QStringLiteral("隐藏所有对应点迹"), [this, index]() { togglePointDots(index); });
+    menu.addItem(LucideIcon::Maximize2, QStringLiteral("缩放至该航迹"), [this, index]() { zoomToTrack(index); });
     // 航迹颜色按「数据源（导入文件）」独立设置：改这一条的同时该文件的所有航迹一起改
     menu.addItem(LucideIcon::Palette, QStringLiteral("设置颜色（本条及该数据源）..."),
                  [this, index]() { setTrackColor(index); });
@@ -1029,6 +1200,8 @@ void MainWindow::syncReplayToLayer()
 {
     m_globe->trackLayer()->setReplay(m_replay->isActive(), m_replay->current());
     m_globe->update();
+    if (m_replay->isActive())
+        m_point3d->onMasterTimeChanged(m_replay->current());
 }
 
 void MainWindow::toggleLabels()
@@ -1065,7 +1238,9 @@ void MainWindow::onEscape()
         applyDisplay();
     } else if (m_ruler->isActive()) {
         m_ruler->deactivate();
-    } else if (isolatedTrack() >= 0) {
+    } else if (m_globe->hasFocusPoint()) {
+        m_globe->clearFocusPoint();
+    } else if (!m_isoKeys.isEmpty()) {
         isolateTrack(-1);
     }
 }
@@ -1185,6 +1360,12 @@ void MainWindow::buildMenuBar()
     item(mView, tr("重置地图视角"), QKeySequence(Qt::CTRL + Qt::Key_R), [this]() { m_globe->resetView(); });
     m_labelAction = item(mView, tr("切换标签显示"), QKeySequence(Qt::CTRL + Qt::Key_T), [this]() { toggleLabels(); });
     m_labelAction->setCheckable(true);
+    m_batchColorAction = item(mView, tr("按航迹批号分色"), QKeySequence(), [this]() {
+        const bool byTrack = trackColorMode() != TrackLayer::TrackColorMode::ByTrack;
+        setTrackColorMode(byTrack ? TrackLayer::TrackColorMode::ByTrack : TrackLayer::TrackColorMode::ByFile);
+    });
+    m_batchColorAction->setCheckable(true);
+    m_batchColorAction->setToolTip(tr("开启后每条航迹按批号独立配色，便于区分同文件交叉航迹；关闭则恢复按数据源文件配色"));
     item(mView, tr("放大"), QKeySequence::ZoomIn, [this]() { m_globe->zoomBy(1.0); });
     item(mView, tr("缩小"), QKeySequence::ZoomOut, [this]() { m_globe->zoomBy(-1.0); });
     mView->addSeparator();

@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QVector>
 
 // 回放时钟：当前时刻按「真实流逝时间 × 倍速」推进（与 RadarView useReplay 一致）
 // - play()：已到结尾则从头开始
@@ -25,12 +26,23 @@ public:
     bool isActive() const { return m_active; }     // 回放模式（含暂停）
     double speed() const { return m_speed; }
     void setSpeed(double speed);
+    double trailSeconds() const { return m_trailSeconds; }   // <= 0 表示全量历史
+    void setTrailSeconds(double seconds);
+
+    // 可选 A-B 循环区间（默认关闭，不改变原有到头退出行为）
+    void setLoopRange(bool enabled, qint64 aMs, qint64 bMs);
+    void clearLoop();
+    bool isLoopEnabled() const { return m_loopEnabled && m_loopEnd > m_loopStart; }
+    qint64 loopStart() const { return m_loopStart; }
+    qint64 loopEnd() const { return m_loopEnd; }
 
     void play();
     void pause();
     void togglePlay();
     void seek(double fraction);                    // 0..1
     void seekTime(qint64 ms);
+    void stepByMs(qint64 deltaMs);                 // 暂停并按毫秒前后步进
+    void stepToTimestamp(const QVector<qint64> &sortedTimes, int dir);   // 按采样时刻单步前后跳
     void stop();                                   // 退出回放，回到起点
 
     // 推进 wallMs 毫秒的真实时间（定时器内部调用；自检可直接调用以获得确定结果）
@@ -39,6 +51,7 @@ public:
 signals:
     void timeChanged(qint64 ms);
     void stateChanged();
+    void trailSecondsChanged(double seconds);
 
 private:
     void onTick();
@@ -46,6 +59,9 @@ private:
 
     qint64 m_start = 0, m_end = 0, m_current = 0;
     double m_speed = 500.0;
+    double m_trailSeconds = 0.0;
+    bool m_loopEnabled = false;
+    qint64 m_loopStart = 0, m_loopEnd = 0;
     bool m_playing = false;
     bool m_active = false;
     QTimer m_timer;

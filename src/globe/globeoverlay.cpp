@@ -133,6 +133,7 @@ void GlobeOverlay::paintEvent(QPaintEvent *)
     drawRuler(p);
     drawLasso(p);
     drawFlags(p);
+    drawFocusPoint(p);
     drawPointTip(p);
 }
 
@@ -659,4 +660,37 @@ void GlobeOverlay::drawPointTip(QPainter &p)
     outline.setAlphaF(0.9);
     drawOutlinedText(p, QPointF(box.left() + pad, box.top() + padY + fm.ascent()), l1, f, Qt::white, outline, 2.0);
     drawOutlinedText(p, QPointF(box.left() + pad, box.top() + padY + lineH + fm.ascent()), l2, f, Qt::white, outline, 2.0);
+}
+
+void GlobeOverlay::drawFocusPoint(QPainter &p)
+{
+    if (!m_ctx.focusValid || !m_ctx.camera)
+        return;
+    QPointF sp;
+    if (!m_ctx.camera->visiblePos(m_ctx.focusLon, m_ctx.focusLat, TrackLayer::kAltitudeM, size(), &sp))
+        return;
+    p.save();
+    const QColor ring(0x38, 0xbd, 0xf8);
+    // 外圈 + 准星十字线 + 内实心点
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(Qt::black, 4.0));
+    p.drawEllipse(sp, 14.0, 14.0);
+    p.setPen(QPen(ring, 2.0));
+    p.drawEllipse(sp, 14.0, 14.0);
+    const double arm = 20.0;
+    const double gap = 6.0;
+    p.drawLine(QPointF(sp.x() - arm, sp.y()), QPointF(sp.x() - gap, sp.y()));
+    p.drawLine(QPointF(sp.x() + gap, sp.y()), QPointF(sp.x() + arm, sp.y()));
+    p.drawLine(QPointF(sp.x(), sp.y() - arm), QPointF(sp.x(), sp.y() - gap));
+    p.drawLine(QPointF(sp.x(), sp.y() + gap), QPointF(sp.x(), sp.y() + arm));
+    p.setPen(QPen(Qt::black, 1.5));
+    p.setBrush(ring);
+    p.drawEllipse(sp, 4.0, 4.0);
+    if (!m_ctx.focusLabel.isEmpty()) {
+        const QFont f = remFont(0.857, true);
+        const QFontMetricsF fm(f);
+        const QPointF base(sp.x() + 18.0, sp.y() - 6.0);
+        drawOutlinedText(p, base, m_ctx.focusLabel, f, ring, Qt::black, 2.5);
+    }
+    p.restore();
 }

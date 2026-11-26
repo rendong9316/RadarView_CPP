@@ -273,18 +273,28 @@ TrackPointDialog::TrackPointDialog(const Track &track, QWidget *parent, RadarPoi
     mono.setPointSizeF(m_view->font().pointSizeF());
     m_view->setFont(mono);
     m_view->resizeColumnsToContents();
+    connect(m_view, &QTableView::doubleClicked, this, [this](const QModelIndex &idx) {
+        if (idx.isValid())
+            activateRow(idx.row());
+    });
 
+    QLabel *hint = new QLabel(tr("提示：双击任意行可在地图定位该点并跳转回放时刻"), this);
+    hint->setObjectName(QStringLiteral("pointDialogMeta"));
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     buttons->button(QDialogButtonBox::Close)->setText(tr("关闭"));
     buttons->button(QDialogButtonBox::Close)->setCursor(Qt::PointingHandCursor);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    QHBoxLayout *foot = new QHBoxLayout;
+    foot->addWidget(hint);
+    foot->addStretch(1);
+    foot->addWidget(buttons);
 
     QVBoxLayout *lay = new QVBoxLayout(this);
     ui::bindMargins(lay, 14, 12, 14, 12);
     ui::bindSpacing(lay, 10);
     lay->addLayout(head);
     lay->addWidget(m_view, 1);
-    lay->addWidget(buttons);
+    lay->addLayout(foot);
 
     setThemedStyle(this, ui::dialogQss() + ui::segmentedQss() + QStringLiteral(
         "#pointDialogTitle { color: var(--text-primary); font-size: 14px; font-weight: 600; }"
@@ -372,6 +382,19 @@ bool TrackPointDialog::exportCsv(const QString &path, QString *error) const
         return false;
     }
     return true;
+}
+
+void TrackPointDialog::activateRow(int proxyRow)
+{
+    if (proxyRow < 0 || proxyRow >= m_proxy->rowCount())
+        return;
+    const int src = m_proxy->mapToSource(m_proxy->index(proxyRow, 0)).row();
+    if (src < 0 || src >= m_model->rowCount())
+        return;
+    const TrackPoint &pt = m_model->pointAt(src);
+    const QString title = m_track.flightNo.isEmpty() ? m_track.id : m_track.flightNo;
+    const QString lbl = QStringLiteral("%1 #%2  %3").arg(title).arg(proxyRow + 1).arg(formatPointTime(pt.t));
+    emit pointActivated(m_track.key(), pt.t, pt.lon, pt.lat, lbl);
 }
 
 void TrackPointDialog::onExport()

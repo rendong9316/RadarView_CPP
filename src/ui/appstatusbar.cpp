@@ -137,7 +137,7 @@ QString formatReplayRange(qint64 currentMs, qint64 endMs)
 namespace {
 
 // lucide 图标（viewBox 24×24、线宽 2、圆角端点），用 QPainter 画，不依赖 QtSvg
-enum class Icon { Play, Pause, Moon, Sun, Contrast, Alert };
+enum class Icon { Play, Pause, StepPrev, StepNext, Moon, Sun, Contrast, Alert };
 
 void drawIcon(QPainter &p, Icon icon, const QRectF &box, const QColor &color)
 {
@@ -158,6 +158,18 @@ void drawIcon(QPainter &p, Icon icon, const QRectF &box, const QColor &color)
         p.drawRoundedRect(QRectF(14, 4, 4, 16), 1, 1);
         p.drawRoundedRect(QRectF(6, 4, 4, 16), 1, 1);
         break;
+    case Icon::StepPrev: {
+        p.drawLine(QPointF(6, 5), QPointF(6, 19));
+        const QPointF tri[3] = { QPointF(18, 5), QPointF(10, 12), QPointF(18, 19) };
+        p.drawPolygon(tri, 3);
+        break;
+    }
+    case Icon::StepNext: {
+        const QPointF tri[3] = { QPointF(6, 5), QPointF(14, 12), QPointF(6, 19) };
+        p.drawPolygon(tri, 3);
+        p.drawLine(QPointF(18, 5), QPointF(18, 19));
+        break;
+    }
     case Icon::Moon: {
         // M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z：半径 9 的圆减去以 (16.5,7.5) 为心、过 (12,3)(21,12) 的圆
         QPainterPath outer, cut;
@@ -532,6 +544,12 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     ui::bindSpacing(left, kGap);
     m_play = new IconButton(Icon::Play, kBarHeight, m_left);
     left->addWidget(m_play);
+    m_stepPrev = new IconButton(Icon::StepPrev, 20, m_left);
+    m_stepPrev->setToolTip(QStringLiteral("上一采样时刻（←；Shift+← 回退 10 秒）"));
+    left->addWidget(m_stepPrev);
+    m_stepNext = new IconButton(Icon::StepNext, 20, m_left);
+    m_stepNext->setToolTip(QStringLiteral("下一采样时刻（→；Shift+→ 前进 10 秒）"));
+    left->addWidget(m_stepNext);
     m_seek = new SeekBar(m_left);
     left->addWidget(m_seek, 1);
     m_time = new QLabel(m_left);
@@ -558,6 +576,16 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     m_customSpeed->setValidator(val);
     speedLay->addWidget(m_customSpeed);
     left->addWidget(speedBox);
+    m_trail = new SpeedSelect(m_left);
+    m_trail->setObjectName(QStringLiteral("trailSelect"));
+    m_trail->setToolTip(QStringLiteral("回放尾迹保留时长（全量表示保留全部历史航迹）"));
+    m_trail->addItem(QStringLiteral("尾迹全量"), 0);
+    m_trail->addItem(QStringLiteral("尾迹30s"), 30);
+    m_trail->addItem(QStringLiteral("尾迹60s"), 60);
+    m_trail->addItem(QStringLiteral("尾迹2m"), 120);
+    m_trail->addItem(QStringLiteral("尾迹5m"), 300);
+    m_trail->addItem(QStringLiteral("尾迹10m"), 600);
+    left->addWidget(m_trail);
     left->addStretch(0);
 
     // ---- 右：信息 ----
@@ -611,7 +639,13 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
 
     // ---- 交互 ----
     connect(m_play, &QAbstractButton::clicked, m_ctrl, &ReplayController::togglePlay);
+    connect(m_stepPrev, &QAbstractButton::clicked, this, [this]() { emit stepRequested(-1); });
+    connect(m_stepNext, &QAbstractButton::clicked, this, [this]() { emit stepRequested(+1); });
     m_seek->onSeek = [this](double f) { m_ctrl->seek(f); };
+    connect(m_trail, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
+        const double sec = m_trail->itemData(i).toDouble();
+        m_ctrl->setTrailSeconds(sec);
+    });
     connect(m_speed, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
         const int v = m_speed->itemData(i).toInt();
         if (v <= 0) {                     // 「自定义...」：显示输入框并聚焦，倍速不变
@@ -647,10 +681,12 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
         for (QLabel *l : { m_height, m_lonLat, m_fps, m_count })
             l->setFont(monoFont(kFontPx()));
         m_speed->setFont(monoFont(kSmallFontPx()));
+        m_trail->setFont(monoFont(kSmallFontPx()));
         m_error->setFont(uiFont(kFontPx()));
         m_sourceBtn->setFont(uiFont(kFontPx()));
         m_sourceBtn->updateGeometry();
         m_speed->updateGeometry();
+        m_trail->updateGeometry();
         applyTheme();
         syncState();
         QTimer::singleShot(0, this, &AppStatusBar::updateSeekWidth);
@@ -674,12 +710,31 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
 void AppStatusBar::syncState()
 {
     const bool hasData = m_ctrl->end() > m_ctrl->start();
+    const bool showExtras = hasData && width() >= 820;
     m_play->setEnabled(hasData);
     m_play->setIcon(m_ctrl->isPlaying() ? Icon::Pause : Icon::Play);
     m_play->setToolTip(m_ctrl->isPlaying() ? QStringLiteral("暂停") : QStringLiteral("播放"));
+    m_stepPrev->setEnabled(hasData);
+    m_stepNext->setEnabled(hasData);
+    m_stepPrev->setVisible(showExtras);
+    m_stepNext->setVisible(showExtras);
     m_seek->setEnabled(hasData);
     m_time->setVisible(hasData);
     m_speedBox->setVisible(hasData);
+    m_trail->setVisible(showExtras);
+    {
+        const double tr = m_ctrl->trailSeconds();
+        int best = 0;
+        double bestDiff = 1e18;
+        for (int i = 0; i < m_trail->count(); ++i) {
+            const double d = std::fabs(m_trail->itemData(i).toDouble() - tr);
+            if (d < bestDiff) {
+                bestDiff = d;
+                best = i;
+            }
+        }
+        m_trail->setCurrentIndex(best);
+    }
 
     // 倍速：在预设里且没点「自定义...」就选中预设，否则选「自定义...」并显示输入框
     const double speed = m_ctrl->speed();
@@ -855,15 +910,20 @@ void AppStatusBar::setLabelColor(QLabel *label, double opacity)
 void AppStatusBar::applyTheme()
 {
     m_play->setColor(m_theme.fg);
+    m_stepPrev->setColor(m_theme.fg);
+    m_stepNext->setColor(m_theme.fg);
     m_themeBtn->setColor(m_theme.fg);
     m_themeBtn->setIcon(m_theme.id == QLatin1String("dark") ? Icon::Moon
                         : m_theme.id == QLatin1String("light") ? Icon::Sun : Icon::Contrast);
     m_seek->setColors(m_theme.accent, m_theme.track);
     m_speed->setColors(m_theme.fg, m_theme.bg);
-    m_speed->view()->setStyleSheet(Theme::instance()->qss(QStringLiteral(
+    m_trail->setColors(m_theme.fg, m_theme.bg);
+    const QString dropQss = Theme::instance()->qss(QStringLiteral(
         "QAbstractItemView { background: var(--dropdown-bg); color: var(--dropdown-fg);"
         " border: 1px solid var(--border-primary); selection-background-color: var(--dropdown-hover);"
-        " selection-color: var(--text-primary); }")));
+        " selection-color: var(--text-primary); }"));
+    m_speed->view()->setStyleSheet(dropQss);
+    m_trail->view()->setStyleSheet(dropQss);
     m_customSpeed->setStyleSheet(Theme::scalePx(QStringLiteral(
         "QLineEdit { padding: 0px 4px; background: %1; border: 1px solid %2; border-radius: 3px; color: %3; }")
         .arg(cssColor(withAlpha(m_theme.fg, 0.08)), cssColor(withAlpha(m_theme.fg, 0.22)), m_theme.fg.name())));
@@ -893,6 +953,11 @@ void AppStatusBar::paintEvent(QPaintEvent *)
 void AppStatusBar::resizeEvent(QResizeEvent *e)
 {
     QWidget::resizeEvent(e);
+    const bool hasData = m_ctrl && m_ctrl->end() > m_ctrl->start();
+    const bool showExtras = hasData && width() >= 820;
+    if (m_stepPrev) m_stepPrev->setVisible(showExtras);
+    if (m_stepNext) m_stepNext->setVisible(showExtras);
+    if (m_trail) m_trail->setVisible(showExtras);
     updateSeekWidth();
 }
 
@@ -986,7 +1051,7 @@ bool AppStatusBar::checkLayout(QString *report) const
 {
     // 依次检查左、右两侧可见项：都在状态栏垂直范围内、从左到右排列、互不重叠
     QList<QWidget *> items;
-    items << m_play << m_seek << m_time << m_speed << m_customSpeed;
+    items << m_play << m_stepPrev << m_stepNext << m_seek << m_time << m_speed << m_customSpeed << m_trail;
     items << m_loadingBox << m_error << m_height << m_lonLat << m_fps;
     items << m_sourceBtn << m_count << m_themeBtn;
 

@@ -3,10 +3,12 @@
 #include "globewidget.h"
 #include "lucide.h"
 #include "managepanel.h"
+#include "replaycontroller.h"
 #include "theme.h"
 #include "trackdb.h"
 #include "uiwidgets.h"
 
+#include <QButtonGroup>
 #include <QColor>
 #include <QEvent>
 #include <QGridLayout>
@@ -18,6 +20,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <cmath>
@@ -200,6 +203,74 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
                            emit fontValueChanged(int(v));
                        });
 
+    // ---- 调试与回放（尾迹时长 + 航迹着色模式）----
+    g = addGroup(main, int(LucideIcon::Clock), QStringLiteral("调试与回放"),
+                 QStringLiteral("回放尾迹时长（0 表示保留全量历史）与航迹着色模式（默认按数据源文件配色，调试交叉航迹时可切为按批号分色）。"));
+    {
+        QWidget *row = new QWidget(g->parentWidget());
+        ui::bindSize(row, ui::SizeKind::MinHeight, 26);
+        QHBoxLayout *rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        ui::bindSpacing(rl, 8);
+        QLabel *lab = new QLabel(QStringLiteral("尾迹时长"), row);
+        lab->setObjectName(QStringLiteral("rowLabel"));
+        m_trailSlider = new QSlider(Qt::Horizontal, row);
+        m_trailSlider->setRange(0, 600);
+        m_trailSlider->setSingleStep(10);
+        m_trailSlider->setPageStep(30);
+        const int initTrail = qBound(0, int(std::lround(s.value(QStringLiteral("replay.trail_seconds"), 0.0).toDouble())), 600);
+        m_trailSlider->setValue(initTrail);
+        m_trailVal = new QLabel(row);
+        m_trailVal->setObjectName(QStringLiteral("rowValue"));
+        ui::bindSize(m_trailVal, ui::SizeKind::MinWidth, 42);
+        m_trailVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto fmtTrail = [](int sec) { return sec <= 0 ? QStringLiteral("全量") : QStringLiteral("%1s").arg(sec); };
+        m_trailVal->setText(fmtTrail(initTrail));
+        rl->addWidget(lab);
+        rl->addWidget(m_trailSlider, 1);
+        rl->addWidget(m_trailVal);
+        g->addWidget(row);
+        connect(m_trailSlider, &QSlider::valueChanged, this, [this, fmtTrail](int v) {
+            m_trailVal->setText(fmtTrail(v));
+            if (m_host.replay)
+                m_host.replay->setTrailSeconds(double(v));
+            emit trailSecondsChanged(double(v));
+        });
+    }
+    {
+        QWidget *row = new QWidget(g->parentWidget());
+        ui::bindSize(row, ui::SizeKind::MinHeight, 28);
+        QHBoxLayout *rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        ui::bindSpacing(rl, 8);
+        QLabel *lab = new QLabel(QStringLiteral("着色模式"), row);
+        lab->setObjectName(QStringLiteral("rowLabel"));
+        QWidget *seg = new QWidget(row);
+        seg->setProperty("segmented", true);
+        seg->setAttribute(Qt::WA_StyledBackground);
+        QHBoxLayout *sl = new QHBoxLayout(seg);
+        ui::bindMargins(sl, 2, 2, 2, 2);
+        ui::bindSpacing(sl, 2);
+        QButtonGroup *grp = new QButtonGroup(seg);
+        grp->setExclusive(true);
+        const int initMode = s.value(QStringLiteral("display.color_mode"), 0).toInt() == 1 ? 1 : 0;
+        const char *const labels[2] = { "按数据源", "按批号" };
+        for (int i = 0; i < 2; ++i) {
+            QPushButton *b = new QPushButton(QString::fromUtf8(labels[i]), seg);
+            b->setObjectName(QStringLiteral("colorModeBtn_%1").arg(i));
+            b->setCheckable(true);
+            b->setChecked(i == initMode);
+            b->setCursor(Qt::PointingHandCursor);
+            grp->addButton(b, i);
+            sl->addWidget(b);
+            m_colorModeBtns[i] = b;
+            connect(b, &QPushButton::clicked, this, [this, i]() { emit colorModeChanged(i); });
+        }
+        rl->addWidget(lab);
+        rl->addWidget(seg, 1);
+        g->addWidget(row);
+    }
+
     // ---- 工具 ----
     g = addGroup(main, int(LucideIcon::Wrench), QStringLiteral("工具"),
                  QStringLiteral("常用功能的快捷入口。数据管理：打开航迹管理系统（含批量数据管理）。标签显示：切换航迹标签。"
@@ -232,7 +303,7 @@ SettingsPanel::SettingsPanel(const Host &host, QWidget *parent) : QWidget(parent
     g->addWidget(grid);
     main->addStretch(1);
 
-    setThemedStyle(this, QStringLiteral(
+    setThemedStyle(this, ui::segmentedQss() + QStringLiteral(
         "#settingsPanel, #settingsScroll, #settingsContent { background: transparent; }"
         "QLabel { background: transparent; }"
         "#groupHeader { color: var(--text-primary); font-family: %1; font-size: 12px; font-weight: 600; }"
@@ -369,3 +440,24 @@ void SettingsPanel::setLineWidthValue(double px)
 }
 double SettingsPanel::pointScaleValue() const { return m_pointScale->value() * 0.1; }
 void SettingsPanel::setPointScaleValue(double scale) { m_pointScale->setValue(int(std::lround(scale / 0.1))); }
+
+void SettingsPanel::syncTrailSeconds(double seconds)
+{
+    if (!m_trailSlider || !m_trailVal)
+        return;
+    const int sec = qBound(0, int(std::lround(seconds)), 600);
+    QSignalBlocker blk(m_trailSlider);
+    m_trailSlider->setValue(sec);
+    m_trailVal->setText(sec <= 0 ? QStringLiteral("全量") : QStringLiteral("%1s").arg(sec));
+}
+
+void SettingsPanel::syncColorMode(int mode)
+{
+    const int m = mode == 1 ? 1 : 0;
+    for (int i = 0; i < 2; ++i) {
+        if (m_colorModeBtns[i]) {
+            QSignalBlocker blk(m_colorModeBtns[i]);
+            m_colorModeBtns[i]->setChecked(i == m);
+        }
+    }
+}

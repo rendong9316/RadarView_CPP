@@ -84,7 +84,9 @@ int main(int argc, char *argv[])
 
     // 自检：数据库和设置用 exe 旁的临时文件（启动时清空），确认框自动通过
 #ifdef RADARVIEW_WITH_SELFTEST
-    const bool testRun = args.contains(QStringLiteral("--selftest")) || args.contains(QStringLiteral("--tracktest"));
+    const bool testRun = args.contains(QStringLiteral("--selftest"))
+                      || args.contains(QStringLiteral("--tracktest"))
+                      || args.contains(QStringLiteral("--debugtest"));
 #else
     const bool testRun = false;
 #endif
@@ -237,6 +239,12 @@ int main(int argc, char *argv[])
     const int tt = args.indexOf(QStringLiteral("--tracktest"));
     if (tt >= 0 && tt + 2 < args.size())
         selftest::runTrackTest(&w, args.at(tt + 1), args.at(tt + 2));
+    const int dt = args.indexOf(QStringLiteral("--debugtest"));
+    if (dt >= 0 && dt + 2 < args.size()) {
+        const QString csv = (dt + 3 < args.size() && !args.at(dt + 3).startsWith(QLatin1String("--")))
+                                ? args.at(dt + 3) : QString();
+        selftest::runDebugTest(&w, args.at(dt + 1), args.at(dt + 2), csv);
+    }
 #endif
 
     return app.exec();

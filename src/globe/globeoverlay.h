@@ -39,6 +39,10 @@ public:
         double cursorLatRad = 0.0;
         int tipTrack = -1;
         int tipPoint = -1;
+        bool focusValid = false;
+        double focusLon = 0.0;
+        double focusLat = 0.0;
+        QString focusLabel;
     };
 
     explicit GlobeOverlay(QWidget *parent = nullptr);
@@ -80,6 +84,7 @@ private:
     void drawFeatures(QPainter &p);
     void drawInProgress(QPainter &p);
     void drawBand(QPainter &p);
+    void drawFocusPoint(QPainter &p);
     void drawPointTip(QPainter &p);
 
     Context m_ctx;

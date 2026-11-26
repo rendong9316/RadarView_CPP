@@ -97,6 +97,7 @@ signals:
     void sourceToggled(const QString &key);
     void themeChanged(const QString &id);
     void sourceStripToggleRequested();         // 点「数据源」：展开/收起上方数据源条
+    void stepRequested(int dir);               // 单步步进：-1 上一点 / +1 下一点
 
 protected:
     void paintEvent(QPaintEvent *e) override;
@@ -123,10 +124,13 @@ private:
     QWidget *m_speedBox = nullptr;
     QWidget *m_loadingBox = nullptr;
     statusbar_detail::IconButton *m_play = nullptr;
+    statusbar_detail::IconButton *m_stepPrev = nullptr;
+    statusbar_detail::IconButton *m_stepNext = nullptr;
     statusbar_detail::SeekBar *m_seek = nullptr;
     QLabel *m_time = nullptr;
     statusbar_detail::SpeedSelect *m_speed = nullptr;
     QLineEdit *m_customSpeed = nullptr;
+    statusbar_detail::SpeedSelect *m_trail = nullptr;
     bool m_showCustom = false;
     double m_lastSpeed = -1.0;                  // 上次同步时的倍速，用来判断倍速是否变化
 

@@ -45,6 +45,10 @@ public:
     int currentFrame() const;
     int frameCount() const { return m_data.frames.size(); }
     int frameHoldMs() const;           // 当前帧应停留的真实毫秒（自检用）
+    // 可选「同步主时钟」锁（默认关闭，不破坏窗口原有独立回放）
+    bool isSyncMasterClock() const { return m_syncMasterClock; }
+    void setSyncMasterClock(bool on);
+    void syncToMasterTime(qint64 masterTimeMs);
 
     // 航迹颜色提供者：与主窗口地图上的文件颜色保持一致
     void setTrackColorProvider(const std::function<QColor(TrackSource, const QString &)> &provider);
@@ -91,6 +95,7 @@ signals:
     void trackFocusChanged(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void trackActivated(int batchNo, TrackSource source, qint64 t0, qint64 t1);
     void isolationCleared();
+    void frameTimeActivated(qint64 timeMs);   // 开启「同步主时钟」且用户手动切帧时发出
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -137,6 +142,7 @@ private:
     QPushButton *m_playBtn = nullptr;
     QSlider *m_seekSlider = nullptr;
     QComboBox *m_speedCombo = nullptr;
+    QPushButton *m_syncClockBtn = nullptr;
     QLabel *m_timeLabel = nullptr;
     QTimer *m_playTimer = nullptr;
     QElapsedTimer m_frameClock;          // 当前帧已经显示的真实时长
@@ -144,6 +150,8 @@ private:
     bool m_playing = false;
     bool m_resumeAfterSeek = false;
     bool m_syncing = false;
+    bool m_syncMasterClock = false;
+    bool m_applyingMasterTime = false;
 
     Point3dDataset m_data;
     Point3dImportJob *m_job = nullptr;

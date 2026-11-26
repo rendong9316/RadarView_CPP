@@ -58,6 +58,12 @@ public:
     QString debugInfo() const;
     // 相机对准某经纬度（度），altKm 为离地高度
     void lookAt(double lonDeg, double latDeg, double altKm);
+    // 相机自动缩放到指定 WGS84 经纬度包围盒（右键「缩放至该航迹」等）
+    void fitGeoBounds(double minLon, double maxLon, double minLat, double maxLat);
+    // 地图定位高亮准星（点迹表双击定位 / 时序曲线光标定位）
+    void setFocusPoint(double lonDeg, double latDeg, const QString &label = QString());
+    void clearFocusPoint();
+    bool hasFocusPoint() const { return m_focusValid; }
     // 当前相机（WGS84 经纬度 + 离地高度 km），用于退出前保存 / 启动时恢复视角
     void cameraView(double *lonDeg, double *latDeg, double *altKm) const;
     void setCameraView(double lonDeg, double latDeg, double altKm);
@@ -140,6 +146,7 @@ signals:
     // 相机被用户改动（拖动结束 / 滚轮 / 复位 / 定位）：主窗口据此持久化视角
     void cameraChanged();
     void trackClicked(int index);                              // 左键单击（未拖动），空白处为 -1
+    void trackMultiSelectClicked(int index);                   // Ctrl + 左键单击：多选对比隔离
     void trackHovered(int index);                              // 悬停的航迹变化（离开为 -1）
     void trackContextMenuRequested(int index, const QPoint &globalPos);   // 右键，空白处为 -1
     void flagContextMenuRequested(const QString &flagId, const QPoint &globalPos);
@@ -182,6 +189,9 @@ private:
     SpatialLasso *m_lasso = nullptr;
     DrawingManager *m_draw = nullptr;
     int m_tipTrack = -1, m_tipPoint = -1;
+    bool m_focusValid = false;
+    double m_focusLon = 0.0, m_focusLat = 0.0;
+    QString m_focusLabel;
 
     std::unique_ptr<TileSource> m_tiles;
     NetTileSource *m_online = nullptr;       // 在线底图（天地图），为空表示离线模式

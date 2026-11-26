@@ -17,6 +17,7 @@
 #include "settingspanel.h"
 #include "sidepanels.h"
 #include "track.h"
+#include "tracklayer.h"
 
 class GlobeWidget;
 class QAction;
@@ -64,9 +65,16 @@ public:
     TrackStore *trackStore() { return &m_store; }
     ReplayController *replay() const { return m_replay; }
 
-    // 单独显示某条航迹（TrackStore 下标），-1 返回全部；回放范围随之切换
+    // 单独显示 / 多选隔离航迹（TrackStore 下标），-1 返回全部；回放范围随之切换
     void isolateTrack(int index);
     int isolatedTrack() const;
+    void toggleIsolatedTrack(int index);          // Ctrl+点击：加入/移出多选对比集合
+    QSet<int> isolatedTracks() const;
+    void zoomToTrack(int index);                  // 右键「缩放至该航迹」
+    void setTrackColorMode(TrackLayer::TrackColorMode mode);
+    TrackLayer::TrackColorMode trackColorMode() const;
+    void stepReplay(int dir);                     // 按当前显示航迹采样点单步前后跳
+    void stepReplayByMs(qint64 deltaMs);          // 按毫秒前后步进
     // 打开「查看点迹数据」窗口（非模态），返回窗口指针
     QDialog *showTrackPoints(int index);
     // 新建一个「点迹三维可视化」独立窗口（可多开）
@@ -179,11 +187,12 @@ private:
     Point3dCoordinator *m_point3d = nullptr;
     TrackImportCoordinator *m_importCtrl = nullptr;
 
-    QString m_isoKey;                       // 单独显示的航迹（按 key 记，删除航迹后下标会变）
+    QSet<QString> m_isoKeys;                // 单独显示 / 多选对比的航迹集合（按 key 记，删除航迹后下标会变）
     QSet<QString> m_dotKeys;                // 显示点迹的航迹
     QSet<QString> m_overviewDotKeys;        // 进入单条查看前的点迹选择
     bool m_haveOverviewDots = false;
     QAction *m_labelAction = nullptr;
+    QAction *m_batchColorAction = nullptr;       // 视图 → 按航迹批号分色
     QAction *m_hideAllSourcesAction = nullptr;   // 视图 → 隐藏所有数据源 / 显示所有数据源（文字随状态变）
     QAction *m_resetFiltersAction = nullptr;     // 视图 → 重置所有筛选
     QAction *m_clearDotsAction = nullptr;        // 视图 → 清空所有点迹显示
