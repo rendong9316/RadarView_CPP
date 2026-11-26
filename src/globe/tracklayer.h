@@ -57,6 +57,9 @@ public:
     bool isGroupVisible(const QString &groupKey) const;
     void setReplay(bool active, qint64 timeMs);
     void setTrailSeconds(double seconds);   // <= 0 表示显示全部历史
+    bool isReplayActive() const { return m_replay; }
+    qint64 replayTimeMs() const { return m_replayTime; }
+    double trailSeconds() const { return m_trailSeconds; }
 
     // 绘制属性（SettingsPanel）：全局线宽（像素）与按数据源的端点圆球缩放
     void setLineWidthPx(float fullPx) { m_lineWidthPx = fullPx; }

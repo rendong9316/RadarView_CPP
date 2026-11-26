@@ -7,6 +7,8 @@
 #include "point3dwindow.h"
 #include "replaycontroller.h"
 #include "track.h"
+#include "trackanalysis.h"
+#include "trackanalysiswindow.h"
 #include "tracklayer.h"
 #include "trackparsers.h"
 #include "trackpointdialog.h"
@@ -16,6 +18,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QTemporaryFile>
 #include <QTextStream>
 #include <QTimer>
 #include <QWindow>
@@ -200,9 +203,68 @@ void runDebugTest(MainWindow *w, const QString &mat, const QString &detDir, cons
                     check(rp->current() == pwin->dataset()->frames.at(targetF).timeMs,
                           QStringLiteral("点迹窗口手动切帧反向驱动主地图时钟"));
                     pwin->close();
-                    check(g->glErrorCount() == 0,
-                          QStringLiteral("全程 OpenGL 错误数=%1").arg(g->glErrorCount()));
-                    finish();
+
+                    // 7. Phase 2: 滤波残差与两航迹定量误差对比
+                    const Track &tr0 = store->tracks().at(0);
+                    const QVector<trackanalysis::FilterResidualPoint> res = trackanalysis::computeFilterResiduals(tr0);
+                    check(!res.isEmpty() && res.first().hasPred && std::isfinite(res.first().predGeoErrKm),
+                          QStringLiteral("Phase 2 滤波残差计算：航迹 %1 得 %2 帧新息（首帧水平误差 %3 km）")
+                              .arg(tr0.id).arg(res.size())
+                              .arg(res.isEmpty() ? -1.0 : res.first().predGeoErrKm, 0, 'f', 3));
+
+                    const trackanalysis::TrackCompareResult cmpSP =
+                        trackanalysis::compareTracks(tr0.points, tr0.predPoints, 30000);
+                    check(cmpSP.timeOverlapped && cmpSP.geoDistKm.valid() && cmpSP.samples.size() > 5,
+                          QStringLiteral("Phase 2 同航迹平滑 vs 预测对比：N=%1 RMSE=%2 km Max=%3 km")
+                              .arg(cmpSP.samples.size())
+                              .arg(cmpSP.geoDistKm.rmse, 0, 'f', 3)
+                              .arg(cmpSP.geoDistKm.maxAbs, 0, 'f', 3));
+
+                    // 无重叠时间窗安全处理
+                    QVector<TrackPoint> shifted = tr0.points;
+                    for (TrackPoint &pt : shifted)
+                        pt.t += 86400LL * 1000LL * 30LL;
+                    const trackanalysis::TrackCompareResult cmpNone = trackanalysis::compareTracks(tr0.points, shifted, 30000);
+                    check(!cmpNone.timeOverlapped && cmpNone.samples.isEmpty(),
+                          QStringLiteral("Phase 2 非重叠时间窗安全返回空对比"));
+
+                    // 开启滤波叠加对比并渲染验证
+                    w->isolateTrack(0);
+                    w->zoomToTrack(0);
+                    rp->stop();
+                    w->setFilterOverlayEnabled(true);
+                    TrackAnalysisWindow *awin = w->showTrackAnalysis(0, 0);
+                    check(awin != nullptr && awin->seriesChartCount() >= 4,
+                          QStringLiteral("Phase 2 打开时序分析窗口并生成 %1 张曲线图")
+                              .arg(awin ? awin->seriesChartCount() : 0));
+                    if (awin) {
+                        awin->openForTrack(0, 1);
+                        check(awin->lastCompareResult().samples.size() > 0,
+                              QStringLiteral("Phase 2 误差对比页生成配对样本 %1 条")
+                                  .arg(awin->lastCompareResult().samples.size()));
+                        QTemporaryFile tf;
+                        tf.open();
+                        const QString csvPath = tf.fileName() + QStringLiteral(".csv");
+                        tf.close();
+                        QString csvErr;
+                        const bool expOk = awin->exportLastCompareCsv(csvPath, &csvErr);
+                        check(expOk && QFileInfo(csvPath).size() > 100,
+                              QStringLiteral("Phase 2 导出对比 CSV 成功（%1 字节）").arg(QFileInfo(csvPath).size()));
+                        QFile::remove(csvPath);
+                    }
+                    afterFrames([=]() {
+                        check(g->filterOverlayItemsDrawn() > 0,
+                              QStringLiteral("Phase 2 地图同屏滤波叠加绘制图元=%1").arg(g->filterOverlayItemsDrawn()));
+                        check(g->compareLinksDrawn() > 0,
+                              QStringLiteral("Phase 2 地图误差对比连线绘制=%1").arg(g->compareLinksDrawn()));
+                        if (awin)
+                            awin->close();
+                        w->setFilterOverlayEnabled(false);
+                        w->isolateTrack(-1);
+                        check(g->glErrorCount() == 0,
+                              QStringLiteral("全程 OpenGL 错误数=%1").arg(g->glErrorCount()));
+                        finish();
+                    });
                 });
                 pollLoad->start();
             });

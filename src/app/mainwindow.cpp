@@ -46,6 +46,7 @@
 #include "theme.h"
 #include "trackdb.h"
 #include "trackimportcoordinator.h"
+#include "trackanalysiswindow.h"
 #include "tracklayer.h"
 #include "trackpointdialog.h"
 #include "uiwidgets.h"
@@ -250,6 +251,8 @@ MainWindow::MainWindow(QWidget *parent)
         refreshSources();
         m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
         applyDisplay();
+        if (m_analysisWin)
+            m_analysisWin->refreshTracks();
     });
     connect(m_manage, &ManageState::displayChanged, this, &MainWindow::applyDisplay);
     connect(m_managePanel, &ManagePanel::viewPointsRequested, this, [this](const QString &key) {
@@ -588,6 +591,8 @@ void MainWindow::onTracksImported(int beforeCount, bool firstData)
     // 第一次导入时把视角移到数据中心
     if (firstData && m_store.size() > beforeCount)
         centerGlobeOnTracks(m_globe, m_store);
+    if (m_analysisWin)
+        m_analysisWin->refreshTracks();
     m_globe->update();
 }
 
@@ -1073,6 +1078,65 @@ QDialog *MainWindow::showTrackPoints(int index)
     return dlg;
 }
 
+TrackAnalysisWindow *MainWindow::showTrackAnalysis(int index, int tabIndex)
+{
+    if (!m_analysisWin) {
+        m_analysisWin = new TrackAnalysisWindow(&m_store, nullptr);
+        m_analysisWin->setAttribute(Qt::WA_DeleteOnClose);
+        connect(m_analysisWin, &TrackAnalysisWindow::replaySeekRequested, m_replay, &ReplayController::seekTime);
+        connect(m_analysisWin, &TrackAnalysisWindow::timeLocateRequested, this,
+                [this](const QString &trackKey, qint64, double lonDeg, double latDeg, const QString &label) {
+                    const int idx = m_store.indexOf(trackKey);
+                    if (idx >= 0 && !pointDotsShown(idx))
+                        togglePointDots(idx);
+                    m_globe->setFocusPoint(lonDeg, latDeg, label);
+                });
+        connect(m_analysisWin, &TrackAnalysisWindow::compareOverlayChanged, m_globe, &GlobeWidget::setCompareLinks);
+    }
+    m_analysisWin->setReplayTime(m_replay->current(), m_replay->isActive());
+    if (index >= 0) {
+        m_analysisWin->openForTrack(index, tabIndex);
+    } else {
+        // 若多选隔离正好 2 条航迹且打开误差对比页，直接带入该两航迹
+        const QSet<int> iso = isolatedTracks();
+        if (tabIndex == 1 && iso.size() == 2) {
+            auto it = iso.constBegin();
+            const int a = *it;
+            ++it;
+            const int b = *it;
+            m_analysisWin->openCompare(a, b);
+        } else {
+            m_analysisWin->openForTrack(isolatedTrack(), tabIndex);
+        }
+    }
+    return m_analysisWin.data();
+}
+
+TrackAnalysisWindow *MainWindow::analysisWindow() const
+{
+    return m_analysisWin.data();
+}
+
+void MainWindow::setFilterOverlayEnabled(bool on)
+{
+    GlobeOverlay::FilterOverlayState st = m_globe->filterOverlay();
+    st.enabled = on;
+    m_globe->setFilterOverlay(st);
+    if (m_filterOverlayBtn) {
+        QSignalBlocker blk(m_filterOverlayBtn);
+        m_filterOverlayBtn->setChecked(on);
+    }
+    if (m_filterOverlayAction) {
+        QSignalBlocker blk(m_filterOverlayAction);
+        m_filterOverlayAction->setChecked(on);
+    }
+}
+
+bool MainWindow::filterOverlayEnabled() const
+{
+    return m_globe->filterOverlay().enabled;
+}
+
 bool MainWindow::pointDotsShown(int index) const
 {
     return index >= 0 && index < m_store.size() && m_dotKeys.contains(m_store.tracks()[index].key());
@@ -1168,6 +1232,8 @@ void MainWindow::onTrackContextMenu(int index, const QPoint &globalPos)
                  [this, index]() { setTrackColor(index); });
     menu.addItem(LucideIcon::FileText, QStringLiteral("详细信息"), [this, index]() { showTrackDetail(index); });
     menu.addItem(LucideIcon::ClipboardList, QStringLiteral("查看点迹数据"), [this, index]() { showTrackPoints(index); });
+    menu.addItem(LucideIcon::ChartColumn, QStringLiteral("时序曲线分析..."), [this, index]() { showTrackAnalysis(index, 0); });
+    menu.addItem(LucideIcon::Layers, QStringLiteral("航迹误差对比..."), [this, index]() { showTrackAnalysis(index, 1); });
     menu.addItem(LucideIcon::Trash2, QStringLiteral("删除该航迹"), [this, index]() { deleteTrackFromMap(index); }, true);
     menu.exec(globalPos);
 }
@@ -1202,6 +1268,8 @@ void MainWindow::syncReplayToLayer()
     m_globe->update();
     if (m_replay->isActive())
         m_point3d->onMasterTimeChanged(m_replay->current());
+    if (m_analysisWin)
+        m_analysisWin->setReplayTime(m_replay->current(), m_replay->isActive());
 }
 
 void MainWindow::toggleLabels()
@@ -1395,6 +1463,27 @@ void MainWindow::buildMenuBar()
             connect(a, &QAction::triggered, this, [this, mode]() { setRadarPointMode(mode); });
         }
     }
+    QMenu *mFilterOv = mView->addMenu(tr("滤波叠加对比"));
+    {
+        m_filterOverlayAction = mFilterOv->addAction(tr("启用平滑/关联/预测同屏叠加"));
+        m_filterOverlayAction->setCheckable(true);
+        connect(m_filterOverlayAction, &QAction::toggled, this, &MainWindow::setFilterOverlayEnabled);
+        mFilterOv->addSeparator();
+        const char *const subNames[3] = { "显示关联点（◇）", "显示预测点与折线（×）", "显示预测→关联新息残差线" };
+        for (int i = 0; i < 3; ++i) {
+            QAction *sa = mFilterOv->addAction(QString::fromUtf8(subNames[i]));
+            sa->setCheckable(true);
+            sa->setChecked(true);
+            m_filterOverlaySub[i] = sa;
+            connect(sa, &QAction::toggled, this, [this, i](bool on) {
+                GlobeOverlay::FilterOverlayState st = m_globe->filterOverlay();
+                if (i == 0) st.showAssociated = on;
+                else if (i == 1) st.showPredicted = on;
+                else st.showResiduals = on;
+                m_globe->setFilterOverlay(st);
+            });
+        }
+    }
     mView->addSeparator();
     item(mView, tr("新建点迹三维窗口"), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_P),
          [this]() { showPoint3dWindow(); });
@@ -1406,6 +1495,11 @@ void MainWindow::buildMenuBar()
     });
 
     QMenu *mTools = mb->addMenu(tr("工具"));
+    item(mTools, tr("时序曲线分析..."), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_A),
+         [this]() { showTrackAnalysis(isolatedTrack(), 0); });
+    item(mTools, tr("两航迹定量误差对比..."), QKeySequence(),
+         [this]() { showTrackAnalysis(-1, 1); });
+    mTools->addSeparator();
     item(mTools, tr("旗标管理"), QKeySequence(), [this]() { activatePanel(PanelId::Flags); });
     item(mTools, tr("清除所有旗标"), QKeySequence(), [this]() {
         if (ui::confirm(this, QStringLiteral("确定要清除地图上所有旗标吗？此操作不可撤销。"), QStringLiteral("清除旗标")))
@@ -1467,10 +1561,22 @@ void MainWindow::buildMenuBar()
         connect(b, &QPushButton::clicked, this, [this, mode]() { setRadarPointMode(mode); });
     }
     cl->addWidget(seg);
+    m_filterOverlayBtn = new QPushButton(tr("叠加对比"), corner);
+    m_filterOverlayBtn->setObjectName(QStringLiteral("filterOverlayBtn"));
+    m_filterOverlayBtn->setCheckable(true);
+    m_filterOverlayBtn->setCursor(Qt::PointingHandCursor);
+    m_filterOverlayBtn->setFocusPolicy(Qt::NoFocus);
+    m_filterOverlayBtn->setToolTip(tr("同屏叠加雷达关联点(◇)、预测点(×)与预测→关联新息残差连线"));
+    connect(m_filterOverlayBtn, &QPushButton::toggled, this, &MainWindow::setFilterOverlayEnabled);
+    cl->addWidget(m_filterOverlayBtn);
     setThemedStyle(corner, ui::segmentedQss() + QStringLiteral(
         "#pointModeCorner { background: transparent; }"
         "#pointModeLabel { color: var(--text-secondary); background: transparent; font-family: %1; font-size: 11px; }"
-        "QWidget[segmented=\"true\"] QPushButton { padding: 2px 8px; font-size: 11px; }")
+        "QWidget[segmented=\"true\"] QPushButton { padding: 2px 8px; font-size: 11px; }"
+        "#filterOverlayBtn { padding: 2px 8px; font-size: 11px; border-radius: 4px;"
+        " border: 1px solid var(--border-primary); background: var(--button-bg); color: var(--button-fg); }"
+        "#filterOverlayBtn:hover { background: var(--button-hover); color: var(--text-primary); }"
+        "#filterOverlayBtn:checked { background: var(--accent-primary); color: var(--accent-fg); border-color: var(--accent-primary); font-weight: 600; }")
         .arg(ui::uiFamilies()));
     mb->setCornerWidget(corner, Qt::TopRightCorner);
 }

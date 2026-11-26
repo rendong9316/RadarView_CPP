@@ -41,6 +41,7 @@ SOURCES += \
     src/core/crs.cpp \
     src/core/geocalc.cpp \
     src/core/track.cpp \
+    src/core/trackanalysis.cpp \
     src/core/replaycontroller.cpp \
     # io
     src/io/matfile.cpp \
@@ -67,6 +68,8 @@ SOURCES += \
     src/ui/settingspanel.cpp \
     src/ui/trackpointdialog.cpp \
     src/ui/trackpicker.cpp \
+    src/ui/timeserieschart.cpp \
+    src/ui/trackanalysiswindow.cpp \
     # point3d
     src/point3d/point3dparsers.cpp \
     src/point3d/point3dimportjob.cpp \
@@ -93,6 +96,7 @@ HEADERS += \
     src/core/crs.h \
     src/core/geocalc.h \
     src/core/track.h \
+    src/core/trackanalysis.h \
     src/core/replaycontroller.h \
     # io
     src/io/matfile.h \
@@ -119,6 +123,8 @@ HEADERS += \
     src/ui/settingspanel.h \
     src/ui/trackpointdialog.h \
     src/ui/trackpicker.h \
+    src/ui/timeserieschart.h \
+    src/ui/trackanalysiswindow.h \
     # point3d
     src/point3d/point3dtypes.h \
     src/point3d/point3dparsers.h \

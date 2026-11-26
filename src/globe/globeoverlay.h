@@ -6,7 +6,10 @@
 #include <QPointF>
 #include <QRectF>
 #include <QString>
+#include <QVector>
 #include <QWidget>
+
+#include "trackanalysis.h"
 
 class DrawingManager;
 class FlagStore;
@@ -25,6 +28,14 @@ struct Track;
 class GlobeOverlay : public QWidget
 {
 public:
+    // 同航迹平滑/关联/预测同屏滤波叠加选项
+    struct FilterOverlayState {
+        bool enabled = false;
+        bool showAssociated = true;
+        bool showPredicted = true;
+        bool showResiduals = true;
+    };
+
     struct Context {
         const GlobeCamera *camera = nullptr;
         const TrackLayer *trackLayer = nullptr;
@@ -43,6 +54,10 @@ public:
         double focusLon = 0.0;
         double focusLat = 0.0;
         QString focusLabel;
+        FilterOverlayState filterOverlay;
+        bool compareLinksVisible = false;
+        int compareMaxIdx = -1;
+        const QVector<trackanalysis::TrackDiffSample> *compareSamples = nullptr;
     };
 
     explicit GlobeOverlay(QWidget *parent = nullptr);
@@ -72,6 +87,8 @@ public:
     int lassoVerticesDrawn() const { return m_lassoVerticesDrawn; }
     int featuresDrawn() const { return m_featuresDrawn; }
     int drawPreviewSegments() const { return m_drawPreviewSegments; }
+    int filterOverlayItemsDrawn() const { return m_filterOverlayItems; }
+    int compareLinksDrawn() const { return m_compareLinksDrawn; }
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -84,6 +101,8 @@ private:
     void drawFeatures(QPainter &p);
     void drawInProgress(QPainter &p);
     void drawBand(QPainter &p);
+    void drawFilterOverlay(QPainter &p);
+    void drawCompareLinks(QPainter &p);
     void drawFocusPoint(QPainter &p);
     void drawPointTip(QPainter &p);
 
@@ -99,6 +118,8 @@ private:
     int m_lassoVerticesDrawn = 0;
     int m_featuresDrawn = 0;
     int m_drawPreviewSegments = 0;
+    int m_filterOverlayItems = 0;
+    int m_compareLinksDrawn = 0;
 
     QHash<QString, QPixmap> m_labelCache;   // 标签文字 + 颜色 -> 带描边的位图
     QPixmap m_flagIcon;

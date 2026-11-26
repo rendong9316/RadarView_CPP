@@ -14,8 +14,10 @@
 #include "drawingmanager.h"
 #include "globecamera.h"
 #include "globedrawcontroller.h"
+#include "globeoverlay.h"
 #include "globesurface.h"
 #include "tilesource.h"
+#include "trackanalysis.h"
 #include "tracklayer.h"
 
 class GlobeOverlay;
@@ -64,6 +66,13 @@ public:
     void setFocusPoint(double lonDeg, double latDeg, const QString &label = QString());
     void clearFocusPoint();
     bool hasFocusPoint() const { return m_focusValid; }
+    // 同航迹滤波叠加对比（关联点 / 预测点 / 新息残差线）
+    void setFilterOverlay(const GlobeOverlay::FilterOverlayState &st);
+    const GlobeOverlay::FilterOverlayState &filterOverlay() const { return m_filterOverlay; }
+    // 两航迹误差对比连线叠加
+    void setCompareLinks(const QVector<trackanalysis::TrackDiffSample> &samples, int maxErrIdx, bool visible);
+    int filterOverlayItemsDrawn() const;
+    int compareLinksDrawn() const;
     // 当前相机（WGS84 经纬度 + 离地高度 km），用于退出前保存 / 启动时恢复视角
     void cameraView(double *lonDeg, double *latDeg, double *altKm) const;
     void setCameraView(double lonDeg, double latDeg, double altKm);
@@ -192,6 +201,10 @@ private:
     bool m_focusValid = false;
     double m_focusLon = 0.0, m_focusLat = 0.0;
     QString m_focusLabel;
+    GlobeOverlay::FilterOverlayState m_filterOverlay;
+    QVector<trackanalysis::TrackDiffSample> m_compareSamples;
+    int m_compareMaxIdx = -1;
+    bool m_compareLinksVisible = false;
 
     std::unique_ptr<TileSource> m_tiles;
     NetTileSource *m_online = nullptr;       // 在线底图（天地图），为空表示离线模式

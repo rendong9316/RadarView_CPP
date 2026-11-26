@@ -13,6 +13,7 @@
 #include <QPainterPath>
 #include <QtMath>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -122,10 +123,14 @@ void GlobeOverlay::paintEvent(QPaintEvent *)
     QPainter p(this);
     m_labelsDrawn = m_flagsDrawn = m_rulerMarkersDrawn = m_lassoVerticesDrawn = 0;
     m_featuresDrawn = 0;
+    m_filterOverlayItems = 0;
+    m_compareLinksDrawn = 0;
     if (!m_wanted || !m_ctx.camera)
         return;
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
+    drawFilterOverlay(p);
+    drawCompareLinks(p);
     drawLabels(p);
     drawFeatures(p);
     drawInProgress(p);
@@ -691,6 +696,172 @@ void GlobeOverlay::drawFocusPoint(QPainter &p)
         const QFontMetricsF fm(f);
         const QPointF base(sp.x() + 18.0, sp.y() - 6.0);
         drawOutlinedText(p, base, m_ctx.focusLabel, f, ring, Qt::black, 2.5);
+    }
+    p.restore();
+}
+
+void GlobeOverlay::drawFilterOverlay(QPainter &p)
+{
+    m_filterOverlayItems = 0;
+    const FilterOverlayState &st = m_ctx.filterOverlay;
+    if (!st.enabled || !m_ctx.camera || !m_ctx.trackStore || !m_ctx.trackLayer)
+        return;
+    const QSize vp = size();
+    const GlobeCamera &cam = *m_ctx.camera;
+    const TrackLayer *layer = m_ctx.trackLayer;
+    const QVector<Track> &tracks = m_ctx.trackStore->tracks();
+
+    const bool replay = layer->isReplayActive();
+    const qint64 rTime = layer->replayTimeMs();
+    const double trailSec = layer->trailSeconds();
+    const qint64 winLo = (replay && trailSec > 0.0) ? (rTime - qint64(trailSec * 1000.0)) : std::numeric_limits<qint64>::min();
+    const qint64 winHi = replay ? rTime : std::numeric_limits<qint64>::max();
+
+    auto inWindow = [winLo, winHi](qint64 t) { return t >= winLo && t <= winHi; };
+
+    // 防止全量几千条航迹同时开启叠加导致软绘卡顿：上限 5000 点
+    const int kPointBudget = 5000;
+    int budgetUsed = 0;
+    bool budgetHit = false;
+
+    const QColor colAssc(0x22, 0xc5, 0x5e);     // 绿：关联点（空心菱形）
+    const QColor colPred(0xf5, 0x9e, 0x0b);     // 琥珀：预测点（叉号+虚线）
+    const QColor colRes(0xf4, 0x3f, 0x5e);      // 玫红：预测 -> 关联 残差新息线
+
+    p.save();
+    for (int i = 0; i < tracks.size(); ++i) {
+        if (!layer->isTrackShown(i))
+            continue;
+        const Track &t = tracks[i];
+        if (t.source != TrackSource::Radar || (!t.hasRawPoints() && !t.hasPredPoints()))
+            continue;
+        const int need = t.rawPoints.size() + t.predPoints.size();
+        if (budgetUsed > 0 && budgetUsed + need > kPointBudget) {
+            budgetHit = true;
+            break;
+        }
+        budgetUsed += need;
+
+        // 1) 预测点折线 + × 标记
+        if (st.showPredicted && t.hasPredPoints()) {
+            QPen dashPen(QColor(colPred.red(), colPred.green(), colPred.blue(), 190), 1.4, Qt::DashLine);
+            p.setPen(dashPen);
+            p.setBrush(Qt::NoBrush);
+            QPolygonF poly;
+            for (const TrackPoint &pt : t.predPoints) {
+                if (!inWindow(pt.t))
+                    continue;
+                QPointF sp;
+                if (cam.visiblePos(pt.lon, pt.lat, TrackLayer::kAltitudeM, vp, &sp)) {
+                    poly.append(sp);
+                } else if (poly.size() >= 2) {
+                    p.drawPolyline(poly);
+                    poly.clear();
+                } else {
+                    poly.clear();
+                }
+            }
+            if (poly.size() >= 2)
+                p.drawPolyline(poly);
+
+            p.setPen(QPen(colPred, 1.5));
+            for (const TrackPoint &pt : t.predPoints) {
+                if (!inWindow(pt.t))
+                    continue;
+                QPointF sp;
+                if (!cam.visiblePos(pt.lon, pt.lat, TrackLayer::kAltitudeM, vp, &sp))
+                    continue;
+                const double r = 3.2;
+                p.drawLine(QPointF(sp.x() - r, sp.y() - r), QPointF(sp.x() + r, sp.y() + r));
+                p.drawLine(QPointF(sp.x() - r, sp.y() + r), QPointF(sp.x() + r, sp.y() - r));
+                ++m_filterOverlayItems;
+            }
+        }
+
+        // 2) 预测 -> 关联 残差新息连线
+        if (st.showResiduals && t.hasRawPoints() && t.hasPredPoints()) {
+            const QVector<trackanalysis::FilterResidualPoint> res = trackanalysis::computeFilterResiduals(t);
+            p.setPen(QPen(QColor(colRes.red(), colRes.green(), colRes.blue(), 220), 1.6, Qt::SolidLine));
+            for (const auto &r : res) {
+                if (!r.hasPred || !inWindow(r.timeMs))
+                    continue;
+                QPointF spP, spA;
+                if (cam.visiblePos(r.predLon, r.predLat, TrackLayer::kAltitudeM, vp, &spP)
+                        && cam.visiblePos(r.asscLon, r.asscLat, TrackLayer::kAltitudeM, vp, &spA)) {
+                    p.drawLine(spP, spA);
+                    ++m_filterOverlayItems;
+                }
+            }
+        }
+
+        // 3) 关联点（空心菱形）
+        if (st.showAssociated && t.hasRawPoints()) {
+            p.setPen(QPen(colAssc, 1.6));
+            p.setBrush(QColor(colAssc.red(), colAssc.green(), colAssc.blue(), 60));
+            for (const TrackPoint &pt : t.rawPoints) {
+                if (!inWindow(pt.t))
+                    continue;
+                QPointF sp;
+                if (!cam.visiblePos(pt.lon, pt.lat, TrackLayer::kAltitudeM, vp, &sp))
+                    continue;
+                const double r = 4.2;
+                const QPointF dia[4] = {
+                    QPointF(sp.x(), sp.y() - r), QPointF(sp.x() + r, sp.y()),
+                    QPointF(sp.x(), sp.y() + r), QPointF(sp.x() - r, sp.y())
+                };
+                p.drawPolygon(dia, 4);
+                ++m_filterOverlayItems;
+            }
+        }
+    }
+
+    // 右上角轻量图例（开启叠加对比时常驻）
+    const QFont f = remFont(0.78, false);
+    const QFontMetricsF fm(f);
+    QString legend = QStringLiteral("滤波叠加：◇关联点  ×预测点  —新息残差");
+    if (budgetHit)
+        legend += QStringLiteral("（已达上限，请独显或筛选少量航迹）");
+    const double w = fm.horizontalAdvance(legend) + 16.0;
+    const double h = fm.height() + 8.0;
+    const QRectF box(width() - w - 12.0, 10.0, w, h);
+    p.setPen(QPen(QColor(255, 255, 255, 60), 1.0));
+    p.setBrush(QColor(15, 23, 42, 190));
+    p.drawRoundedRect(box, 4.0, 4.0);
+    p.setFont(f);
+    p.setPen(Qt::white);
+    p.drawText(box, Qt::AlignCenter, legend);
+    p.restore();
+}
+
+void GlobeOverlay::drawCompareLinks(QPainter &p)
+{
+    m_compareLinksDrawn = 0;
+    if (!m_ctx.compareLinksVisible || !m_ctx.compareSamples || m_ctx.compareSamples->isEmpty() || !m_ctx.camera)
+        return;
+    const QSize vp = size();
+    const GlobeCamera &cam = *m_ctx.camera;
+    const QVector<trackanalysis::TrackDiffSample> &samples = *m_ctx.compareSamples;
+
+    p.save();
+    for (int i = 0; i < samples.size(); ++i) {
+        const auto &s = samples[i];
+        QPointF spA, spB;
+        if (!cam.visiblePos(s.lonA, s.latA, TrackLayer::kAltitudeM, vp, &spA)
+                || !cam.visiblePos(s.lonB, s.latB, TrackLayer::kAltitudeM, vp, &spB))
+            continue;
+        const bool isMax = (i == m_ctx.compareMaxIdx);
+        p.setPen(QPen(isMax ? QColor(0xef, 0x44, 0x44) : QColor(0xec, 0x48, 0x99, 195),
+                      isMax ? 2.6 : 1.4));
+        p.drawLine(spA, spB);
+        if (isMax) {
+            p.setBrush(QColor(0xef, 0x44, 0x44));
+            p.drawEllipse(spB, 4.5, 4.5);
+            const QFont f = remFont(0.8, true);
+            const QString txt = QStringLiteral("Max %1 km").arg(s.geoDistKm, 0, 'f', 2);
+            drawOutlinedText(p, QPointF(spB.x() + 8.0, spB.y() - 6.0), txt, f,
+                             QColor(0xff, 0x80, 0x80), Qt::black, 2.2);
+        }
+        ++m_compareLinksDrawn;
     }
     p.restore();
 }

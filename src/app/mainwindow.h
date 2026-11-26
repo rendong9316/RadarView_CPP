@@ -37,6 +37,7 @@ class RulerState;
 class SpatialLasso;
 class DrawingManager;
 class Point3dWindow;
+class TrackAnalysisWindow;
 class DrawingController;
 class MapSourceController;
 class Point3dCoordinator;
@@ -77,6 +78,11 @@ public:
     void stepReplayByMs(qint64 deltaMs);          // 按毫秒前后步进
     // 打开「查看点迹数据」窗口（非模态），返回窗口指针
     QDialog *showTrackPoints(int index);
+    // 打开「航迹时序分析与定量对比」窗口（tabIndex: 0=时序曲线, 1=误差对比）
+    TrackAnalysisWindow *showTrackAnalysis(int index = -1, int tabIndex = 0);
+    TrackAnalysisWindow *analysisWindow() const;
+    void setFilterOverlayEnabled(bool on);
+    bool filterOverlayEnabled() const;
     // 新建一个「点迹三维可视化」独立窗口（可多开）
     void showPoint3dWindow();
     QList<Point3dWindow *> point3dWindows() const;   // 当前打开的点迹窗口（回归/演示用）
@@ -199,6 +205,10 @@ private:
     RadarPointMode m_radarMode = RadarPointMode::Smooth;
     QPushButton *m_pointModeBtns[3] = { nullptr, nullptr, nullptr };
     QAction *m_pointModeActions[3] = { nullptr, nullptr, nullptr };
+    QPushButton *m_filterOverlayBtn = nullptr;
+    QAction *m_filterOverlayAction = nullptr;
+    QAction *m_filterOverlaySub[3] = { nullptr, nullptr, nullptr };
+    QPointer<TrackAnalysisWindow> m_analysisWin;
     QHash<QString, QString> m_batchLabels;       // 来源::文件名 → 数据源显示名（批量数据管理里重命名）
 
     QTimer *m_uiSaveTimer = nullptr;     // UI 状态合并保存

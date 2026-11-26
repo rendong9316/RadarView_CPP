@@ -299,6 +299,32 @@ void GlobeWidget::clearFocusPoint()
     update();
 }
 
+void GlobeWidget::setFilterOverlay(const GlobeOverlay::FilterOverlayState &st)
+{
+    m_filterOverlay = st;
+    syncOverlayContext();
+    update();
+}
+
+void GlobeWidget::setCompareLinks(const QVector<trackanalysis::TrackDiffSample> &samples, int maxErrIdx, bool visible)
+{
+    m_compareSamples = samples;
+    m_compareMaxIdx = maxErrIdx;
+    m_compareLinksVisible = visible && !m_compareSamples.isEmpty();
+    syncOverlayContext();
+    update();
+}
+
+int GlobeWidget::filterOverlayItemsDrawn() const
+{
+    return m_overlay ? m_overlay->filterOverlayItemsDrawn() : 0;
+}
+
+int GlobeWidget::compareLinksDrawn() const
+{
+    return m_overlay ? m_overlay->compareLinksDrawn() : 0;
+}
+
 void GlobeWidget::setTrackStore(const TrackStore *store)
 {
     m_trackStore = store;
@@ -480,6 +506,10 @@ void GlobeWidget::syncOverlayContext()
     ctx.focusLon = m_focusLon;
     ctx.focusLat = m_focusLat;
     ctx.focusLabel = m_focusLabel;
+    ctx.filterOverlay = m_filterOverlay;
+    ctx.compareLinksVisible = m_compareLinksVisible;
+    ctx.compareMaxIdx = m_compareMaxIdx;
+    ctx.compareSamples = &m_compareSamples;
     m_overlay->setContext(ctx);
 }
 
@@ -590,6 +620,8 @@ void GlobeWidget::paintGL()
                          || (m_draw && !m_draw->features().isEmpty())
                          || m_drawCtrl.hasOverlayContent()
                          || m_focusValid
+                         || m_filterOverlay.enabled
+                         || m_compareLinksVisible
                          || m_tipTrack >= 0;
     if (overlay || (m_overlay && m_overlay->isWanted())) {
         syncOverlayContext();
