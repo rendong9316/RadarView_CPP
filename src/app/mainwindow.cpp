@@ -1,107 +1,53 @@
 #include "mainwindow.h"
 
-#include <QSplitter>
-#include <QMenuBar>
-#include <QMenu>
 #include <QAction>
-#include <QStackedWidget>
-#include <QScrollArea>
-#include <QLabel>
-#include <QPushButton>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QApplication>
-#include <QFileDialog>
-#include <QMessageBox>
-#include <QSignalBlocker>
-#include <QDir>
-#include <QFileInfo>
-#include <QFile>
-#include <QKeySequence>
-#include <QEvent>
-#include <QActionGroup>
-#include <QColorDialog>
-#include <QDialog>
-#include <QDoubleSpinBox>
-#include <QToolBar>
-#include <QToolButton>
-#include <QSpinBox>
-#include <QUndoStack>
-#include <QWidgetAction>
-#include <QLocale>
 #include <QCloseEvent>
+#include <QColorDialog>
+#include <QDoubleSpinBox>
+#include <QEvent>
+#include <QFileDialog>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QPainter>
-#include <QSaveFile>
+#include <QKeySequence>
+#include <QLabel>
+#include <QLocale>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QSplitter>
+#include <QStackedWidget>
 #include <QTimer>
+#include <QVBoxLayout>
+#include <QWidgetAction>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 #include "apppaths.h"
 #include "appstatusbar.h"
-#include "drawingmanager.h"
+#include "drawingcontroller.h"
 #include "globewidget.h"
 #include "managepanel.h"
+#include "mapsourcecontroller.h"
 #include "maptools.h"
+#include "point3dcoordinator.h"
 #include "replaycontroller.h"
+#include "settingspanel.h"
 #include "spatiallasso.h"
 #include "theme.h"
 #include "trackdb.h"
-#include "trackimporter.h"
+#include "trackimportcoordinator.h"
 #include "tracklayer.h"
 #include "trackpointdialog.h"
 #include "uiwidgets.h"
-#include "settingspanel.h"
-#include "point3dwindow.h"
-#include "point3dtypes.h"
 
 namespace {
-
-// 内置天地图 key（个人版）。需要换 key 时改这里，或用启动参数 --online-key 覆盖
-const char *const kTdtToken = "5e2d0f18562e921064ef494dd4cd76eb";
-
-const int kSidebarDefault = 280, kSidebarMin = 200, kSidebarMax = 900;
-
-struct PanelDef { LucideIcon icon; const char *tooltip; const char *title; };
-const PanelDef kPanels[] = {
-    { LucideIcon::ChartColumn, "航迹管理系统 (Ctrl+Shift+M)", "航迹管理系统" },
-    { LucideIcon::Flag, "旗标面板 (Ctrl+Shift+F)", "旗标面板" },
-    { LucideIcon::Funnel, "时间筛选 (Ctrl+Shift+E)", "筛选" },
-    { LucideIcon::Settings, "设置", "设置" },
-};
-
-// 活动栏按钮：48×48，24px 图标；悬停 / 选中为 --activitybar-active，选中时左侧 2px 竖条
-class ActivityButton : public QAbstractButton
-{
-public:
-    ActivityButton(LucideIcon icon, QWidget *parent) : QAbstractButton(parent), m_icon(icon)
-    {
-        ui::bindSize(this, ui::SizeKind::Fixed, 48, 48);
-        setCursor(Qt::PointingHandCursor);
-        setAttribute(Qt::WA_Hover);
-        setFocusPolicy(Qt::NoFocus);
-    }
-    bool active = false;
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        if (active)
-            p.fillRect(QRect(0, 0, ui::sz(2), height()), themeColor("activitybar-active-border"));
-        const QColor c = themeColor(active || underMouse() ? "activitybar-active" : "activitybar-fg");
-        const double ic = ui::sz(24);
-        drawLucide(p, m_icon, QRectF((width() - ic) / 2.0, (height() - ic) / 2.0, ic, ic), c);
-    }
-    void enterEvent(QEvent *) override { update(); }
-    void leaveEvent(QEvent *) override { update(); }
-
-private:
-    LucideIcon m_icon;
-};
 
 QString menuQss()
 {
@@ -119,145 +65,23 @@ QString menuQss()
         .arg(ui::uiFamilies());
 }
 
-} // namespace
-
-// ---------------------------------------------------------------
-//  活动栏
-// ---------------------------------------------------------------
-ActivityBar::ActivityBar(QWidget *parent) : QWidget(parent)
+void centerGlobeOnTracks(GlobeWidget *globe, const TrackStore &store)
 {
-    setObjectName(QStringLiteral("activityBar"));
-    ui::bindSize(this, ui::SizeKind::FixedWidth, 48);
-    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-    QVBoxLayout *lay = new QVBoxLayout(this);
-    lay->setContentsMargins(0, 0, 0, 0);
-    lay->setSpacing(0);
-    for (int i = 0; i < int(PanelId::Count); ++i) {
-        ActivityButton *b = new ActivityButton(kPanels[i].icon, this);
-        b->setToolTip(QString::fromUtf8(kPanels[i].tooltip));
-        b->setAccessibleName(QString::fromUtf8(kPanels[i].tooltip));
-        if (i == int(PanelId::Settings)) {
-            b->setVisible(false);         // 设置入口改到标题栏菜单，侧栏不再显示；保留索引以维持 activatePanel(Settings)
-            lay->addStretch(1);           // 设置固定在底部
-        }
-        lay->addWidget(b);
-        m_buttons << b;
-        connect(b, &QAbstractButton::clicked, this, [this, i]() { emit iconClicked(i); });
-    }
-    connect(Theme::instance(), &Theme::changed, this, [this]() {
-        update();
-        for (QAbstractButton *b : qAsConst(m_buttons))
-            b->update();
-    });
-}
-
-void ActivityBar::highlight(int index)
-{
-    m_active = index;
-    for (int i = 0; i < m_buttons.size(); ++i) {
-        static_cast<ActivityButton *>(m_buttons[i])->active = i == index;
-        m_buttons[i]->update();
-    }
-}
-
-void ActivityBar::paintEvent(QPaintEvent *)
-{
-    QPainter p(this);
-    p.fillRect(rect(), themeColor("activitybar-bg"));
-    p.fillRect(QRect(width() - 1, 0, 1, height()), themeColor("border-secondary"));
-}
-
-// ---------------------------------------------------------------
-//  侧栏
-// ---------------------------------------------------------------
-SidePanel::SidePanel(QWidget *parent) : QWidget(parent)
-{
-    setObjectName(QStringLiteral("sidePanel"));
-    setAttribute(Qt::WA_StyledBackground);
-    ui::bindSize(this, ui::SizeKind::MinWidth, kSidebarMin);
-    ui::bindSize(this, ui::SizeKind::MaxWidth, kSidebarMax);
-    QVBoxLayout *lay = new QVBoxLayout(this);
-    lay->setContentsMargins(0, 0, 0, 0);
-    lay->setSpacing(0);
-    QWidget *header = new QWidget(this);
-    header->setObjectName(QStringLiteral("sidebarHeader"));
-    header->setAttribute(Qt::WA_StyledBackground);
-    ui::bindSize(header, ui::SizeKind::FixedHeight, 32);
-    QHBoxLayout *hh = new QHBoxLayout(header);
-    ui::bindMargins(hh, 12, 0, 12, 0);
-    m_title = new QLabel(header);
-    m_title->setObjectName(QStringLiteral("sidebarTitle"));
-    hh->addWidget(m_title);
-    hh->addStretch(1);
-    ui::IconButton *close = new ui::IconButton(LucideIcon::X, 14, "text-tertiary", "text-primary", header);
-    close->setObjectName(QStringLiteral("sidebarClose"));
-    ui::bindSize(close, ui::SizeKind::Fixed, 20, 20);
-    close->setToolTip(QStringLiteral("关闭侧边栏"));
-    hh->addWidget(close);
-    lay->addWidget(header);
-    m_stack = new QStackedWidget(this);
-    m_stack->setObjectName(QStringLiteral("sidebarBody"));
-    m_stack->setContentsMargins(8, 8, 8, 8);
-    lay->addWidget(m_stack, 1);
-    connect(close, &QToolButton::clicked, this, &SidePanel::closeRequested);
-    setThemedStyle(this, QStringLiteral(
-        "#sidePanel { background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border); }"
-        "#sidebarHeader { background: var(--sidebar-bg); border-bottom: 1px solid var(--sidebar-border); }"
-        "#sidebarTitle { color: var(--sidebar-header); font-family: %1; font-size: 11px; font-weight: 600; background: transparent; }"
-        "#sidebarClose { border: none; border-radius: 3px; background: transparent; }"
-        "#sidebarClose:hover { background: var(--button-hover); }"
-        "#sidebarBody { background: var(--sidebar-bg); }"
-        "#panelScroll, #panelScroll > QWidget > QWidget { background: transparent; border: none; }"
-        "#panelScroll QScrollBar:vertical { background: var(--scrollbar-bg); width: 10px; margin: 0px; }"
-        "#panelScroll QScrollBar::handle:vertical { background: var(--scrollbar-thumb); min-height: 20px; border-radius: 3px; }"
-        "#sidebarBody QToolTip { font-size: 11px; }").arg(ui::uiFamilies()));
-}
-
-// 每个面板放进滚动区：字号调大后内容比侧栏高时改为滚动，控件不会被压缩重叠
-static QScrollArea *wrapScroll(QWidget *w)
-{
-    QScrollArea *sa = new QScrollArea;
-    sa->setObjectName(QStringLiteral("panelScroll"));
-    sa->setFrameShape(QFrame::NoFrame);
-    sa->setWidgetResizable(true);
-    sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    sa->setWidget(w);
-    sa->viewport()->setAutoFillBackground(false);
-    w->setAutoFillBackground(false);
-    return sa;
-}
-
-void SidePanel::addPanel(QWidget *w)
-{
-    m_stack->addWidget(wrapScroll(w));
-}
-
-void SidePanel::replacePanel(int index, QWidget *w)
-{
-    QScrollArea *sa = qobject_cast<QScrollArea *>(m_stack->widget(index));
-    if (!sa)
+    if (store.size() <= 0)
         return;
-    QWidget *old = sa->takeWidget();
-    sa->setWidget(w);
-    if (old)
-        old->deleteLater();
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+    for (const Track &t : store.tracks()) {
+        const TrackPoint &p = t.points.first();
+        const double la = qDegreesToRadians(p.lat), lo = qDegreesToRadians(p.lon);
+        sx += std::cos(la) * std::cos(lo);
+        sy += std::cos(la) * std::sin(lo);
+        sz += std::sin(la);
+    }
+    globe->lookAt(qRadiansToDegrees(std::atan2(sy, sx)),
+                  qRadiansToDegrees(std::atan2(sz, std::sqrt(sx * sx + sy * sy))), 6000.0);
 }
 
-void SidePanel::showPanel(int index, const QString &title)
-{
-    m_stack->setCurrentIndex(index);
-    m_title->setText(title);
-}
-
-int SidePanel::currentPanel() const
-{
-    return m_stack->currentIndex();
-}
-
-QString SidePanel::title() const
-{
-    return m_title->text();
-}
+} // namespace
 
 // ---------------------------------------------------------------
 //  主窗口
@@ -300,28 +124,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_lasso = new SpatialLasso(this);
     m_globe->setMapTools(m_flags, m_ruler);
     m_globe->setSpatialLasso(m_lasso);
-    m_draw = new DrawingManager(this);
-    m_undo = new QUndoStack(this);
-    m_undo->setUndoLimit(200);          // 需求：最多保留 200 步操作历史
-    m_draw->setUndoStack(m_undo);
-    m_globe->setDrawingManager(m_draw);
-    m_globe->setDrawColor(m_drawColor);
-    connect(m_draw, &DrawingManager::changed, m_globe, [this]() { m_globe->update(); });
-    // 绘图内容自动落盘（用户手动「保存绘图」是导出 GeoJSON，这里是不丢内容的自动保存）
-    connect(m_draw, &DrawingManager::changed, this, [this]() {
-        if (!m_restoringState && m_drawSaveTimer)
-            m_drawSaveTimer->start();
-    });
-    connect(m_globe, &GlobeWidget::drawTextRequested, this, &MainWindow::onDrawText);
-    connect(m_globe, &GlobeWidget::drawFillRequested, this, &MainWindow::onDrawFill);
-    connect(m_globe, &GlobeWidget::drawFeatureEditRequested, this, &MainWindow::onDrawFeatureEdit);
-    connect(m_globe, &GlobeWidget::drawSelectionChanged, this, [this](int id) {
-        if (m_deleteDrawAction)
-            m_deleteDrawAction->setEnabled(id > 0);
-    });
-    connect(m_globe, &GlobeWidget::drawMessage, this, [this](const QString &text) {
-        m_statusBar->setError(text);
-    });
+
+    m_drawCtrl = new DrawingController(m_globe, m_lasso, m_ruler, m_flags, this, this);
+    m_mapSources = new MapSourceController(m_globe, this, this);
+    m_point3d = new Point3dCoordinator(&m_store, m_globe, this);
+    m_importCtrl = new TrackImportCoordinator(&m_store, m_globe, this, this);
+
     m_manage = new ManageState(&m_store, this);
 
     // 侧栏面板（顺序同 PanelId）
@@ -383,8 +191,29 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_replay, &ReplayController::timeChanged, this, &MainWindow::syncReplayToLayer);
     connect(m_replay, &ReplayController::stateChanged, this, &MainWindow::syncReplayToLayer);
 
+    // 协调器信号接入状态栏与主窗口联动
+    connect(m_drawCtrl, &DrawingController::errorMessage, m_statusBar, &AppStatusBar::setError);
+    connect(m_drawCtrl, &DrawingController::uiStateChanged, this, &MainWindow::scheduleSaveUiState);
+    connect(m_point3d, &Point3dCoordinator::isolateTrackRequested, this, &MainWindow::isolateTrack);
+    connect(m_point3d, &Point3dCoordinator::replayRangeInvalidated, this, &MainWindow::resetReplayRange);
+    connect(m_importCtrl, &TrackImportCoordinator::loadingStateChanged, m_statusBar, &AppStatusBar::setLoading);
+    connect(m_importCtrl, &TrackImportCoordinator::persistingStateChanged, m_statusBar, &AppStatusBar::setPersisting);
+    connect(m_importCtrl, &TrackImportCoordinator::errorMessage, this, [this](const QString &msg, int clearAfterMs) {
+        m_statusBar->setError(msg);
+        if (clearAfterMs > 0 && !msg.isEmpty()) {
+            QTimer::singleShot(clearAfterMs, this, [this, msg]() {
+                if (m_statusBar->errorText() == msg)
+                    m_statusBar->setError(QString());
+            });
+        }
+    });
+    connect(m_importCtrl, &TrackImportCoordinator::tracksImported, this, &MainWindow::onTracksImported);
+    connect(m_importCtrl, &TrackImportCoordinator::importFinished, this, &MainWindow::importFinished);
+    connect(m_importCtrl, &TrackImportCoordinator::persistFinished, this, &MainWindow::persistFinished);
+    connect(m_importCtrl, &TrackImportCoordinator::dbStale, m_manage, &ManageState::markStale);
+
     buildMenuBar();
-    buildDrawToolBar();
+    m_drawCtrl->buildToolBar(this);
     setThemedStyle(menuBar(), menuQss());
 
     // 地图交互：单击航迹单独显示，单击空白处返回全部；右键菜单；双击放旗标（GlobeWidget 内处理）
@@ -396,7 +225,8 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_globe, &GlobeWidget::trackContextMenuRequested, this, &MainWindow::onTrackContextMenu);
     // 地图悬停某条航迹 → 所有点迹窗口里的同一条航迹同步高亮
-    connect(m_globe, &GlobeWidget::trackHovered, this, &MainWindow::onMapHoverTrack);    connect(m_globe, &GlobeWidget::flagContextMenuRequested, this, &MainWindow::onFlagContextMenu);
+    connect(m_globe, &GlobeWidget::trackHovered, m_point3d, &Point3dCoordinator::onMapHoverTrack);
+    connect(m_globe, &GlobeWidget::flagContextMenuRequested, this, &MainWindow::onFlagContextMenu);
     m_backAllBtn = new QPushButton(tr("← 返回全部"), m_globe);
     m_backAllBtn->setToolTip(tr("返回查看全部航迹（Esc）"));
     m_backAllBtn->setCursor(Qt::PointingHandCursor);
@@ -477,20 +307,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_uiSaveTimer->setSingleShot(true);
     m_uiSaveTimer->setInterval(400);
     connect(m_uiSaveTimer, &QTimer::timeout, this, &MainWindow::saveUiState);
-    m_drawSaveTimer = new QTimer(this);
-    m_drawSaveTimer->setSingleShot(true);
-    m_drawSaveTimer->setInterval(800);
-    connect(m_drawSaveTimer, &QTimer::timeout, this, &MainWindow::saveDrawingsAuto);
     // 兜底：不经过 closeEvent 的退出（QApplication::quit 等）也要把状态写完
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
-        m_closingAllPoint3d = true;
-        savePoint3dSessions();               // 先存现场，再关窗口
-        const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
-        for (const QPointer<Point3dWindow> &win : wins)
-            if (win)
-                win->close();
+        m_point3d->closeAllAndSave();
         saveUiState();
-        saveDrawingsAuto();
+        m_drawCtrl->saveAuto();
         app::flushSettings();
     });
 
@@ -503,11 +324,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    // 等后台入库结束，避免进程退出时写到一半
-    if (m_saveJob)
-        m_saveJob->wait();
-    qDeleteAll(m_saveQueue);
-    m_saveQueue.clear();
+    m_importCtrl->waitAndShutdown();
     trackdb::close();
 }
 
@@ -515,28 +332,16 @@ MainWindow::~MainWindow()
 void MainWindow::loadPersisted()
 {
     m_restoringState = true;
+    m_drawCtrl->setRestoringState(true);
     app::Settings &s = app::settings();
-    // 文件颜色先恢复，加载后同一文件颜色不变，新文件继续轮换
-    QHash<QString, QColor> colors;
-    const QJsonObject co = QJsonDocument::fromJson(s.value(QStringLiteral("display.file_line_color")).toString().toUtf8()).object();
-    for (auto it = co.begin(); it != co.end(); ++it)
-        colors.insert(it.key(), QColor(it.value().toString()));
-    m_store.setFileColors(colors);
-    const QJsonObject custom = QJsonDocument::fromJson(s.value(QStringLiteral("display.custom_file_color")).toString().toUtf8()).object();
-    for (auto it = custom.begin(); it != custom.end(); ++it) {
-        const QColor color(it.value().toString());
-        if (color.isValid()) {
-            m_customFileColors.insert(it.key(), color);
-            m_globe->trackLayer()->setFileColorOverride(it.key(), color);
-        }
-    }
+    m_importCtrl->loadFileColors();
 
     QString err;
     if (trackdb::open(&err)) {
         const QVector<Track> saved = trackdb::loadAll(&err);
         if (!saved.isEmpty()) {
             m_store.addTracks(saved);
-            saveFileColors();
+            m_importCtrl->saveFileColors();
         }
         reloadBatchLabels();        // 批量数据管理里改过的数据源显示名
     } else {
@@ -584,45 +389,19 @@ void MainWindow::loadPersisted()
     applyAdsbVisibility();
     refreshSources();
     applyDisplay();
-    if (m_store.size() > 0) {
-        double sx = 0, sy = 0, sz = 0;
-        for (const Track &t : m_store.tracks()) {
-            const TrackPoint &p = t.points.first();
-            const double la = qDegreesToRadians(p.lat), lo = qDegreesToRadians(p.lon);
-            sx += std::cos(la) * std::cos(lo);
-            sy += std::cos(la) * std::sin(lo);
-            sz += std::sin(la);
-        }
-        m_globe->lookAt(qRadiansToDegrees(std::atan2(sy, sx)),
-                        qRadiansToDegrees(std::atan2(sz, std::sqrt(sx * sx + sy * sy))), 6000.0);
-    }
+    centerGlobeOnTracks(m_globe, m_store);
     // 上次退出时的视角优先于「自动定位到数据中心」
     restoreUiState();
 
     // 恢复上次打开的点迹窗口（延到事件循环开始后，避免构造期弹窗/读文件）
-    QTimer::singleShot(0, this, [this]() { restorePoint3dSessions(); });
+    QTimer::singleShot(0, this, [this]() { m_point3d->restoreSessions(); });
     m_restoringState = false;
-}
-
-void MainWindow::saveFileColors()
-{
-    QJsonObject o;
-    const QHash<QString, QColor> colors = m_store.fileColors();
-    for (auto it = colors.constBegin(); it != colors.constEnd(); ++it)
-        o.insert(it.key(), it.value().name());
-    app::setValue(QStringLiteral("display.file_line_color"),
-                             QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
-    QJsonObject custom;
-    for (auto it = m_customFileColors.constBegin(); it != m_customFileColors.constEnd(); ++it)
-        custom.insert(it.key(), it.value().name());
-    app::setValue(QStringLiteral("display.custom_file_color"),
-                             QString::fromUtf8(QJsonDocument(custom).toJson(QJsonDocument::Compact)));
+    m_drawCtrl->setRestoringState(false);
 }
 
 // ---------------------------------------------------------------
 //  界面状态持久化：显隐 / 点迹 / 单独显示 / 侧栏 / 绘图栏 / 相机 / 绘图内容
 // ---------------------------------------------------------------
-
 void MainWindow::scheduleSaveUiState()
 {
     if (m_restoringState || !m_uiSaveTimer)
@@ -687,12 +466,9 @@ void MainWindow::restoreUiState()
     }
     // 绘图颜色 + 绘图内容
     const QColor dc(s.value(QStringLiteral("drawing.color")).toString());
-    if (dc.isValid()) {
-        m_drawColor = dc;
-        m_globe->setDrawColor(dc);
-        updateDrawColorIcon();
-    }
-    loadDrawingsAuto();
+    if (dc.isValid())
+        m_drawCtrl->setDrawColor(dc);
+    m_drawCtrl->loadAuto();
     // 绘图工具条是否展开
     setDrawingBarVisible(s.value(QStringLiteral("panel.drawbar_visible"), false).toBool());
     // 数据源条是否展开
@@ -724,361 +500,64 @@ void MainWindow::saveCamera()
                   QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
 }
 
-// 绘图内容自动保存：与数据库同目录的 drawings.json，原子写入（QSaveFile）
-void MainWindow::saveDrawingsAuto()
-{
-    if (m_restoringState)
-        return;
-    QSaveFile file(app::drawingPath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return;
-    file.write(QJsonDocument(m_draw->toJson()).toJson(QJsonDocument::Compact));
-    file.commit();
-}
-
-void MainWindow::loadDrawingsAuto()
-{
-    QFile file(app::drawingPath());
-    if (!file.exists() || !file.open(QIODevice::ReadOnly))
-        return;
-    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-    file.close();
-    if (root.isEmpty())
-        return;
-    const bool wasRestoring = m_restoringState;
-    m_restoringState = true;          // fromJson 会发 changed()，别让它反过来再存一次
-    QString err;
-    m_draw->fromJson(root, &err);
-    m_restoringState = wasRestoring;
-    if (m_undo)
-        m_undo->clear();              // 恢复出来的内容不进撤销栈
-}
-
 void MainWindow::closeEvent(QCloseEvent *e)
 {
-    m_closingAllPoint3d = true;
-    savePoint3dSessions();               // 先存现场，再关窗口
-    const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
-    for (const QPointer<Point3dWindow> &win : wins)
-        if (win)
-            win->close();
-    m_point3dWindows.clear();
+    m_point3d->closeAllAndSave();
     saveUiState();
-    saveDrawingsAuto();
+    m_drawCtrl->saveAuto();
     app::flushSettings();
     QMainWindow::closeEvent(e);
 }
 
-bool MainWindow::openTiles(const QString &path)
-{
-    QString err;
-    if (!m_globe->openTiles(path, &err)) {
-        QMessageBox::warning(this, tr("打开瓦片失败"), err);
-        return false;
-    }
-    return true;
-}
-
-// 启动时自动加载：优先 exe 旁 tiles/ 目录，其次 exe 同目录；默认选 natural_earth4（分层设色），
-// 找不到时回退到 maxZoom 最高的那个
-void MainWindow::loadDefaultTiles()
-{
-    const QString appDir = QCoreApplication::applicationDirPath();
-    QFileInfoList files;
-    for (const QString &dir : { appDir + QStringLiteral("/tiles"), appDir })
-        files += QDir(dir).entryInfoList(QStringList() << QStringLiteral("*.mbtiles"), QDir::Files);
-
-    QString best;
-    int bestZoom = -1;
-    bool foundNatural4 = false;
-    for (const QFileInfo &fi : qAsConst(files)) {
-        if (fi.fileName() == QLatin1String("natural_earth4.mbtiles"))
-            foundNatural4 = true;
-        TileSource probe;
-        if (probe.open(fi.absoluteFilePath()) && probe.maxZoom() > bestZoom) {
-            bestZoom = probe.maxZoom();
-            best = fi.absoluteFilePath();
-        }
-    }
-    // 优先级：离线高德近岸 z16 > natural_earth4 > 最高 maxZoom
-    bool foundAmapOffline = false;
-    for (const QFileInfo &fi : qAsConst(files))
-        if (fi.fileName() == QLatin1String("amap_coast_z1_z16.mbtiles"))
-            foundAmapOffline = true;
-    if (foundAmapOffline)
-        for (const QFileInfo &fi : qAsConst(files))
-            if (fi.fileName() == QLatin1String("amap_coast_z1_z16.mbtiles")) {
-                best = fi.absoluteFilePath();
-                break;
-            }
-    else if (foundNatural4)
-        for (const QFileInfo &fi : qAsConst(files))
-            if (fi.fileName() == QLatin1String("natural_earth4.mbtiles")) {
-                best = fi.absoluteFilePath();
-                break;
-            }
-    if (!best.isEmpty())
-        openTiles(best);
-
-    // 上次退出时用的底图源就恢复；离线/无网络时本地瓦片照常可用
-    const QString src = app::settings().value(QStringLiteral("map.source"), QStringLiteral("offline")).toString();
-    if (src == QLatin1String("tdt") || src == QLatin1String("amap")) {
-        QString token = app::settings().value(QStringLiteral("map.tdt_token")).toString();
-        if (token.trimmed().isEmpty())
-            token = QString::fromLatin1(kTdtToken);
-        if (!openOnlineMap(token, src == QLatin1String("amap")))
-            app::setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
-    } else if (src == QLatin1String("amap_offline")) {
-        m_globe->closeOnlineMap();
-        const QString appDir = QCoreApplication::applicationDirPath();
-        QString found;
-        for (const QString &dir : { appDir + QStringLiteral("/tiles"), appDir }) {
-            const QString p = dir + QStringLiteral("/amap_coast_z1_z16.mbtiles");
-            if (QFile::exists(p)) { found = p; break; }
-        }
-        if (!found.isEmpty())
-            openTiles(found);
-        else
-            app::setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
-    }
-    syncSourceActions();
-}
-
-void MainWindow::syncSourceActions()
-{
-    const QString src = app::settings().value(QStringLiteral("map.source"), QStringLiteral("offline")).toString();
-    struct { QAction *action; const char *id; } items[] = {
-        { m_srcOffline, "offline" }, { m_srcTdt, "tdt" },
-        { m_srcAmap, "amap" }, { m_srcAmapOffline, "amap_offline" }
-    };
-    for (auto &it : items) {
-        if (!it.action)
-            continue;
-        QSignalBlocker blocker(it.action);
-        it.action->setChecked(src == QLatin1String(it.id));
-    }
-}
-
-bool MainWindow::openOnlineMap(const QString &token, bool useAmap)
-{
-    QString err;
-    if (!m_globe->openOnlineMap(token, useAmap, &err)) {
-        QMessageBox::warning(this, tr("在线底图"), err);
-        return false;
-    }
-    app::setValue(QStringLiteral("map.tdt_token"), token.trimmed());
-    return true;
-}
-
-// 底图源切换：offline=本地 mbtiles，tdt=天地图，amap=高德
-void MainWindow::setMapSource(const QString &id)
-{
-    if (id == QLatin1String("amap_offline")) {
-        m_globe->closeOnlineMap();
-        const QString appDir = QCoreApplication::applicationDirPath();
-        QString found;
-        for (const QString &dir : { appDir + QStringLiteral("/tiles"), appDir }) {
-            const QString p = dir + QStringLiteral("/amap_coast_z1_z16.mbtiles");
-            if (QFile::exists(p)) { found = p; break; }
-        }
-        if (found.isEmpty()) {
-            QMessageBox::warning(this, tr("离线高德瓦片"),
-                tr("未找到 amap_coast_z1_z16.mbtiles。\n"
-                   "请先运行 python tools/download_tiles.py 生成瓦片包。"));
-            syncSourceActions();
-            return;
-        }
-        openTiles(found);
-        app::setValue(QStringLiteral("map.source"), id);
-        syncSourceActions();
-        return;
-    }
-
-    if (id == QLatin1String("offline")) {
-        m_globe->closeOnlineMap();
-        // 先把用户意图记成 offline 再加载默认瓦片：loadDefaultTiles() 末尾会按
-        // map.source 恢复在线源，只有先置成 offline 才不会被拉回天地图/高德。
-        app::setValue(QStringLiteral("map.source"), id);
-        loadDefaultTiles();               // 始终切回目录里的默认离线瓦片
-        if (m_globe->tileName().isEmpty())
-            QMessageBox::warning(this, tr("离线瓦片"),
-                tr("未找到可用的 .mbtiles 瓦片文件。\n"
-                   "请将瓦片包放入程序目录或 tiles/ 子目录，或用「打开瓦片…」手动选择。"));
-        syncSourceActions();
-        return;
-    }
-
-    // key 已内置；启动参数 --online-key 可临时换
-    QString token = app::settings().value(QStringLiteral("map.tdt_token")).toString();
-    if (token.trimmed().isEmpty())
-        token = QString::fromLatin1(kTdtToken);
-
-    if (!openOnlineMap(token, id == QLatin1String("amap"))) {
-        syncSourceActions();                  // 失败则勾选状态回到原来的源
-        return;
-    }
-    app::setValue(QStringLiteral("map.source"), id);
-    syncSourceActions();
-}
-
-void MainWindow::openTileFile()
-{
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("打开瓦片"), QCoreApplication::applicationDirPath(),
-        tr("MBTiles 瓦片 (*.mbtiles);;所有文件 (*)"));
-    if (!path.isEmpty()) {
-        openTiles(path);
-        app::setValue(QStringLiteral("map.source"), QStringLiteral("offline"));
-        syncSourceActions();
-    }
-}
+// ---------------------------------------------------------------
+//  子控制器委托入口（保持 MainWindow 公开接口 100% 不变）
+// ---------------------------------------------------------------
+bool MainWindow::openTiles(const QString &path) { return m_mapSources->openTiles(path); }
+void MainWindow::loadDefaultTiles() { m_mapSources->loadDefaultTiles(); }
+void MainWindow::setMapSource(const QString &id) { m_mapSources->setMapSource(id); }
+bool MainWindow::openOnlineMap(const QString &token, bool useAmap) { return m_mapSources->openOnlineMap(token, useAmap); }
+void MainWindow::syncSourceActions() { m_mapSources->syncSourceActions(); }
 
 void MainWindow::importFile(TrackSource kind, const QString &path, const QString &displayName, const QColor &color)
 {
-    if (m_importer)
-        return;
-    QString name = displayName;
-    QColor selectedColor = color;
-    if (name.isEmpty() && (kind != TrackSource::Adsb || !app::testMode())) {
-        QSet<QString> used;   // 数据库里已有的同类批次名也要避开
-        for (const BatchInfo &b : trackdb::batches())
-            if (b.source == kind)
-                used.insert(b.fileName);
-        for (const Track &t : m_store.tracks())
-            if (t.source == kind)
-                used.insert(t.fileName);
-        const bool adsb = kind == TrackSource::Adsb;
-        name = adsb ? QFileInfo(path).completeBaseName() : m_store.uniqueFileName(kind, used);
-        if (adsb) {
-            const QString base = name;
-            for (int n = 2; used.contains(name); ++n)
-                name = base + QStringLiteral(" (%1)").arg(n);
-        }
-        if (!app::testMode()) {
-            ui::RadarImportDialog dlg(path, name, QColor(kind == TrackSource::Radar ? "#FF0000" : "#FFC000"), used.values(), this, adsb);
-            if (dlg.exec() != QDialog::Accepted)
-                return;
-            name = dlg.trackName();
-            if (!adsb)
-                selectedColor = dlg.trackColor();
-        }
-    }
-    m_importColor = selectedColor;
-    m_importer = new TrackImporter(kind, path, name, this);
-    connect(m_importer, &TrackImporter::progressChanged, this,
-            [this](int percent) { m_statusBar->setLoading(true, percent); });
-    connect(m_importer, &TrackImporter::importDone, this, &MainWindow::onImportDone);
-    for (QAction *a : qAsConst(m_importActions))
-        a->setEnabled(false);
-    m_statusBar->setError(QString());       // 与 RadarView 一致：开始导入时清除上次的错误
-    m_statusBar->setLoading(true, 0);
-    m_importer->start();
+    m_importCtrl->importFile(kind, path, displayName, color);
 }
+bool MainWindow::isImporting() const { return m_importCtrl->isImporting(); }
+bool MainWindow::isPersisting() const { return m_importCtrl->isPersisting(); }
 
-void MainWindow::onImportDone()
+DrawingManager *MainWindow::drawing() const { return m_drawCtrl->drawing(); }
+QUndoStack *MainWindow::undoStack() const { return m_drawCtrl->undoStack(); }
+void MainWindow::setDrawTool(DrawTool t) { m_drawCtrl->setDrawTool(t); }
+void MainWindow::setDrawingBarVisible(bool on) { m_drawCtrl->setBarVisible(on); }
+bool MainWindow::drawingBarVisible() const { return m_drawCtrl->isBarVisible(); }
+
+void MainWindow::showPoint3dWindow() { m_point3d->showNewWindow(); }
+QList<Point3dWindow *> MainWindow::point3dWindows() const { return m_point3d->windows(); }
+
+void MainWindow::onTracksImported(int beforeCount, bool firstData)
 {
-    TrackImporter *imp = m_importer;
-    m_importer = nullptr;
-    imp->wait();
-    m_statusBar->setLoading(false, 0);
-    for (QAction *a : qAsConst(m_importActions))
-        a->setEnabled(true);
-
-    QString msg;
-    const bool ok = imp->ok();
-    if (ok) {
-        const bool firstData = m_store.size() == 0;
-        const int before = m_store.size();
-        QVector<Track> &tracks = imp->tracks();
-        // 后台入库（RadarView：batch_exists 时 append_missing_tracks，否则 save_batch），状态栏显示「保存中」
-        if (!tracks.isEmpty() && trackdb::isOpen()) {
-            m_saveQueue << new DbSaveJob(tracks.first().fileName, imp->kind(), tracks, this);
-            startNextSave();
-        }
-        // 重新导入：清掉这些航迹的软删除，撤销栈里对应的条目作废
-        m_globe->resetInteraction();
-        const int added = m_store.addTracks(tracks);
-        if (m_importColor.isValid() && !tracks.isEmpty()) {
-            const QString key = trackSourceName(imp->kind()) + QStringLiteral("::") + tracks.first().fileName;
-            QHash<QString, QColor> colors = m_store.fileColors();
-            colors.insert(key, m_importColor);
-            m_store.setFileColors(colors);
-            m_customFileColors.insert(key, m_importColor);
-            m_globe->trackLayer()->setFileColorOverride(key, m_importColor);
-        }
-        saveFileColors();
-        msg = tr("%1：新增 %2 条航迹（共 %3 条，%4 个点），解析 %5 ms")
-                  .arg(QFileInfo(imp->path()).fileName()).arg(added)
-                  .arg(m_store.size()).arg(m_store.pointCount()).arg(imp->elapsedMs());
-        // 管理面板有可见集合时，新导入的航迹也加入（RadarView revealImportedTracks）
-        if (isolatedTrack() >= 0)
-            isolateTrack(-1);
-        if (!m_manage->visibleKeys().isEmpty()) {
-            QStringList keys;
-            for (int i = before; i < m_store.size(); ++i)
-                keys << m_store.tracks()[i].key();
-            m_manage->showAll(keys);
-        }
-        applyAdsbVisibility();
-        refreshSources();
-        m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
-        applyDisplay();
-        // 第一次导入时把视角移到数据中心
-        if (firstData && m_store.size() > before) {
-            double sx = 0, sy = 0, sz = 0;
-            for (const Track &t : m_store.tracks()) {
-                const TrackPoint &p = t.points.first();
-                const double la = qDegreesToRadians(p.lat), lo = qDegreesToRadians(p.lon);
-                sx += std::cos(la) * std::cos(lo);
-                sy += std::cos(la) * std::sin(lo);
-                sz += std::sin(la);
-            }
-            m_globe->lookAt(qRadiansToDegrees(std::atan2(sy, sx)),
-                            qRadiansToDegrees(std::atan2(sz, std::sqrt(sx * sx + sy * sy))), 6000.0);
-        }
-        m_globe->update();
-    } else {
-        msg = imp->errorString();
-        m_statusBar->setError(msg);
-        if (!property("noDialogs").toBool())
-            QMessageBox::warning(this, tr("导入失败"), msg);
+    // 管理面板有可见集合时，新导入的航迹也加入（RadarView revealImportedTracks）
+    if (isolatedTrack() >= 0)
+        isolateTrack(-1);
+    if (!m_manage->visibleKeys().isEmpty()) {
+        QStringList keys;
+        for (int i = beforeCount; i < m_store.size(); ++i)
+            keys << m_store.tracks()[i].key();
+        m_manage->showAll(keys);
     }
-    imp->deleteLater();
-    m_importColor = QColor();
-    emit importFinished(ok, msg);
+    applyAdsbVisibility();
+    refreshSources();
+    m_filterPanel->setDataRange(m_store.minTime(), m_store.maxTime());
+    applyDisplay();
+    // 第一次导入时把视角移到数据中心
+    if (firstData && m_store.size() > beforeCount)
+        centerGlobeOnTracks(m_globe, m_store);
+    m_globe->update();
 }
 
-void MainWindow::startNextSave()
-{
-    if (m_saveJob || m_saveQueue.isEmpty()) {
-        m_statusBar->setPersisting(isPersisting());
-        return;
-    }
-    m_saveJob = m_saveQueue.takeFirst();
-    m_statusBar->setPersisting(true);
-    connect(m_saveJob, &QThread::finished, this, [this]() {
-        DbSaveJob *job = m_saveJob;
-        m_saveJob = nullptr;
-        const bool ok = job->ok();
-        QString msg;
-        if (ok) {
-            msg = QStringLiteral("%1：入库 %2 条").arg(job->fileName()).arg(job->savedCount());
-        } else {
-            msg = QStringLiteral("数据保存失败: %1").arg(job->errorString());
-            m_statusBar->setError(msg);
-            QTimer::singleShot(8000, this, [this, msg]() {
-                if (m_statusBar->errorText() == msg)
-                    m_statusBar->setError(QString());
-            });
-        }
-        job->deleteLater();
-        m_manage->markStale();
-        startNextSave();
-        emit persistFinished(ok, msg);
-    });
-    m_saveJob->start();
-}
-
+// ---------------------------------------------------------------
+//  航迹显示集合 / 回放范围 / 数据源显隐
+// ---------------------------------------------------------------
 int MainWindow::isolatedTrack() const
 {
     return m_isoKey.isEmpty() ? -1 : m_store.indexOf(m_isoKey);
@@ -1124,9 +603,7 @@ void MainWindow::applyDisplay()
         }
     }
 
-    // 空间套索 → 航迹管理系统的查询范围（查询条件，不是可见集合）：
-    // 命中集合按套索多边形独立算一遍，与地图可见集合/单独显示互不影响，
-    // 管理系统据此只查询并列出区域内的航迹。
+    // 空间套索 → 航迹管理系统的查询范围（查询条件，不是可见集合）
     {
         const bool spatial = m_filter.hasSpatialFilter();
         QStringList spatialKeys;
@@ -1184,45 +661,7 @@ void MainWindow::applyDisplay()
     std::sort(dots.begin(), dots.end());
     layer->setPointDotTracks(dots);
 
-    // ---- 点迹窗口联动 ----
-    // 单独显示（点地图上某条航迹）或管理面板筛选出的航迹 → 点迹窗口里对应的叠加航迹同步单独显示。
-    // 判定用 BatchNo + 时间范围：同一 MAT 按「雷达航迹」和「雷达原始测量」分别导入时
-    // id 前缀不同（RADAR-/RAW-），但编号与时间一致，三方据此互相对应。
-    QVector<LinkedTrackRef> refs;
-    if (!vis.isEmpty()) {
-        for (int i = 0; i < m_store.size(); ++i) {
-            const Track &t = m_store.tracks()[i];
-            if (vis.contains(t.key())) {
-                LinkedTrackRef r;
-                r.batchNo = point3dBatchNo(t);
-                r.t0 = t.minTime();
-                r.t1 = t.maxTime();
-                refs.append(r);
-            }
-        }
-    } else if (iso >= 0) {
-        const Track &t = m_store.tracks().at(iso);
-        LinkedTrackRef r;
-        r.batchNo = point3dBatchNo(t);
-        r.t0 = t.minTime();
-        r.t1 = t.maxTime();
-        refs.append(r);
-    }
-    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
-        if (win)
-            win->setLinkedSelection(refs);
-
-    // 单独显示的航迹同时作为高亮（悬停也会走同一套广播）；返回全部时清掉高亮
-    if (iso >= 0) {
-        const Track &t = m_store.tracks().at(iso);
-        for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
-            if (win)
-                win->setLinkedHighlight(point3dBatchNo(t), t.minTime(), t.maxTime());
-    } else {
-        for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
-            if (win)
-                win->setLinkedHighlight(-1, 0, 0);
-    }
+    m_point3d->syncLinkedSelection(vis, iso);
     resetReplayRange();
     m_globe->update();
 }
@@ -1434,142 +873,6 @@ QDialog *MainWindow::showTrackPoints(int index)
     return dlg;
 }
 
-// 新建一个点迹三维窗口。可多开；每个窗口独立数据集，时间轴与主窗口共用
-Point3dWindow *MainWindow::createPoint3dWindow()
-{
-    Point3dWindow *win = new Point3dWindow(nullptr);
-    win->setNumber(++m_point3dCounter);
-    // 点云航迹颜色与地图上的文件颜色一致
-    win->setTrackColorProvider([this](TrackSource s, const QString &fileName) {
-        return m_store.fileColor(s, fileName);
-    });
-    m_point3dWindows.append(QPointer<Point3dWindow>(win));
-    connect(win, &Point3dWindow::closed, this, [this, win]() {
-        m_point3dWindows.removeAll(QPointer<Point3dWindow>(win));
-        if (!m_closingAllPoint3d) {
-            savePoint3dSessions();
-            resetReplayRange();
-        }
-    });
-    // 点迹数据变化后重算全局时间范围（航迹 + 所有点迹窗口取并集）并保存现场
-    connect(win, &Point3dWindow::dataChanged, this, [this]() {
-        resetReplayRange();
-        if (!m_closingAllPoint3d)
-            savePoint3dSessions();
-    });
-    // 点云 <-> 地图全链路联动
-    connect(win, &Point3dWindow::trackFocusChanged, this, &MainWindow::onPoint3dFocus);
-    connect(win, &Point3dWindow::trackActivated, this, &MainWindow::onPoint3dActivate);
-    return win;
-}
-
-void MainWindow::showPoint3dWindow()
-{
-    Point3dWindow *win = createPoint3dWindow();
-    win->show();
-    win->raise();
-    win->activateWindow();
-}
-
-QList<Point3dWindow *> MainWindow::point3dWindows() const
-{
-    QList<Point3dWindow *> out;
-    for (const QPointer<Point3dWindow> &win : m_point3dWindows)
-        if (win)
-            out.append(win.data());
-    return out;
-}
-
-void MainWindow::savePoint3dSessions()
-{
-    QJsonArray arr;
-    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
-        if (win)
-            arr.append(win->sessionJson());
-    app::setValue(QStringLiteral("point3d.windows"),
-                  QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
-}
-
-// 启动时按上次的会话恢复点迹窗口（可在高级参数里关闭 auto_reload）
-void MainWindow::restorePoint3dSessions()
-{
-    if (app::testMode())
-        return;
-    if (!app::settings().value(QStringLiteral("point3d.auto_reload"), true).toBool())
-        return;
-    const QByteArray json = app::settings().value(QStringLiteral("point3d.windows")).toString().toUtf8();
-    const QJsonArray arr = QJsonDocument::fromJson(json).array();
-    if (arr.isEmpty())
-        return;
-    for (const QJsonValue &v : arr) {
-        Point3dWindow *win = createPoint3dWindow();
-        win->restoreSession(v.toObject());
-        win->show();
-    }
-    resetReplayRange();
-}
-
-int MainWindow::trackIndexForBatch(int batchNo, TrackSource source, qint64 t0, qint64 t1) const
-{
-    if (batchNo <= 0)
-        return -1;
-    int best = -1;
-    qint64 bestOverlap = -1;
-    for (int pass = 0; pass < 2 && best < 0; ++pass) {
-        for (int i = 0; i < m_store.size(); ++i) {
-            const Track &t = m_store.tracks().at(i);
-            if (point3dBatchNo(t) != batchNo)
-                continue;
-            if (pass == 0 && t.source != source)
-                continue;
-            const qint64 overlap = qMax<qint64>(
-                0, qMin(t.maxTime(), t1) - qMax(t.minTime(), t0));
-            // 编号在别的 MAT 里可能重复：有时间信息时必须真的重叠才算同一条
-            if (overlap <= 0 && (t0 > 0 || t1 > 0))
-                continue;
-            if (best < 0 || overlap > bestOverlap) {
-                best = i;
-                bestOverlap = overlap;
-            }
-        }
-    }
-    return best;
-}
-
-void MainWindow::onPoint3dFocus(int batchNo, TrackSource source, qint64 t0, qint64 t1)
-{
-    const int idx = batchNo < 0 ? -1 : trackIndexForBatch(batchNo, source, t0, t1);
-    m_globe->trackLayer()->setHoveredTrack(idx);
-    m_globe->update();
-    // 所有点迹窗口保持同一高亮（外部入口不再发信号，不会形成回路）
-    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
-        if (win)
-            win->setLinkedHighlight(batchNo, t0, t1);
-}
-
-void MainWindow::onPoint3dActivate(int batchNo, TrackSource source, qint64 t0, qint64 t1)
-{
-    const int idx = trackIndexForBatch(batchNo, source, t0, t1);
-    if (idx >= 0)
-        isolateTrack(idx);
-}
-
-// 地图上悬停的航迹 → 所有点迹窗口里"同一条航迹"同步高亮（id 前缀可能不同，用编号+时间匹配）
-void MainWindow::onMapHoverTrack(int index)
-{
-    int batchNo = -1;
-    qint64 t0 = 0, t1 = 0;
-    if (index >= 0 && index < m_store.size()) {
-        const Track &t = m_store.tracks().at(index);
-        batchNo = point3dBatchNo(t);
-        t0 = t.minTime();
-        t1 = t.maxTime();
-    }
-    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
-        if (win)
-            win->setLinkedHighlight(batchNo, t0, t1);
-}
-
 bool MainWindow::pointDotsShown(int index) const
 {
     return index >= 0 && index < m_store.size() && m_dotKeys.contains(m_store.tracks()[index].key());
@@ -1593,7 +896,6 @@ void MainWindow::setTrackColor(int index)
     if (index < 0 || index >= m_store.size())
         return;
     const Track &t = m_store.tracks()[index];
-    const QString key = trackSourceName(t.source) + QStringLiteral("::") + t.fileName;
     const QColor cur = m_store.fileColor(t.source, t.fileName);
     const QColor c = QColorDialog::getColor(
         cur, this, tr("设置颜色：%1（该数据源的全部航迹）").arg(t.fileName));
@@ -1608,20 +910,12 @@ void MainWindow::applyTrackColor(int index, const QColor &c)
         return;
     const Track &t = m_store.tracks()[index];
     const QString key = trackSourceName(t.source) + QStringLiteral("::") + t.fileName;
-    QHash<QString, QColor> colors = m_store.fileColors();
-    colors.insert(key, c);
-    m_store.setFileColors(colors);          // 版本号 +1 → 图层按新颜色重建
-    m_customFileColors.insert(key, c);
-    m_globe->trackLayer()->setFileColorOverride(key, c);
-    saveFileColors();
+    m_importCtrl->setCustomFileColor(key, c);
     refreshSources();                       // 状态栏数据源 chip 的颜色
     if (m_managePanel)
         m_managePanel->repaintRows();
     m_globe->update();
-    // 点迹三维窗口：叠加航迹颜色来自同一个文件色，立即重载保持联动
-    for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows))
-        if (win)
-            win->refreshOverlayColors();
+    m_point3d->refreshOverlayColors();
 }
 
 // 「详细信息」：高亮该航迹并打开管理面板，按来源 + ICAO 搜索（App.vue onShowTrackDetail）
@@ -1690,7 +984,8 @@ void MainWindow::onFlagContextMenu(const QString &flagId, const QPoint &globalPo
                 && !name.trimmed().isEmpty())
             m_flags->renameFlag(flagId, name);
     });
-    menu.addItem(LucideIcon::Circle, QStringLiteral("绘制距离圆"), [this, flagId]() { drawDistanceCircle(flagId); });
+    menu.addItem(LucideIcon::Circle, QStringLiteral("绘制距离圆"),
+                 [this, flagId]() { m_drawCtrl->drawDistanceCircle(flagId); });
     menu.addItem(LucideIcon::Trash2, QStringLiteral("删除"), [this, flagId]() {
         const int k = m_flags->indexOf(flagId);
         if (k >= 0 && ui::confirm(this, QStringLiteral("确定要删除旗标「%1」吗？").arg(m_flags->flags()[k].label),
@@ -1698,303 +993,6 @@ void MainWindow::onFlagContextMenu(const QString &flagId, const QPoint &globalPo
             m_flags->removeFlag(flagId);
     }, true);
     menu.exec(globalPos);
-}
-
-// ---------------------------------------------------------------
-//  绘图工具栏
-// ---------------------------------------------------------------
-namespace {
-
-// 工具栏上的画笔颜色小方块
-QIcon colorSwatchIcon(const QColor &c, int px)
-{
-    QPixmap pm(px, px);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setBrush(c);
-    p.setPen(QPen(QColor(0x88, 0x88, 0x88), 1));
-    p.drawRoundedRect(QRectF(0.5, 0.5, px - 1, px - 1), 3, 3);
-    p.end();
-    return QIcon(pm);
-}
-
-} // namespace
-
-// 绘图工具栏平时不显示：左上角菜单栏的「绘图」按钮点开才出现。
-// 按钮多，分两行：第一行是工具，第二行是撤销/重做、颜色、存取。
-void MainWindow::buildDrawToolBar()
-{
-    const QString barQss = QStringLiteral(
-        "QToolBar { background: var(--bg-secondary); border: none;"
-        " border-bottom: 1px solid var(--border-primary); padding: 2px 6px; spacing: 2px; }"
-        "QToolBar::separator { background: var(--border-primary); width: 1px; margin: 4px 8px; }"
-        "QToolButton { color: var(--text-secondary); padding: 4px 10px; border-radius: 3px;"
-        " font-family: %1; font-size: 12px; }"
-        "QToolButton:hover { background: var(--button-hover); color: var(--text-primary); }"
-        "QToolButton:checked { background: var(--accent-primary); color: #ffffff; }"
-        "QToolButton:disabled { color: var(--text-muted); }").arg(ui::uiFamilies());
-
-    // ---- 第一行：绘图工具 ----
-    m_drawBar = new QToolBar(tr("绘图"), this);
-    m_drawBar->setObjectName(QStringLiteral("drawToolBar"));
-    m_drawBar->setMovable(false);
-    m_drawBar->setFloatable(false);
-    m_drawBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_drawBar->setIconSize(QSize(ui::sz(14), ui::sz(14)));
-    addToolBar(Qt::TopToolBarArea, m_drawBar);
-    setThemedStyle(m_drawBar, barQss);
-
-    m_drawGroup = new QActionGroup(this);
-    m_drawGroup->setExclusive(true);
-    auto addTool = [this](DrawTool t, const QString &text, const QString &tip) {
-        QAction *a = m_drawBar->addAction(text);
-        a->setCheckable(true);
-        a->setToolTip(tip);
-        a->setData(int(t));
-        m_drawGroup->addAction(a);
-        connect(a, &QAction::triggered, this, [this, t]() { setDrawTool(t); });
-        return a;
-    };
-    // 工具按钮用文字（lucide 里没有直线/矩形/油漆桶这些图标，硬凑反而看不懂）
-    addTool(DrawTool::None, tr("漫游"), tr("左键拖拽旋转地球（默认）"))->setChecked(true);
-    addTool(DrawTool::Select, tr("选择"), tr("单击图形选中：Delete 删除，双击改属性"));
-    addTool(DrawTool::Line, tr("直线"), tr("按住左键拖出一条贴地直线，端点会吸附到已有顶点"));
-    addTool(DrawTool::Polyline, tr("曲线"), tr("按住左键自由手绘"));
-    addTool(DrawTool::Polygon, tr("多边形"), tr("单击放顶点，双击或右键闭合；吸到起点自动闭合"));
-    addTool(DrawTool::Rect, tr("矩形"), tr("按住左键拖出矩形"));
-    addTool(DrawTool::Text, tr("文本"), tr("单击放置文本框"));
-    addTool(DrawTool::Fill, tr("填充"), tr("单击封闭图形内部，设置颜色与透明度"));
-    addTool(DrawTool::Eraser, tr("橡皮"), tr("单击线条或图形删除"));
-    addTool(DrawTool::Break, tr("裁剪/打断"),
-            tr("拖拽划一条剪切线：裁掉中间那一段\n单击线段：在该点一分为二"));
-    addTool(DrawTool::BoxSelect, tr("框选删除"), tr("拉框删除与框相交的图形（可撤销）"));
-
-    // ---- 同一行继续：撤销/重做、颜色、存取 ----
-    m_drawBar->addSeparator();
-    // 撤销/重做：动作挂在主窗口上（工具栏收起时 Ctrl+Z / Ctrl+Y 照样有效）
-    m_undoAction = new QAction(tr("撤销"), this);
-    m_undoAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_Z));
-    m_undoAction->setShortcutContext(Qt::WindowShortcut);
-    m_undoAction->setToolTip(tr("撤销上一步绘图操作（Ctrl+Z）"));
-    m_undoAction->setEnabled(false);
-    addAction(m_undoAction);
-    connect(m_undoAction, &QAction::triggered, m_undo, &QUndoStack::undo);
-    connect(m_undo, &QUndoStack::canUndoChanged, m_undoAction, &QAction::setEnabled);
-    m_drawBar->addAction(m_undoAction);
-
-    m_redoAction = new QAction(tr("重做"), this);
-    m_redoAction->setShortcuts(QList<QKeySequence>()
-                               << QKeySequence(Qt::CTRL + Qt::Key_Y)
-                               << QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_Z));
-    m_redoAction->setShortcutContext(Qt::WindowShortcut);
-    m_redoAction->setToolTip(tr("重做被撤销的操作（Ctrl+Y）"));
-    m_redoAction->setEnabled(false);
-    addAction(m_redoAction);
-    connect(m_redoAction, &QAction::triggered, m_undo, &QUndoStack::redo);
-    connect(m_undo, &QUndoStack::canRedoChanged, m_redoAction, &QAction::setEnabled);
-    m_drawBar->addAction(m_redoAction);
-
-    m_drawBar->addSeparator();
-    m_drawColorAction = m_drawBar->addAction(tr("颜色"));
-    m_drawColorAction->setToolTip(tr("新建图形使用的颜色"));
-    connect(m_drawColorAction, &QAction::triggered, this, [this]() {
-        const QColor c = QColorDialog::getColor(m_drawColor, this, tr("绘图颜色"));
-        if (!c.isValid())
-            return;
-        m_drawColor = c;
-        app::setValue(QStringLiteral("drawing.color"), c.name());
-        m_globe->setDrawColor(c);
-        updateDrawColorIcon();
-    });
-    updateDrawColorIcon();
-
-    m_drawBar->addSeparator();
-    QAction *save = m_drawBar->addAction(tr("保存"));
-    save->setToolTip(tr("把当前所有绘图导出为 GeoJSON"));
-    connect(save, &QAction::triggered, this, &MainWindow::saveDrawings);
-    QAction *load = m_drawBar->addAction(tr("导入"));
-    load->setToolTip(tr("从 GeoJSON 导入绘图"));
-    connect(load, &QAction::triggered, this, &MainWindow::importDrawings);
-    QAction *clr = m_drawBar->addAction(tr("清空"));
-    clr->setToolTip(tr("删除所有绘图（可撤销）"));
-    connect(clr, &QAction::triggered, this, [this]() {
-        if (m_draw->count() == 0)
-            return;
-        if (ui::confirm(this, tr("确定清空所有绘图（%1 个图形）？").arg(m_draw->count()),
-                        tr("清空绘图"), true))
-            m_draw->clear();
-    });
-
-    setDrawingBarVisible(false);
-}
-
-void MainWindow::setDrawingBarVisible(bool on)
-{
-    if (m_drawBar)
-        m_drawBar->setVisible(on);
-    if (m_drawToggle) {
-        QSignalBlocker block(m_drawToggle);
-        m_drawToggle->setChecked(on);
-    }
-    if (!on)
-        setDrawTool(DrawTool::None);      // 收起工具条就回到漫游，鼠标不会还停在画图状态
-    scheduleSaveUiState();
-}
-
-bool MainWindow::drawingBarVisible() const
-{
-    return m_drawBar && !m_drawBar->isHidden();
-}
-
-void MainWindow::updateDrawColorIcon()
-{
-    if (m_drawColorAction)
-        m_drawColorAction->setIcon(colorSwatchIcon(m_drawColor, ui::sz(14)));
-}
-
-// 工具切换：绘图与套索/标尺互斥（否则会抢同一个左键）
-void MainWindow::setDrawTool(DrawTool t)
-{
-    if (t != DrawTool::None) {
-        if (m_lasso->isActive())
-            m_lasso->deactivate();
-        if (m_ruler->isActive())
-            m_ruler->deactivate();
-    }
-    m_globe->setDrawTool(t);
-    if (m_drawGroup) {
-        for (QAction *a : m_drawGroup->actions())
-            a->setChecked(a->data().toInt() == int(t));
-    }
-}
-
-void MainWindow::onDrawText(double lat, double lon, const QPoint &globalPos)
-{
-    Q_UNUSED(globalPos);
-    if (app::testMode())
-        return;                       // 自检直接调 DrawingManager，不弹窗
-    ui::TextDialog dlg(m_drawColor, this);
-    if (dlg.exec() != QDialog::Accepted)
-        return;
-    if (m_draw->addText(lat, lon, dlg.text(), dlg.color(), dlg.fontPx()) <= 0)
-        m_statusBar->setError(tr("文本内容为空，未插入"));
-    else
-        m_statusBar->setError(QString());
-}
-
-void MainWindow::onDrawFill(int featureId)
-{
-    if (featureId <= 0) {
-        m_statusBar->setError(tr("该位置没有可填充的封闭图形（圆 / 多边形 / 矩形）"));
-        return;
-    }
-    if (app::testMode())
-        return;
-    const DrawingFeature *f = m_draw->feature(featureId);
-    const QColor cur = (f && f->fill.isValid()) ? f->fill : QColor(255, 192, 0, 90);
-    ui::FillDialog dlg(cur, this);
-    if (dlg.exec() != QDialog::Accepted)
-        return;
-    m_draw->setFill(featureId, dlg.fillColor());
-    m_statusBar->setError(QString());
-}
-
-// 选择工具双击：改颜色 / 线宽 / 填充透明度；圆还能改半径，文本还能改内容和字号。
-// 走 DrawingManager::updateFeature，压一条 ModifyFeatureCommand，撤销一步就整体回滚。
-void MainWindow::onDrawFeatureEdit(int featureId)
-{
-    const DrawingFeature *f = m_draw->feature(featureId);
-    if (!f)
-        return;
-    if (app::testMode())
-        return;                       // 自检直接调 DrawingManager，不弹窗
-    ui::FeatureStyleDialog dlg(*f, this);
-    if (dlg.exec() != QDialog::Accepted)
-        return;
-
-    DrawingFeature after = *f;
-    after.color = dlg.color();
-    after.widthPx = dlg.widthPx();
-    const int opacity = dlg.fillOpacityPercent();   // -1 = 该图形没有填充项
-    if (opacity == 0) {
-        after.fill = QColor();
-    } else if (opacity > 0) {
-        QColor c = after.fill.isValid() ? after.fill : after.color;
-        c.setAlphaF(opacity / 100.0);
-        after.fill = c;
-    }
-    if (f->isCircle() && dlg.radiusKm() > 0.0)
-        after.radiusKm = dlg.radiusKm();
-    if (f->isText()) {
-        if (dlg.text().isEmpty()) {
-            m_statusBar->setError(tr("文本内容不能为空，未修改"));
-            return;
-        }
-        after.text = dlg.text();
-        after.textSizePx = dlg.textPx();
-    }
-    m_draw->updateFeature(after);
-    m_statusBar->setError(QString());
-}
-
-void MainWindow::saveDrawings()
-{
-    if (m_draw->count() == 0) {
-        m_statusBar->setError(tr("还没有绘制任何图形"));
-        return;
-    }
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("保存绘图"),
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("drawing.json")),
-        tr("GeoJSON 绘图 (*.json);;所有文件 (*)"));
-    if (path.isEmpty())
-        return;
-    QString err;
-    if (!m_draw->saveToFile(path, &err)) {
-        QMessageBox::warning(this, tr("保存绘图"), err);
-        return;
-    }
-    m_statusBar->setError(QString());
-    QMessageBox::information(this, tr("保存绘图"),
-                             tr("已保存 %1 个图形到：\n%2").arg(m_draw->count()).arg(path));
-}
-
-void MainWindow::importDrawings()
-{
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("导入绘图"), QCoreApplication::applicationDirPath(),
-        tr("GeoJSON 绘图 (*.json);;所有文件 (*)"));
-    if (path.isEmpty())
-        return;
-    QString err;
-    if (!m_draw->loadFromFile(path, &err)) {
-        QMessageBox::warning(this, tr("导入绘图"), err);
-        return;
-    }
-    m_statusBar->setError(QString());
-    QMessageBox::information(this, tr("导入绘图"), tr("已导入 %1 个图形").arg(m_draw->count()));
-}
-
-// 旗标右键「绘制距离圆」：弹窗（版式与标准色盘复用导入弹窗那套）→ 以旗标为圆心生成测地圆。
-// 圆的顶点由 geocalc::geodesicCircle 按 Vincenty 正算逐方位角求得，是椭球上的等距圆。
-void MainWindow::drawDistanceCircle(const QString &flagId)
-{
-    const int i = m_flags->indexOf(flagId);
-    if (i < 0)
-        return;
-    const MapFlag f = m_flags->flags().at(i);
-    double radiusKm = 100.0;
-    QColor color(QStringLiteral("#FFC000"));
-    if (!app::testMode()) {
-        ui::DistanceCircleDialog dlg(f.label, f.lat, f.lon, color, this);
-        if (dlg.exec() != QDialog::Accepted)
-            return;
-        radiusKm = dlg.radiusKm();
-        color = dlg.color();
-    }
-    if (m_draw->addCircle(f.lat, f.lon, radiusKm, color, f.label) <= 0)
-        QMessageBox::warning(this, tr("绘制距离圆"), tr("半径无效，未能生成距离圆。"));
 }
 
 void MainWindow::syncReplayToLayer()
@@ -2042,7 +1040,9 @@ void MainWindow::onEscape()
     }
 }
 
-// 菜单（MenuBar.vue）
+// ---------------------------------------------------------------
+//  菜单栏 / 编辑区 / 侧栏切换
+// ---------------------------------------------------------------
 void MainWindow::buildMenuBar()
 {
     QMenuBar *mb = menuBar();
@@ -2070,25 +1070,11 @@ void MainWindow::buildMenuBar()
     QAction *aImportRadar = item(mFile, tr("导入雷达数据..."), QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_O),
                                  [pick]() { pick(TrackSource::Radar); });
     QAction *aImportRaw = item(mFile, tr("导入雷达原始测量数据..."), QKeySequence(), [pick]() { pick(TrackSource::RadarRaw); });
-    m_importActions = { aImportAdsb, aImportRadar, aImportRaw };
+    m_importCtrl->setImportActions({ aImportAdsb, aImportRadar, aImportRaw });
     mFile->addSeparator();
-    item(mFile, tr("打开瓦片 (.mbtiles)..."), QKeySequence(), [this]() { openTileFile(); });
+    item(mFile, tr("打开瓦片 (.mbtiles)..."), QKeySequence(), [this]() { m_mapSources->openTileFile(); });
     QMenu *mSource = mFile->addMenu(tr("底图源"));
-    auto addSource = [this, mSource](const QString &id, const QString &text) {
-        QAction *a = mSource->addAction(text);
-        a->setCheckable(true);
-        connect(a, &QAction::triggered, this, [this, id]() { setMapSource(id); });
-        return a;
-    };
-    m_srcOffline = addSource(QStringLiteral("offline"), tr("离线瓦片 (.mbtiles)"));
-    m_srcTdt = addSource(QStringLiteral("tdt"), tr("天地图（在线 · 街道级 z18）"));
-    m_srcAmap = addSource(QStringLiteral("amap"), tr("高德（在线 · 更快）"));
-    m_srcAmap->setToolTip(tr("高德瓦片的坐标基准和 GPS 不同，程序内部自动对齐；\n"
-                             "界面显示、数据库和导出的坐标始终是 WGS84"));
-    m_srcAmapOffline = addSource(QStringLiteral("amap_offline"), tr("高德（离线 · 近岸 z1-z16）"));
-    m_srcAmapOffline->setToolTip(tr("中国东部+东南沿海近岸走廊 z16 离线瓦片；\n"
-                                   "需先运行 tools/download_tiles.py 生成 amap_coast_z1_z16.mbtiles"));
-    syncSourceActions();
+    m_mapSources->populateSourceMenu(mSource);
     mFile->addSeparator();
     QAction *aExit = item(mFile, tr("退出"), QKeySequence(Qt::ALT + Qt::Key_F4), []() { qApp->quit(); });
     aExit->setShortcutContext(Qt::WidgetShortcut);   // Alt+F4 由系统处理，这里只显示
@@ -2096,11 +1082,12 @@ void MainWindow::buildMenuBar()
     QMenu *mEdit = mb->addMenu(tr("编辑"));
     item(mEdit, tr("清除选中"), QKeySequence(Qt::Key_Escape), [this]() { onEscape(); });
     // Delete：只删「选择」工具选中的图形，没选中时动作是禁用的（不抢其他控件的 Delete）
-    m_deleteDrawAction = item(mEdit, tr("删除选中图形"), QKeySequence(Qt::Key_Delete), [this]() {
+    QAction *deleteDrawAction = item(mEdit, tr("删除选中图形"), QKeySequence(Qt::Key_Delete), [this]() {
         if (m_globe->selectedFeature() > 0)
             m_globe->deleteSelected();
     });
-    m_deleteDrawAction->setEnabled(false);
+    deleteDrawAction->setEnabled(false);
+    m_drawCtrl->setDeleteAction(deleteDrawAction);
     mEdit->addSeparator();
     item(mEdit, tr("首选项设置"), QKeySequence(Qt::CTRL + Qt::Key_Comma), [this]() { activatePanel(PanelId::Settings); });
 
@@ -2188,34 +1175,7 @@ void MainWindow::buildMenuBar()
     // 「窗口」菜单：列出已打开的点迹窗口，可激活或全部关闭
     QMenu *mWindows = mb->addMenu(tr("窗口"));
     connect(mWindows, &QMenu::aboutToShow, this, [this, mWindows]() {
-        mWindows->clear();
-        m_point3dWindows.erase(std::remove_if(m_point3dWindows.begin(), m_point3dWindows.end(),
-                                              [](const QPointer<Point3dWindow> &p) { return p.isNull(); }),
-                               m_point3dWindows.end());
-        if (m_point3dWindows.isEmpty()) {
-            QAction *empty = mWindows->addAction(tr("（没有打开的点迹窗口）"));
-            empty->setEnabled(false);
-            return;
-        }
-        for (const QPointer<Point3dWindow> &win : qAsConst(m_point3dWindows)) {
-            if (!win)
-                continue;
-            const QString title = win->windowTitle();
-            mWindows->addAction(title, this, [win]() {
-                if (win) {
-                    win->showNormal();
-                    win->raise();
-                    win->activateWindow();
-                }
-            });
-        }
-        mWindows->addSeparator();
-        mWindows->addAction(tr("关闭全部点迹窗口"), this, [this]() {
-            const QList<QPointer<Point3dWindow>> wins = m_point3dWindows;
-            for (const QPointer<Point3dWindow> &win : wins)
-                if (win)
-                    win->close();
-        });
+        m_point3d->populateWindowMenu(mWindows);
     });
 
     QMenu *mTools = mb->addMenu(tr("工具"));
@@ -2233,11 +1193,12 @@ void MainWindow::buildMenuBar()
 
     // 「绘图」入口：紧挨「帮助」右边（标题栏最后一个位置），点一下展开/收起绘图工具条。
     // 用普通 QAction 挂在菜单栏上（QMenuBar 不显示 QWidgetAction 里的控件），点它就是按钮。
-    m_drawToggle = mb->addAction(tr("绘图"));
-    m_drawToggle->setObjectName(QStringLiteral("drawToggleAction"));
-    m_drawToggle->setCheckable(true);
-    m_drawToggle->setToolTip(tr("显示 / 隐藏绘图工具栏"));
-    connect(m_drawToggle, &QAction::triggered, this, &MainWindow::setDrawingBarVisible);
+    QAction *drawToggle = mb->addAction(tr("绘图"));
+    drawToggle->setObjectName(QStringLiteral("drawToggleAction"));
+    drawToggle->setCheckable(true);
+    drawToggle->setToolTip(tr("显示 / 隐藏绘图工具栏"));
+    connect(drawToggle, &QAction::triggered, this, &MainWindow::setDrawingBarVisible);
+    m_drawCtrl->setToggleAction(drawToggle);
 }
 
 QStackedWidget *MainWindow::buildEditorArea()
@@ -2270,9 +1231,11 @@ void MainWindow::activatePanel(PanelId id)
     if (m_panel >= 0 && !m_sidePanel->isHidden())
         m_panelWidth[m_panel] = m_splitter->sizes().value(0);
     m_panel = i;
-    m_sidePanel->showPanel(i, QString::fromUtf8(kPanels[i].title));
+    m_sidePanel->showPanel(i, appshell::panelTitle(id));
     m_sidePanel->show();
-    const int w = qBound(ui::sz(kSidebarMin), m_panelWidth.value(i, ui::sz(kSidebarDefault)), ui::sz(kSidebarMax));
+    const int w = qBound(ui::sz(appshell::kSidebarMin),
+                         m_panelWidth.value(i, ui::sz(appshell::kSidebarDefault)),
+                         ui::sz(appshell::kSidebarMax));
     const int total = qMax(m_splitter->width(), w + 200);
     m_splitter->setSizes(QList<int>() << w << total - w);
     m_activityBar->highlight(i);

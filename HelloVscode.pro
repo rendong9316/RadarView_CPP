@@ -23,6 +23,11 @@ SOURCES += \
     # app
     src/app/main.cpp \
     src/app/mainwindow.cpp \
+    src/app/appshellwidgets.cpp \
+    src/app/drawingcontroller.cpp \
+    src/app/mapsourcecontroller.cpp \
+    src/app/point3dcoordinator.cpp \
+    src/app/trackimportcoordinator.cpp \
     src/app/apppaths.cpp \
     src/app/splashscreen.cpp \
     src/app/theme.cpp \
@@ -69,6 +74,11 @@ SOURCES += \
 HEADERS += \
     # app
     src/app/mainwindow.h \
+    src/app/appshellwidgets.h \
+    src/app/drawingcontroller.h \
+    src/app/mapsourcecontroller.h \
+    src/app/point3dcoordinator.h \
+    src/app/trackimportcoordinator.h \
     src/app/apppaths.h \
     src/app/splashscreen.h \
     src/app/theme.h \
