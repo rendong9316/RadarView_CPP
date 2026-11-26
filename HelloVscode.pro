@@ -58,6 +58,8 @@ SOURCES += \
     src/point3d/point3dparsers.cpp \
     src/point3d/point3dimportjob.cpp \
     src/point3d/point3dcanvas.cpp \
+    src/point3d/point3dsidepanel.cpp \
+    src/point3d/point3dadvancedpanel.cpp \
     src/point3d/point3dwindow.cpp
 
 HEADERS += \
@@ -100,6 +102,8 @@ HEADERS += \
     src/point3d/point3dparsers.h \
     src/point3d/point3dimportjob.h \
     src/point3d/point3dcanvas.h \
+    src/point3d/point3dsidepanel.h \
+    src/point3d/point3dadvancedpanel.h \
     src/point3d/point3dwindow.h
 
 # Windows 用 Qt5Core 内置并导出的 zlib；其他平台链接系统 zlib

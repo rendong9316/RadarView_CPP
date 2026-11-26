@@ -1,9 +1,11 @@
 #include "point3dwindow.h"
 
 #include "apppaths.h"
+#include "point3dadvancedpanel.h"
 #include "point3dcanvas.h"
 #include "point3dimportjob.h"
 #include "point3dparsers.h"
+#include "point3dsidepanel.h"
 #include "theme.h"
 #include "trackdb.h"
 #include "trackpicker.h"
@@ -11,34 +13,25 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
-#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
-#include <QDialogButtonBox>
 #include <QDir>
-#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFormLayout>
-#include <QFrame>
-#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
-#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QSet>
 #include <QShortcut>
 #include <QSlider>
-#include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QTimer>
@@ -46,50 +39,12 @@
 
 #include <cmath>
 #include <functional>
-#include <limits>
 
 namespace {
-
-// 侧栏滚动区：最小尺寸固定得很小，不跟着内容走。
-// 否则 QScrollArea 会把内容的 minimumSizeHint 顶到窗口最小宽度上，窗口又拉不窄了。
-class SideScrollArea : public QScrollArea
-{
-public:
-    explicit SideScrollArea(QWidget *parent) : QScrollArea(parent) {}
-    QSize minimumSizeHint() const override { return QSize(160, 160); }
-};
 
 QVariant setting(const char *key, const QVariant &def)
 {
     return app::settings().value(QString::fromLatin1(key), def);
-}
-
-// 视图 -> 设置键后缀（三套区域筛选参数各存一份）
-QString regionKey(int mode)
-{
-    return mode == int(Point3dViewMode::RAF) ? QStringLiteral("raf")
-         : mode == int(Point3dViewMode::VAF) ? QStringLiteral("vaf")
-                                             : QStringLiteral("rvf");
-}
-
-// 区域筛选三行的轴名（随视图模式变化）
-void regionAxisTitles(Point3dViewMode mode, QString *x, QString *y, QString *z)
-{
-    switch (mode) {
-    case Point3dViewMode::RVF:
-        *x = QStringLiteral("X 距离 / m");
-        *y = QStringLiteral("Y 速度 / (m/s)");
-        break;
-    case Point3dViewMode::RAF:
-        *x = QStringLiteral("X 距离 / m");
-        *y = QStringLiteral("Y 方位 / (°)");
-        break;
-    case Point3dViewMode::VAF:
-        *x = QStringLiteral("X 速度 / (m/s)");
-        *y = QStringLiteral("Y 方位 / (°)");
-        break;
-    }
-    *z = QStringLiteral("Z 帧号");
 }
 
 QString toolbarQss()
@@ -299,6 +254,9 @@ void Point3dWindow::updatePlaybackUi()
     m_playBtn->setEnabled(!m_data.frames.isEmpty());
 }
 
+// ---------------------------------------------------------------------------
+//  航迹叠加与地图 / 数据库联动
+// ---------------------------------------------------------------------------
 void Point3dWindow::setTrackColorProvider(
     const std::function<QColor(TrackSource, const QString &)> &provider)
 {
@@ -382,268 +340,34 @@ QSet<int> Point3dWindow::isolatedBatches() const
     return m_canvas->isolatedBatches();
 }
 
-// 色标（SNR→颜色）映射范围：默认自动取本窗口数据的 min/max，也可在高级参数里手动指定
-// 把 SNR 设置同步到侧栏控件（高级参数里改过之后调用）
-void Point3dWindow::syncSnrControls()
-{
-    m_snrAuto->setChecked(setting("point3d.snr_auto", true).toBool());
-    m_snrLoSpin->setValue(setting("point3d.snr_min", 0.0).toDouble());
-    m_snrHiSpin->setValue(setting("point3d.snr_max", 30.0).toDouble());
-}
-
-void Point3dWindow::applySnrRange()
-{
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    if (setting("point3d.snr_auto", true).toBool()) {
-        m_canvas->setSnrRange(nan, nan);
-        return;
-    }
-    double lo = setting("point3d.snr_min", 0.0).toDouble();
-    double hi = setting("point3d.snr_max", 30.0).toDouble();
-    if (!(hi > lo))
-        hi = lo + 1.0;
-    m_canvas->setSnrRange(lo, hi);
-}
-
 // ---------------------------------------------------------------------------
-//  区域筛选：三行 = 当前视图的三个轴；每个视图各存一套，切换视图原样恢复
+//  区域筛选与视图转发（委托给左侧设置栏 Point3dSidePanel）
 // ---------------------------------------------------------------------------
 Point3dRegion Point3dWindow::regionForView(Point3dViewMode mode) const
 {
-    return m_viewRegions[int(mode)].region;
+    return m_sideSettings->regionForView(mode);
 }
 
 bool Point3dWindow::regionAppliedForView(Point3dViewMode mode) const
 {
-    return m_viewRegions[int(mode)].applied;
-}
-
-void Point3dWindow::setViewMode(Point3dViewMode mode)
-{
-    const int idx = m_viewCombo->findData(int(mode));
-    if (idx >= 0)
-        m_viewCombo->setCurrentIndex(idx);
-}
-
-void Point3dWindow::loadRegionForCurrentView()
-{
-    const int vi = int(m_canvas->viewMode());
-    ViewRegion &st = m_viewRegions[vi];
-    if (!st.region.valid)
-        st.region = point3dRegionExtent(m_data, Point3dViewMode(vi));
-
-    QString xl, yl, zl;
-    regionAxisTitles(Point3dViewMode(vi), &xl, &yl, &zl);
-
-    m_regionLoading = true;
-    m_regionAxisLabel[0]->setText(xl);
-    m_regionAxisLabel[1]->setText(yl);
-    m_regionAxisLabel[2]->setText(zl);
-    m_regionMinSpin[0]->setValue(st.region.x0);
-    m_regionMaxSpin[0]->setValue(st.region.x1);
-    m_regionMinSpin[1]->setValue(st.region.y0);
-    m_regionMaxSpin[1]->setValue(st.region.y1);
-    m_regionMinSpin[2]->setValue(st.region.z0);
-    m_regionMaxSpin[2]->setValue(st.region.z1);
-    m_regionLoading = false;
-
-    m_canvas->setRegionFilter(st.applied ? st.region : Point3dRegion());
-    m_canvas->setRegionBox(regionBoxVisible() ? st.region : Point3dRegion());
-    updateRegionButtons();
-    updateStatus();
-}
-
-void Point3dWindow::onRegionSpinEdited()
-{
-    if (m_restoring || m_regionLoading)
-        return;
-    const int vi = int(m_canvas->viewMode());
-    ViewRegion &st = m_viewRegions[vi];
-    st.region.valid = true;
-    st.region.x0 = m_regionMinSpin[0]->value();
-    st.region.x1 = m_regionMaxSpin[0]->value();
-    st.region.y0 = m_regionMinSpin[1]->value();
-    st.region.y1 = m_regionMaxSpin[1]->value();
-    st.region.z0 = m_regionMinSpin[2]->value();
-    st.region.z1 = m_regionMaxSpin[2]->value();
-
-    // 已应用后再改数字：自动退回全量视图，只显示候选框（点「应用」才重新放大+裁剪）
-    if (st.applied) {
-        st.applied = false;
-        m_canvas->setRegionFilter(Point3dRegion());
-        app::setValue(QStringLiteral("point3d.region_applied.%1").arg(regionKey(vi)), false);
-    }
-    m_canvas->setRegionBox(regionBoxVisible() ? st.region : Point3dRegion());
-    persistRegion(vi);
-    updateRegionButtons();
-    updateStatus();
-}
-
-void Point3dWindow::applyRegion()
-{
-    if (m_data.frames.isEmpty())
-        return;
-    const int vi = int(m_canvas->viewMode());
-    ViewRegion &st = m_viewRegions[vi];
-    Point3dRegion r = st.region;
-    r.valid = true;
-    const Point3dRegion ext = point3dRegionExtent(m_data, Point3dViewMode(vi));
-    if (ext.valid) {                        // 夹到数据量程内
-        r.x0 = qMax(r.x0, ext.x0);
-        r.x1 = qMin(r.x1, ext.x1);
-        r.y0 = qMax(r.y0, ext.y0);
-        r.y1 = qMin(r.y1, ext.y1);
-        r.z0 = qMax(r.z0, ext.z0);
-        r.z1 = qMin(r.z1, ext.z1);
-    }
-    if (!(r.x1 > r.x0) || !(r.y1 > r.y0) || !(r.z1 > r.z0)) {
-        m_status->setText(QStringLiteral("区域筛选：区间无效（每行下限必须小于上限）"));
-        return;
-    }
-    st.region = r;
-    st.applied = true;
-
-    m_regionLoading = true;
-    m_regionMinSpin[0]->setValue(r.x0);
-    m_regionMaxSpin[0]->setValue(r.x1);
-    m_regionMinSpin[1]->setValue(r.y0);
-    m_regionMaxSpin[1]->setValue(r.y1);
-    m_regionMinSpin[2]->setValue(r.z0);
-    m_regionMaxSpin[2]->setValue(r.z1);
-    m_regionLoading = false;
-
-    m_canvas->setRegionBox(r);
-    m_canvas->setRegionFilter(r);           // 归一化改为区间、数据裁剪 -> 视图放大到框内
-    persistRegion(vi);
-    updateRegionButtons();
-    m_canvas->repaint();
-    updateStatus();
-    if (m_canvas->visiblePointCount() == 0)
-        m_status->setText(QStringLiteral("区域筛选：框内没有点迹，请放宽区间"));
-}
-
-void Point3dWindow::resetRegion()
-{
-    const int vi = int(m_canvas->viewMode());
-    ViewRegion &st = m_viewRegions[vi];
-    st.region = point3dRegionExtent(m_data, Point3dViewMode(vi));
-    st.applied = false;
-
-    m_regionLoading = true;
-    m_regionMinSpin[0]->setValue(st.region.x0);
-    m_regionMaxSpin[0]->setValue(st.region.x1);
-    m_regionMinSpin[1]->setValue(st.region.y0);
-    m_regionMaxSpin[1]->setValue(st.region.y1);
-    m_regionMinSpin[2]->setValue(st.region.z0);
-    m_regionMaxSpin[2]->setValue(st.region.z1);
-    m_regionLoading = false;
-
-    m_canvas->setRegionFilter(Point3dRegion());
-    m_canvas->setRegionBox(regionBoxVisible() ? st.region : Point3dRegion());
-    persistRegion(vi);
-    updateRegionButtons();
-    updateStatus();
-}
-
-void Point3dWindow::persistRegion(int mode)
-{
-    const ViewRegion &st = m_viewRegions[mode];
-    const QString key = QStringLiteral("point3d.region.%1").arg(regionKey(mode));
-    if (st.region.valid) {
-        app::setValue(key, QStringLiteral("%1,%2,%3,%4,%5,%6")
-                               .arg(st.region.x0, 0, 'g', 12)
-                               .arg(st.region.x1, 0, 'g', 12)
-                               .arg(st.region.y0, 0, 'g', 12)
-                               .arg(st.region.y1, 0, 'g', 12)
-                               .arg(st.region.z0, 0, 'g', 12)
-                               .arg(st.region.z1, 0, 'g', 12));
-    } else {
-        app::removeValue(key);
-    }
-    app::setValue(QStringLiteral("point3d.region_applied.%1").arg(regionKey(mode)), st.applied);
-}
-
-void Point3dWindow::revalidateRegions()
-{
-    for (int i = 0; i < 3; ++i) {
-        ViewRegion &st = m_viewRegions[i];
-        const Point3dRegion ext = point3dRegionExtent(m_data, Point3dViewMode(i));
-        if (!ext.valid)
-            continue;
-        if (!st.region.valid) {
-            st.region = ext;
-            st.applied = false;
-            continue;
-        }
-        st.region.x0 = qBound(ext.x0, st.region.x0, ext.x1);
-        st.region.x1 = qBound(ext.x0, st.region.x1, ext.x1);
-        st.region.y0 = qBound(ext.y0, st.region.y0, ext.y1);
-        st.region.y1 = qBound(ext.y0, st.region.y1, ext.y1);
-        st.region.z0 = qBound(ext.z0, st.region.z0, ext.z1);
-        st.region.z1 = qBound(ext.z0, st.region.z1, ext.z1);
-        if (!(st.region.x1 > st.region.x0) || !(st.region.y1 > st.region.y0)
-                || !(st.region.z1 > st.region.z0)) {
-            st.region = ext;                 // 新数据完全不在原区间里：复位
-            st.applied = false;
-        }
-        persistRegion(i);
-    }
-}
-
-// 候选框只在"用户真的改过区间/已经应用"时显示；满量程时立方体本身就是边界，不用再描框
-bool Point3dWindow::regionBoxVisible() const
-{
-    if (m_sidePanel && m_sidePanel->isHidden())
-        return false;
-    if (m_sideStack && m_sideStack->currentIndex() != 0)
-        return false;      // 高级页时看不到区域控件，不必画候选框
-    const int vi = int(m_canvas->viewMode());
-    const ViewRegion &st = m_viewRegions[vi];
-    if (st.applied)
-        return true;
-    if (!st.region.valid)
-        return false;
-    const Point3dRegion ext = point3dRegionExtent(m_data, Point3dViewMode(vi));
-    if (!ext.valid)
-        return false;
-    const double eps = 1e-9;
-    return st.region.x0 > ext.x0 + eps || st.region.x1 < ext.x1 - eps
-        || st.region.y0 > ext.y0 + eps || st.region.y1 < ext.y1 - eps
-        || st.region.z0 > ext.z0 + eps || st.region.z1 < ext.z1 - eps;
-}
-
-void Point3dWindow::updateRegionButtons()
-{
-    const bool haveData = !m_data.frames.isEmpty();
-    m_regionApplyBtn->setEnabled(haveData);
-    m_regionResetBtn->setEnabled(haveData && m_viewRegions[int(m_canvas->viewMode())].applied);
+    return m_sideSettings->regionAppliedForView(mode);
 }
 
 bool Point3dWindow::setRegionForCurrentView(const Point3dRegion &r, bool apply)
 {
-    const int vi = int(m_canvas->viewMode());
-    ViewRegion &st = m_viewRegions[vi];
-    st.region = r;
-    st.region.valid = true;
-    m_regionLoading = true;
-    m_regionMinSpin[0]->setValue(r.x0);
-    m_regionMaxSpin[0]->setValue(r.x1);
-    m_regionMinSpin[1]->setValue(r.y0);
-    m_regionMaxSpin[1]->setValue(r.y1);
-    m_regionMinSpin[2]->setValue(r.z0);
-    m_regionMaxSpin[2]->setValue(r.z1);
-    m_regionLoading = false;
-    if (!apply) {
-        st.applied = false;
-        m_canvas->setRegionFilter(Point3dRegion());
-        m_canvas->setRegionBox(r);
-        persistRegion(vi);
-        updateRegionButtons();
-        updateStatus();
-        return true;
-    }
-    applyRegion();
-    return st.applied;
+    return m_sideSettings->setRegionForCurrentView(r, apply);
+}
+
+void Point3dWindow::setViewMode(Point3dViewMode mode)
+{
+    m_sideSettings->setViewMode(mode);
+}
+
+void Point3dWindow::syncViewMenuChecks(Point3dViewMode mode)
+{
+    for (int i = 0; i < 3; ++i)
+        if (m_viewActions[i])
+            m_viewActions[i]->setChecked(i == int(mode));
 }
 
 void Point3dWindow::chooseTracksFromDb()
@@ -675,7 +399,7 @@ void Point3dWindow::chooseTracksFromDb()
                 .arg(m_skippedTracks)
                 .arg(formatBeijingTime(m_data.minTime), formatBeijingTime(m_data.maxTime)));
 
-    // 用户明确选中的航迹不能被「点源」过滤静默藏起来：当前模式取不到点列就自动切「自动」
+    // 用户明确选中的航迹不能被「点源」过滤静默藏起来：当前模式取不到点列就自动切另一列
     if (!m_data.tracks.isEmpty()) {
         bool admitted = false;
         for (const TrackOverlay &ov : qAsConst(m_data.tracks))
@@ -684,7 +408,7 @@ void Point3dWindow::chooseTracksFromDb()
                 break;
             }
         if (!admitted)
-            m_sourceBtn->toggle();      // 当前点列取不到点：切到另一列（平滑 <-> 关联）
+            m_sideSettings->toggleTrackSource();
     } else if (!sel.isEmpty() && !app::testMode()) {
         // 选了航迹却一条也叠加不上：多半是时间窗不重叠或旧数据没有测量坐标
         QMessageBox::information(
@@ -697,6 +421,9 @@ void Point3dWindow::chooseTracksFromDb()
     updateStatus();
 }
 
+// ---------------------------------------------------------------------------
+//  多窗口会话保存 / 恢复
+// ---------------------------------------------------------------------------
 QJsonObject Point3dWindow::sessionJson() const
 {
     QJsonObject o;
@@ -720,23 +447,9 @@ QJsonObject Point3dWindow::sessionJson() const
     cam.insert(QStringLiteral("pan_y"), panY);
     o.insert(QStringLiteral("camera"), cam);
 
-    o.insert(QStringLiteral("view_mode"), m_viewCombo->currentData().toInt());
+    o.insert(QStringLiteral("view_mode"), int(m_sideSettings->viewMode()));
     o.insert(QStringLiteral("window_length"), m_canvas->windowLength());
-    QJsonArray regions;
-    for (int i = 0; i < 3; ++i) {
-        const ViewRegion &st = m_viewRegions[i];
-        QJsonObject ro;
-        ro.insert(QStringLiteral("valid"), st.region.valid);
-        ro.insert(QStringLiteral("applied"), st.applied);
-        ro.insert(QStringLiteral("x0"), st.region.x0);
-        ro.insert(QStringLiteral("x1"), st.region.x1);
-        ro.insert(QStringLiteral("y0"), st.region.y0);
-        ro.insert(QStringLiteral("y1"), st.region.y1);
-        ro.insert(QStringLiteral("z0"), st.region.z0);
-        ro.insert(QStringLiteral("z1"), st.region.z1);
-        regions.append(ro);
-    }
-    o.insert(QStringLiteral("regions"), regions);
+    o.insert(QStringLiteral("regions"), m_sideSettings->regionsToJson());
     o.insert(QStringLiteral("geometry"),
              QString::fromLatin1(saveGeometry().toBase64()));
     o.insert(QStringLiteral("number"), m_number);
@@ -746,6 +459,8 @@ QJsonObject Point3dWindow::sessionJson() const
 void Point3dWindow::restoreSession(const QJsonObject &obj)
 {
     m_restoring = true;
+    m_sideSettings->setRestoring(true);
+
     if (obj.contains(QStringLiteral("number")))
         setNumber(obj.value(QStringLiteral("number")).toInt(m_number));
 
@@ -755,44 +470,18 @@ void Point3dWindow::restoreSession(const QJsonObject &obj)
         restoreGeometry(geo);
 
     // 区域筛选（三个视图各一套）：先恢复状态，再切视图，切完统一套用到画布
-    const QJsonArray regions = obj.value(QStringLiteral("regions")).toArray();
-    for (int i = 0; i < 3 && i < regions.size(); ++i) {
-        const QJsonObject ro = regions.at(i).toObject();
-        m_viewRegions[i].region.valid = ro.value(QStringLiteral("valid")).toBool();
-        m_viewRegions[i].applied = ro.value(QStringLiteral("applied")).toBool()
-                                   && m_viewRegions[i].region.valid;
-        m_viewRegions[i].region.x0 = ro.value(QStringLiteral("x0")).toDouble();
-        m_viewRegions[i].region.x1 = ro.value(QStringLiteral("x1")).toDouble();
-        m_viewRegions[i].region.y0 = ro.value(QStringLiteral("y0")).toDouble();
-        m_viewRegions[i].region.y1 = ro.value(QStringLiteral("y1")).toDouble();
-        m_viewRegions[i].region.z0 = ro.value(QStringLiteral("z0")).toDouble();
-        m_viewRegions[i].region.z1 = ro.value(QStringLiteral("z1")).toDouble();
-    }
+    m_sideSettings->restoreRegionsFromJson(obj.value(QStringLiteral("regions")).toArray());
 
     const int mode = obj.value(QStringLiteral("view_mode")).toInt(
         int(Point3dViewMode::RVF));
-    const int viewIdx = m_viewCombo->findData(mode);
-    if (viewIdx >= 0)
-        m_viewCombo->setCurrentIndex(viewIdx);
-    m_canvas->setViewMode(Point3dViewMode(m_viewCombo->currentData().toInt()));
-    loadRegionForCurrentView();
+    m_sideSettings->setViewMode(Point3dViewMode(mode));
+    const Point3dViewMode resolvedMode = m_sideSettings->viewMode();
+    m_canvas->setViewMode(resolvedMode);
+    syncViewMenuChecks(resolvedMode);
+    m_sideSettings->loadRegionForCurrentView();
 
     const int len = obj.value(QStringLiteral("window_length")).toInt(0);
-    int presetIdx = -1;
-    for (int i = 0; i < m_windowCombo->count(); ++i)
-        if (m_windowCombo->itemData(i).toInt() == len && len > 0) {
-            presetIdx = i;
-            break;
-        }
-    if (len == 0) {
-        presetIdx = m_windowCombo->count() - 2;
-    } else if (presetIdx < 0) {
-        presetIdx = m_windowCombo->count() - 1;
-        m_windowSpin->setValue(len);
-        m_windowSpin->setVisible(true);
-    }
-    m_windowCombo->setCurrentIndex(presetIdx);
-    m_canvas->setWindowLength(len);
+    m_sideSettings->setWindowLength(len);
 
     const QJsonObject cam = obj.value(QStringLiteral("camera")).toObject();
     if (!cam.isEmpty())
@@ -809,6 +498,7 @@ void Point3dWindow::restoreSession(const QJsonObject &obj)
     for (const QJsonValue &v : obj.value(QStringLiteral("tracks")).toArray())
         m_trackKeys << v.toString();
 
+    m_sideSettings->setRestoring(false);
     m_restoring = false;
     if (!m_files.isEmpty())
         startPendingLoad();
@@ -828,6 +518,9 @@ void Point3dWindow::startPendingLoad()
     loadDetectionFiles(existing);
 }
 
+// ---------------------------------------------------------------------------
+//  主界面搭建与连接
+// ---------------------------------------------------------------------------
 void Point3dWindow::buildUi()
 {
     m_restoring = true;
@@ -895,8 +588,10 @@ void Point3dWindow::buildUi()
     m_sideStack = new QStackedWidget(this);
     m_sideStack->setObjectName(QStringLiteral("point3dSideStack"));
     m_sideStack->setMinimumWidth(ui::sz(220));
-    m_sideStack->addWidget(buildSidePanel());
-    m_sideStack->addWidget(buildAdvancedPanel());
+    m_sideSettings = new Point3dSidePanel(m_canvas, &m_data, this);
+    m_sideAdvanced = new Point3dAdvancedPanel(this);
+    m_sideStack->addWidget(m_sideSettings);
+    m_sideStack->addWidget(m_sideAdvanced);
     m_sidePanel = m_sideStack;
     // 侧栏和画布之间用分割器：侧栏宽度可以拖着改
     QSplitter *split = new QSplitter(Qt::Horizontal, this);
@@ -977,6 +672,7 @@ void Point3dWindow::buildUi()
     connect(actPick, &QAction::triggered, this, &Point3dWindow::chooseTracksFromDb);
     connect(actExport, &QAction::triggered, this, &Point3dWindow::exportCanvasImage);
     connect(actClose, &QAction::triggered, this, &QWidget::close);
+
     // 顶部「设置」「高级」：点一下展开对应的左侧侧栏，再点一下收起
     connect(m_settingsBtn, &QPushButton::clicked, this, [this]() {
         const bool show = m_sidePanel->isHidden() || m_sideStack->currentIndex() != 0;
@@ -986,132 +682,27 @@ void Point3dWindow::buildUi()
         const bool show = m_sidePanel->isHidden() || m_sideStack->currentIndex() != 1;
         setSidePanelPage(1, show);
     });
-    // 高级页：即时持久化；连续性参数防抖 ~0.4s 后重算；航迹长度/距离缩放立即重建叠加
-    m_advTimer = new QTimer(this);
-    m_advTimer->setSingleShot(true);
-    m_advTimer->setInterval(400);
-    connect(m_advTimer, &QTimer::timeout, this, &Point3dWindow::recomputeContinuityNow);
-    auto advPersist = [this]() { persistAdvanced(); };
-    connect(m_detVarEdit, &QLineEdit::textChanged, this, advPersist);
-    connect(m_sysVarEdit, &QLineEdit::textChanged, this, advPersist);
-    connect(m_trackVarEdit, &QLineEdit::textChanged, this, advPersist);
-    connect(m_patternEdit, &QLineEdit::textChanged, this, advPersist);
-    connect(m_azFieldCombo, &QComboBox::currentTextChanged, this, advPersist);
-    connect(m_maxFramesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, advPersist);
-    connect(m_autoReloadCheck, &QCheckBox::toggled, this, advPersist);
-    auto advContinuity = [this]() {
-        persistAdvanced();
-        if (!m_restoring)
-            m_advTimer->start();
-    };
-    connect(m_gapSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, advContinuity);
-    connect(m_rangeCSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, advContinuity);
-    connect(m_dopplerCSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, advContinuity);
-    connect(m_azimuthCSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, advContinuity);
-    // 最小航迹长度 / 距离缩放立即重建叠加航迹；强连续阈值只影响状态统计
-    connect(m_minTrackLenSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
-        persistAdvanced();
+
+    // 设置页 / 高级页信号
+    connect(m_sideSettings, &Point3dSidePanel::viewModeChanged,
+            this, &Point3dWindow::syncViewMenuChecks);
+    connect(m_sideSettings, &Point3dSidePanel::statusChanged,
+            this, &Point3dWindow::updateStatus);
+    connect(m_sideSettings, &Point3dSidePanel::statusMessage,
+            this, [this](const QString &text) { m_status->setText(text); });
+
+    connect(m_sideAdvanced, &Point3dAdvancedPanel::continuityConfigChanged,
+            this, &Point3dWindow::recomputeContinuityNow);
+    connect(m_sideAdvanced, &Point3dAdvancedPanel::overlayParamsChanged, this, [this]() {
         reloadOverlaysFromKeys();
         updateStatus();
     });
-    connect(m_rangeScaleSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
-        persistAdvanced();
-        reloadOverlaysFromKeys();
-        updateStatus();
-    });
-    connect(m_thresholdSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v) {
-        persistAdvanced();
+    connect(m_sideAdvanced, &Point3dAdvancedPanel::strongThresholdChanged, this, [this](double v) {
         m_canvas->setStrongThreshold(v);
         updateStatus();
     });
-    connect(m_sourceBtn, &QPushButton::toggled, this, [this](bool associated) {
-        m_sourceBtn->setText(associated ? QStringLiteral("关联") : QStringLiteral("平滑"));
-        m_canvas->setTrackSource(associated ? Point3dTrackSource::Associated
-                                            : Point3dTrackSource::Smooth);
-        if (!m_restoring)
-            app::setValue(QStringLiteral("point3d.track_source"),
-                          associated ? QStringLiteral("associated") : QStringLiteral("smooth"));
-        updateStatus();
-    });
-    // 尺寸 / 色标 / 区域筛选
-    connect(m_pointSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double v) {
-                m_canvas->setPointScale(v);
-                if (!m_restoring)
-                    app::setValue(QStringLiteral("point3d.point_scale"), v);
-            });
-    connect(m_lineWidthSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double v) {
-                m_canvas->setTrackLineWidth(v);
-                if (!m_restoring)
-                    app::setValue(QStringLiteral("point3d.track_line_width"), v);
-            });
-    connect(m_labelSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double v) {
-                m_canvas->setLabelScale(v);
-                if (!m_restoring)
-                    app::setValue(QStringLiteral("point3d.label_scale"), v);
-            });
-    connect(m_hoverSizeSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double v) {
-                m_canvas->setHoverTextScale(v);
-                if (!m_restoring)
-                    app::setValue(QStringLiteral("point3d.hover_text_scale"), v);
-            });
-    connect(m_snrAuto, &QCheckBox::toggled, this, [this](bool on) {
-        m_snrLoSpin->setEnabled(!on);
-        m_snrHiSpin->setEnabled(!on);
-        if (m_restoring)
-            return;
-        app::setValue(QStringLiteral("point3d.snr_auto"), on);
-        applySnrRange();
-    });
-    auto snrEdited = [this](double) {
-        if (m_restoring)
-            return;
-        app::setValue(QStringLiteral("point3d.snr_min"), m_snrLoSpin->value());
-        app::setValue(QStringLiteral("point3d.snr_max"), m_snrHiSpin->value());
-        applySnrRange();
-    };
-    connect(m_snrLoSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, snrEdited);
-    connect(m_snrHiSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, snrEdited);
-    for (int i = 0; i < 3; ++i) {
-        connect(m_regionMinSpin[i], QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, &Point3dWindow::onRegionSpinEdited);
-        connect(m_regionMaxSpin[i], QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, &Point3dWindow::onRegionSpinEdited);
-    }
-    connect(m_regionApplyBtn, &QPushButton::clicked, this, &Point3dWindow::applyRegion);
-    connect(m_regionResetBtn, &QPushButton::clicked, this, &Point3dWindow::resetRegion);
-    connect(m_viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &Point3dWindow::onViewModeChanged);
-    connect(m_windowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &Point3dWindow::onWindowLengthChanged);
-    connect(m_windowSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this](int v) {
-                if (!m_restoring)
-                    applyWindowLength(v);
-            });
-    connect(m_pointBtn, &QPushButton::toggled, this, [this](bool on) {
-        m_canvas->setShowDetections(on);
-        if (!m_restoring) {
-            app::setValue(QStringLiteral("point3d.show_detections"), on);
-            updateStatus();
-        }
-    });
-    connect(m_trackBtn, &QPushButton::toggled, this, [this](bool on) {
-        m_canvas->setShowTracks(on);
-        if (!m_restoring) {
-            app::setValue(QStringLiteral("point3d.show_tracks"), on);
-            updateStatus();
-        }
-    });
-    connect(m_labelBtn, &QPushButton::toggled, this, [this](bool on) {
-        m_canvas->setShowLabels(on);
-        if (!m_restoring)
-            app::setValue(QStringLiteral("point3d.show_labels"), on);
-    });
 
+    // 画布信号
     connect(m_canvas, &Point3dCanvas::hoverChanged, this, &Point3dWindow::updateStatus);
     connect(m_canvas, &Point3dCanvas::statsChanged, this, &Point3dWindow::updateStatus);
     connect(m_canvas, &Point3dCanvas::cameraChanged, this, &Point3dWindow::saveSettings);
@@ -1131,7 +722,7 @@ void Point3dWindow::buildUi()
                 emit trackActivated(batchNo, source, t0, t1);
             });
 
-    // 播放控制：全部驱动主窗口的 ReplayController（全局共用时间轴）
+    // 本窗口独立播放控制
     connect(m_playBtn, &QPushButton::clicked, this, &Point3dWindow::togglePlay);
     // 进度条：拖动暂停、松手恢复；每一格都是一帧
     connect(m_seekSlider, &QSlider::sliderPressed, this, [this]() {
@@ -1162,15 +753,15 @@ void Point3dWindow::buildUi()
     m_playTimer->setTimerType(Qt::PreciseTimer);
     connect(m_playTimer, &QTimer::timeout, this, &Point3dWindow::onPlayTick);
 
-    // 快捷键：P / T / L / H / 空格（窗口内生效）
+    // 快捷键：P / T / L / 空格（窗口内生效）
     auto bindKey = [this](Qt::Key key, const std::function<void()> &fn) {
         QShortcut *sc = new QShortcut(QKeySequence(key), this);
         sc->setContext(Qt::WidgetWithChildrenShortcut);
         connect(sc, &QShortcut::activated, this, fn);
     };
-    bindKey(Qt::Key_P, [this]() { m_pointBtn->toggle(); });
-    bindKey(Qt::Key_T, [this]() { m_trackBtn->toggle(); });
-    bindKey(Qt::Key_L, [this]() { m_labelBtn->toggle(); });
+    bindKey(Qt::Key_P, [this]() { m_sideSettings->toggleDetections(); });
+    bindKey(Qt::Key_T, [this]() { m_sideSettings->toggleTracks(); });
+    bindKey(Qt::Key_L, [this]() { m_sideSettings->toggleLabels(); });
     bindKey(Qt::Key_Space, [this]() { togglePlay(); });
 
     // 没有点迹数据前先禁用播放控制（导入完成后 syncPlaybackUi 打开）
@@ -1179,34 +770,13 @@ void Point3dWindow::buildUi()
     m_speedCombo->setEnabled(true);
 
     // ---- 恢复全局默认参数 ----
-    const QString view = setting("point3d.view_mode", QStringLiteral("rvf")).toString();
-    const int viewIdx = view == QLatin1String("raf") ? 1 : view == QLatin1String("vaf") ? 2 : 0;
-    m_viewCombo->setCurrentIndex(viewIdx);
-    m_canvas->setViewMode(Point3dViewMode(m_viewCombo->currentData().toInt()));
-
-    m_pointBtn->setChecked(setting("point3d.show_detections", true).toBool());
-    m_trackBtn->setChecked(setting("point3d.show_tracks", true).toBool());
-    m_labelBtn->setChecked(setting("point3d.show_labels", true).toBool());
-    m_canvas->setShowDetections(m_pointBtn->isChecked());
-    m_canvas->setShowTracks(m_trackBtn->isChecked());
-    m_canvas->setShowLabels(m_labelBtn->isChecked());
-    // 点源（平滑/关联）：按钮状态即设置值，按下时自动写回
-    m_sourceBtn->setChecked(setting("point3d.track_source", QStringLiteral("smooth")).toString()
-                            == QLatin1String("associated"));
-    m_pointSizeSpin->setValue(setting("point3d.point_scale", 1.0).toDouble());
-    m_lineWidthSpin->setValue(setting("point3d.track_line_width", 2.0).toDouble());
-    m_labelSizeSpin->setValue(setting("point3d.label_scale", 1.0).toDouble());
-    m_hoverSizeSpin->setValue(setting("point3d.hover_text_scale", 1.0).toDouble());
     // 左侧侧栏：恢复可见性 + 当前页（0=设置，1=高级）
     setSidePanelPage(setting("point3d.side_page", 0).toInt(),
                      setting("point3d.side_panel", true).toBool());
-    // 色标 SNR 映射控件
-    m_snrAuto->setChecked(setting("point3d.snr_auto", true).toBool());
-    m_snrLoSpin->setValue(setting("point3d.snr_min", 0.0).toDouble());
-    m_snrHiSpin->setValue(setting("point3d.snr_max", 30.0).toDouble());
+    m_sideSettings->restoreDefaults();
+    syncViewMenuChecks(m_sideSettings->viewMode());
 
-    // 色标 SNR 映射（侧栏可改；默认按数据自动）+ 强连续阈值（只用于状态统计）
-    applySnrRange();
+    // 强连续阈值（只用于状态统计）
     m_canvas->setStrongThreshold(setting("point3d.strong_threshold", 0.70).toDouble());
 
     // 本窗口回放的倍速（只影响本窗口）
@@ -1220,47 +790,6 @@ void Point3dWindow::buildUi()
     const double camPanY = setting("point3d.camera_pan_y", 0.0).toDouble();
     m_canvas->setCamera(camYaw, camPitch, camZoom, camPanX, camPanY);
 
-    // 滑动窗口
-    const int len = setting("point3d.window_length", 0).toInt();
-    int presetIdx = -1;
-    for (int i = 0; i < m_windowCombo->count(); ++i)
-        if (m_windowCombo->itemData(i).toInt() == len && len > 0) {
-            presetIdx = i;
-            break;
-        }
-    if (len == 0) {
-        presetIdx = m_windowCombo->count() - 2;          // 全部
-    } else if (presetIdx < 0) {
-        presetIdx = m_windowCombo->count() - 1;          // 自定义…
-        m_windowSpin->setValue(len);
-        m_windowSpin->setVisible(true);
-    }
-    m_windowCombo->setCurrentIndex(presetIdx);
-    m_canvas->setWindowLength(len);
-
-    // 区域筛选：恢复三个视图各自的区间与是否已应用
-    for (int i = 0; i < 3; ++i) {
-        const QString key = QStringLiteral("point3d.region.%1").arg(regionKey(i));
-        const QString joined = app::settings().value(key, QString()).toString();
-        if (!joined.isEmpty()) {
-            const QStringList parts = joined.split(QLatin1Char(','));
-            if (parts.size() == 6) {
-                m_viewRegions[i].region.valid = true;
-                m_viewRegions[i].region.x0 = parts.at(0).toDouble();
-                m_viewRegions[i].region.x1 = parts.at(1).toDouble();
-                m_viewRegions[i].region.y0 = parts.at(2).toDouble();
-                m_viewRegions[i].region.y1 = parts.at(3).toDouble();
-                m_viewRegions[i].region.z0 = parts.at(4).toDouble();
-                m_viewRegions[i].region.z1 = parts.at(5).toDouble();
-            }
-        }
-        m_viewRegions[i].applied =
-            app::settings().value(QStringLiteral("point3d.region_applied.%1").arg(regionKey(i)),
-                                  false).toBool()
-            && m_viewRegions[i].region.valid;
-    }
-    loadRegionForCurrentView();
-
     // 航迹选择属于单个窗口：只随窗口会话（point3d.windows）保存，不写全局默认，
     // 否则新开的窗口会莫名继承别的窗口选过的航迹。
     m_restoring = false;
@@ -1269,181 +798,9 @@ void Point3dWindow::buildUi()
     updateStatus();
 }
 
-// 左侧「显示」侧栏：对齐地图窗口的侧栏做法，参数分区、可滚动，窄窗口也能用
-QWidget *Point3dWindow::buildSidePanel()
-{
-    QScrollArea *scroll = new SideScrollArea(this);
-    scroll->setObjectName(QStringLiteral("point3dSide"));
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidgetResizable(true);
-    // 允许横向滚动：否则侧栏内容的最小宽度会顶到窗口最小宽度上，窗口又拉不窄了
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    scroll->setFixedWidth(ui::sz(300));
-
-    QWidget *page = new QWidget(scroll);
-    page->setObjectName(QStringLiteral("point3dSidePage"));
-    QVBoxLayout *lay = new QVBoxLayout(page);
-    lay->setContentsMargins(ui::sz(8), ui::sz(8), ui::sz(8), ui::sz(8));
-    lay->setSpacing(ui::sz(8));
-
-    auto mkSpin = [](QWidget *parent, double lo, double hi, double value,
-                     double step, int decimals) {
-        QDoubleSpinBox *s = new QDoubleSpinBox(parent);
-        s->setRange(lo, hi);
-        s->setDecimals(decimals);
-        s->setSingleStep(step);
-        s->setValue(value);
-        return s;
-    };
-    auto addForm = [&](const QString &title) {
-        QGroupBox *g = new QGroupBox(title, page);
-        QFormLayout *f = new QFormLayout(g);
-        f->setContentsMargins(ui::sz(8), ui::sz(10), ui::sz(8), ui::sz(8));
-        f->setSpacing(ui::sz(6));
-        f->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        lay->addWidget(g);
-        return f;
-    };
-
-    // ---- 视图 ----
-    {
-        QFormLayout *f = addForm(QStringLiteral("视图"));
-        m_viewCombo = new QComboBox(page);
-        m_viewCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-        m_viewCombo->setMinimumContentsLength(6);
-        m_viewCombo->addItem(QStringLiteral("距离–速度–帧号"), int(Point3dViewMode::RVF));
-        m_viewCombo->addItem(QStringLiteral("距离–方位–帧号"), int(Point3dViewMode::RAF));
-        m_viewCombo->addItem(QStringLiteral("速度–方位–帧号"), int(Point3dViewMode::VAF));
-        m_viewCombo->setToolTip(QStringLiteral("三维视图的 X/Y 轴组合，Z 轴恒为帧号"));
-        f->addRow(QStringLiteral("三轴视图"), m_viewCombo);
-
-        m_windowCombo = new QComboBox(page);
-        m_windowCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-        m_windowCombo->setMinimumContentsLength(4);
-        const int presets[] = { 20, 40, 70, 150 };
-        for (int v : presets)
-            m_windowCombo->addItem(QStringLiteral("%1 帧").arg(v), v);
-        m_windowCombo->addItem(QStringLiteral("全部"), 0);
-        m_windowCombo->addItem(QStringLiteral("自定义…"), -1);
-        m_windowCombo->setToolTip(QStringLiteral("同时显示最近多少帧（「全部」= 整个数据集）"));
-        m_windowSpin = new QSpinBox(page);
-        m_windowSpin->setRange(1, 100000);
-        m_windowSpin->setValue(70);
-        m_windowSpin->setVisible(false);
-        m_windowSpin->setToolTip(QStringLiteral("自定义滑动窗口帧数"));
-        QVBoxLayout *winCol = new QVBoxLayout;
-        winCol->setContentsMargins(0, 0, 0, 0);
-        winCol->setSpacing(ui::sz(4));
-        winCol->addWidget(m_windowCombo);
-        winCol->addWidget(m_windowSpin);
-        f->addRow(QStringLiteral("滑动窗口"), winCol);
-    }
-
-    // ---- 显示 ----
-    {
-        QFormLayout *f = addForm(QStringLiteral("显示"));
-        m_sourceBtn = new QPushButton(QStringLiteral("平滑"), page);
-        m_sourceBtn->setCheckable(true);
-        m_sourceBtn->setToolTip(QStringLiteral(
-            "切换叠加航迹的点列：平滑（smoothPointList）↔ 关联（asscPointList）"));
-        f->addRow(QStringLiteral("航迹点源"), m_sourceBtn);
-
-        QHBoxLayout *row = new QHBoxLayout;
-        row->setSpacing(ui::sz(4));
-        m_pointBtn = new QPushButton(QStringLiteral("点迹 [P]"), page);
-        m_pointBtn->setCheckable(true);
-        m_pointBtn->setChecked(true);
-        m_pointBtn->setToolTip(QStringLiteral("显示 / 隐藏点迹（P）"));
-        m_trackBtn = new QPushButton(QStringLiteral("航迹 [T]"), page);
-        m_trackBtn->setCheckable(true);
-        m_trackBtn->setChecked(true);
-        m_trackBtn->setToolTip(QStringLiteral("显示 / 隐藏航迹（T）"));
-        m_labelBtn = new QPushButton(QStringLiteral("标签 [L]"), page);
-        m_labelBtn->setCheckable(true);
-        m_labelBtn->setChecked(true);
-        m_labelBtn->setToolTip(QStringLiteral("显示 / 隐藏航迹编号（L）"));
-        row->addWidget(m_pointBtn);
-        row->addWidget(m_trackBtn);
-        row->addWidget(m_labelBtn);
-        f->addRow(QStringLiteral("图层"), row);
-    }
-
-    // ---- 尺寸 ----
-    {
-        QFormLayout *f = addForm(QStringLiteral("尺寸"));
-        m_pointSizeSpin = mkSpin(page, 0.2, 5.0, 1.0, 0.1, 2);
-        m_pointSizeSpin->setToolTip(QStringLiteral("点迹点的大小倍数（0.2–5）"));
-        m_lineWidthSpin = mkSpin(page, 0.5, 12.0, 2.0, 0.1, 2);
-        m_lineWidthSpin->setToolTip(QStringLiteral("叠加航迹的线宽（0.5–12）"));
-        m_labelSizeSpin = mkSpin(page, 0.5, 3.0, 1.0, 0.1, 2);
-        m_labelSizeSpin->setToolTip(QStringLiteral("航迹编号与坐标轴刻度数字的大小倍数（0.5–3）"));
-        m_hoverSizeSpin = mkSpin(page, 0.5, 4.0, 1.0, 0.1, 2);
-        m_hoverSizeSpin->setToolTip(QStringLiteral("鼠标悬停/点击信息浮窗的字号倍数（0.5–4）"));
-        f->addRow(QStringLiteral("点迹尺寸"), m_pointSizeSpin);
-        f->addRow(QStringLiteral("航迹线宽"), m_lineWidthSpin);
-        f->addRow(QStringLiteral("标签大小"), m_labelSizeSpin);
-        f->addRow(QStringLiteral("提示字号"), m_hoverSizeSpin);
-    }
-
-    // ---- 色标 SNR ----
-    {
-        QFormLayout *f = addForm(QStringLiteral("色标 SNR"));
-        m_snrAuto = new QCheckBox(QStringLiteral("自动（按数据 min/max）"), page);
-        m_snrLoSpin = mkSpin(page, -100.0, 300.0, 0.0, 0.5, 2);
-        m_snrHiSpin = mkSpin(page, -100.0, 300.0, 30.0, 0.5, 2);
-        f->addRow(m_snrAuto);
-        f->addRow(QStringLiteral("下限 dB"), m_snrLoSpin);
-        f->addRow(QStringLiteral("上限 dB"), m_snrHiSpin);
-    }
-
-    // ---- 区域筛选 ----
-    {
-        QGroupBox *g = new QGroupBox(QStringLiteral("区域筛选"), page);
-        QVBoxLayout *gl = new QVBoxLayout(g);
-        gl->setContentsMargins(ui::sz(8), ui::sz(10), ui::sz(8), ui::sz(8));
-        gl->setSpacing(ui::sz(5));
-        for (int i = 0; i < 3; ++i) {
-            // 轴名一行、区间控件一行：侧栏不宽，挤一行会把滚动区撑出横向滚动条
-            m_regionAxisLabel[i] = new QLabel(g);
-            gl->addWidget(m_regionAxisLabel[i]);
-            QHBoxLayout *row = new QHBoxLayout;
-            row->setSpacing(ui::sz(4));
-            m_regionMinSpin[i] = mkSpin(g, -1.0e7, 1.0e7, 0.0, 1.0, 2);
-            m_regionMaxSpin[i] = mkSpin(g, -1.0e7, 1.0e7, 1.0, 1.0, 2);
-            QPushButton *fullBtn = new QPushButton(QStringLiteral("满"), g);
-            fullBtn->setToolTip(QStringLiteral("该轴设为满量程"));
-            fullBtn->setFixedWidth(ui::sz(28));
-            connect(fullBtn, &QPushButton::clicked, this, [this, i]() {
-                const Point3dRegion ext = point3dRegionExtent(m_data, m_canvas->viewMode());
-                if (!ext.valid)
-                    return;
-                m_regionMinSpin[i]->setValue(i == 0 ? ext.x0 : i == 1 ? ext.y0 : ext.z0);
-                m_regionMaxSpin[i]->setValue(i == 0 ? ext.x1 : i == 1 ? ext.y1 : ext.z1);
-            });
-            row->addWidget(m_regionMinSpin[i], 1);
-            row->addWidget(new QLabel(QStringLiteral("至"), g));
-            row->addWidget(m_regionMaxSpin[i], 1);
-            row->addWidget(fullBtn);
-            gl->addLayout(row);
-        }
-        QHBoxLayout *brow = new QHBoxLayout;
-        brow->setSpacing(ui::sz(6));
-        m_regionApplyBtn = new QPushButton(QStringLiteral("应用"), g);
-        m_regionApplyBtn->setToolTip(QStringLiteral("只显示框内数据，并把视图放大到框内"));
-        m_regionResetBtn = new QPushButton(QStringLiteral("重置"), g);
-        m_regionResetBtn->setToolTip(QStringLiteral("清除区域筛选，恢复全量数据"));
-        brow->addWidget(m_regionApplyBtn);
-        brow->addWidget(m_regionResetBtn);
-        brow->addStretch(1);
-        gl->addLayout(brow);
-        lay->addWidget(g);
-    }
-
-    lay->addStretch(1);
-    scroll->setWidget(page);
-    return scroll;
-}
-
+// ---------------------------------------------------------------------------
+//  点迹导入与数据生命周期
+// ---------------------------------------------------------------------------
 void Point3dWindow::importDetections()
 {
     QString dir = setting("point3d.last_dir", QDir::homePath()).toString();
@@ -1534,8 +891,8 @@ void Point3dWindow::onImportDone()
     // 重新导入点迹后，已选数据库航迹需要按新帧重新映射 Z 值
     reloadOverlaysFromKeys();
     // 数据变了：各视图的区域区间按新量程夹紧/复位，再套用到画布
-    revalidateRegions();
-    loadRegionForCurrentView();
+    m_sideSettings->revalidateRegions();
+    m_sideSettings->loadRegionForCurrentView();
     syncPlaybackUi();
     updatePlaybackUi();
 
@@ -1562,44 +919,6 @@ void Point3dWindow::onImportDone()
     emit dataChanged();
 }
 
-void Point3dWindow::onViewModeChanged()
-{
-    const int mode = m_viewCombo->currentData().toInt();
-    m_canvas->setViewMode(Point3dViewMode(mode));
-    for (int i = 0; i < 3; ++i)
-        if (m_viewActions[i])
-            m_viewActions[i]->setChecked(i == mode);
-    // 切视图：加载该视图自己的区域筛选（三行标签 + 数值 + 是否已应用）
-    loadRegionForCurrentView();
-    if (m_restoring)
-        return;
-    const char *key = mode == int(Point3dViewMode::RAF) ? "raf"
-                    : mode == int(Point3dViewMode::VAF) ? "vaf" : "rvf";
-    app::setValue(QStringLiteral("point3d.view_mode"), QString::fromLatin1(key));
-    updateStatus();
-}
-
-void Point3dWindow::onWindowLengthChanged()
-{
-    const int data = m_windowCombo->currentData().toInt();
-    if (data == -1) {
-        m_windowSpin->setVisible(true);
-        if (!m_restoring)
-            applyWindowLength(m_windowSpin->value());
-        return;
-    }
-    m_windowSpin->setVisible(false);
-    if (!m_restoring)
-        applyWindowLength(data);
-}
-
-void Point3dWindow::applyWindowLength(int len)
-{
-    m_canvas->setWindowLength(len);
-    app::setValue(QStringLiteral("point3d.window_length"), len);
-    updateStatus();
-}
-
 void Point3dWindow::setLoadingUi(bool loading, int percent)
 {
     m_progress->setVisible(loading);
@@ -1622,7 +941,7 @@ void Point3dWindow::updateStatus()
         text += QStringLiteral(" | 按地图选择单独显示 %1 条").arg(isolated.size());
     if (m_skippedTracks > 0)
         text += QStringLiteral(" | %1 条航迹与点迹时间不匹配已忽略").arg(m_skippedTracks);
-    if (m_viewRegions[int(m_canvas->viewMode())].applied)
+    if (m_sideSettings && m_sideSettings->regionAppliedForView(m_canvas->viewMode()))
         text += QStringLiteral(" | 区域筛选已应用");
     m_status->setText(text);
 }
@@ -1651,145 +970,12 @@ void Point3dWindow::cancelImport()
         m_job->requestCancel();
 }
 
-// 左侧「高级」页：原来高级参数对话框的内容，改成常驻侧栏（点顶部「高级」展开/收起）
-QWidget *Point3dWindow::buildAdvancedPanel()
-{
-    QScrollArea *scroll = new SideScrollArea(this);
-    scroll->setObjectName(QStringLiteral("point3dAdvanced"));
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-
-    QWidget *page = new QWidget(scroll);
-    page->setObjectName(QStringLiteral("point3dAdvancedPage"));
-    QVBoxLayout *lay = new QVBoxLayout(page);
-    lay->setContentsMargins(ui::sz(8), ui::sz(8), ui::sz(8), ui::sz(8));
-    lay->setSpacing(ui::sz(8));
-
-    auto mkLine = [&](const QString &text) {
-        QLineEdit *e = new QLineEdit(page);
-        e->setText(text);
-        return e;
-    };
-    auto mkSpin = [&](int lo, int hi, int value) {
-        QSpinBox *sp = new QSpinBox(page);
-        sp->setRange(lo, hi);
-        sp->setValue(value);
-        return sp;
-    };
-    auto mkDSpin = [&](double lo, double hi, int decimals, double value, double step) {
-        QDoubleSpinBox *sp = new QDoubleSpinBox(page);
-        sp->setRange(lo, hi);
-        sp->setDecimals(decimals);
-        sp->setSingleStep(step);
-        sp->setValue(value);
-        return sp;
-    };
-    auto addForm = [&](const QString &title) {
-        QGroupBox *g = new QGroupBox(title, page);
-        QFormLayout *f = new QFormLayout(g);
-        f->setContentsMargins(ui::sz(8), ui::sz(10), ui::sz(8), ui::sz(8));
-        f->setSpacing(ui::sz(6));
-        f->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        lay->addWidget(g);
-        return f;
-    };
-
-    {
-        QFormLayout *f = addForm(QStringLiteral("解析（下次导入生效）"));
-        m_detVarEdit = mkLine(setting("point3d.det_variable", QStringLiteral("DetPoint")).toString());
-        m_sysVarEdit = mkLine(setting("point3d.syspara_variable", QStringLiteral("sysPara")).toString());
-        m_azFieldCombo = new QComboBox(page);
-        m_azFieldCombo->setEditable(true);
-        m_azFieldCombo->addItems(QStringList() << QStringLiteral("az") << QStringLiteral("theta"));
-        m_azFieldCombo->setCurrentText(
-            setting("point3d.azimuth_field", QStringLiteral("az")).toString());
-        m_trackVarEdit = mkLine(setting("point3d.track_variable", QStringLiteral("trackList")).toString());
-        m_patternEdit = mkLine(setting("point3d.file_pattern", QStringLiteral("detPoint_*.mat")).toString());
-        m_maxFramesSpin = mkSpin(0, 1000000, setting("point3d.max_frames", 0).toInt());
-        m_maxFramesSpin->setSpecialValueText(QStringLiteral("全部"));
-        f->addRow(QStringLiteral("DetPoint 变量"), m_detVarEdit);
-        f->addRow(QStringLiteral("sysPara 变量"), m_sysVarEdit);
-        f->addRow(QStringLiteral("方位字段"), m_azFieldCombo);
-        f->addRow(QStringLiteral("航迹变量"), m_trackVarEdit);
-        f->addRow(QStringLiteral("文件匹配模式"), m_patternEdit);
-        f->addRow(QStringLiteral("最多帧数"), m_maxFramesSpin);
-    }
-    {
-        QFormLayout *f = addForm(QStringLiteral("航迹"));
-        m_minTrackLenSpin = mkSpin(1, 1000, setting("point3d.min_track_length", 4).toInt());
-        m_rangeScaleSpin = mkDSpin(0.001, 1000.0, 3,
-                                   setting("point3d.track_range_scale", 1.0).toDouble(), 0.1);
-        f->addRow(QStringLiteral("最小航迹长度"), m_minTrackLenSpin);
-        f->addRow(QStringLiteral("航迹距离缩放"), m_rangeScaleSpin);
-    }
-    {
-        QFormLayout *f = addForm(QStringLiteral("连续性评分"));
-        m_gapSpin = mkSpin(1, 20, setting("point3d.continuity_frame_gap", 3).toInt());
-        m_rangeCSpin = mkDSpin(0.1, 100000.0, 1,
-                               setting("point3d.continuity_range_scale", 80.0).toDouble(), 1.0);
-        m_dopplerCSpin = mkDSpin(0.1, 1000.0, 1,
-                                 setting("point3d.continuity_doppler_scale", 10.0).toDouble(), 0.5);
-        m_azimuthCSpin = mkDSpin(0.1, 180.0, 1,
-                                 setting("point3d.continuity_azimuth_scale", 6.0).toDouble(), 0.5);
-        m_thresholdSpin = mkDSpin(0.0, 1.0, 2,
-                                  setting("point3d.strong_threshold", 0.70).toDouble(), 0.05);
-        f->addRow(QStringLiteral("帧间隔"), m_gapSpin);
-        f->addRow(QStringLiteral("距离尺度"), m_rangeCSpin);
-        f->addRow(QStringLiteral("速度尺度"), m_dopplerCSpin);
-        f->addRow(QStringLiteral("方位尺度"), m_azimuthCSpin);
-        f->addRow(QStringLiteral("强连续阈值"), m_thresholdSpin);
-    }
-    m_autoReloadCheck = new QCheckBox(QStringLiteral("启动时恢复上次的窗口与数据"), page);
-    m_autoReloadCheck->setChecked(setting("point3d.auto_reload", true).toBool());
-    lay->addWidget(m_autoReloadCheck);
-
-    QLabel *note = new QLabel(QStringLiteral(
-        "改动即时生效并写入设置：\n"
-        "· 最小航迹长度 / 距离缩放 / 强连续阈值 立即作用于当前画面；\n"
-        "· 连续性参数（帧间隔/尺度）停止输入约 0.4 秒后自动重算；\n"
-        "· 变量名、方位字段、文件匹配模式、最多帧数在下次导入时生效；\n"
-        "· 「启动时恢复」在下次启动时生效。"), page);
-    note->setWordWrap(true);
-    lay->addWidget(note);
-
-    lay->addStretch(1);
-    scroll->setWidget(page);
-    return scroll;
-}
-
-// 高级页：所有控件改动即时写设置
-void Point3dWindow::persistAdvanced()
-{
-    if (m_restoring || !m_detVarEdit)
-        return;
-    app::setValue(QStringLiteral("point3d.det_variable"), m_detVarEdit->text().trimmed());
-    app::setValue(QStringLiteral("point3d.syspara_variable"), m_sysVarEdit->text().trimmed());
-    app::setValue(QStringLiteral("point3d.azimuth_field"), m_azFieldCombo->currentText().trimmed());
-    app::setValue(QStringLiteral("point3d.track_variable"), m_trackVarEdit->text().trimmed());
-    app::setValue(QStringLiteral("point3d.file_pattern"), m_patternEdit->text().trimmed());
-    app::setValue(QStringLiteral("point3d.max_frames"), m_maxFramesSpin->value());
-    app::setValue(QStringLiteral("point3d.min_track_length"), m_minTrackLenSpin->value());
-    app::setValue(QStringLiteral("point3d.track_range_scale"), m_rangeScaleSpin->value());
-    app::setValue(QStringLiteral("point3d.continuity_frame_gap"), m_gapSpin->value());
-    app::setValue(QStringLiteral("point3d.continuity_range_scale"), m_rangeCSpin->value());
-    app::setValue(QStringLiteral("point3d.continuity_doppler_scale"), m_dopplerCSpin->value());
-    app::setValue(QStringLiteral("point3d.continuity_azimuth_scale"), m_azimuthCSpin->value());
-    app::setValue(QStringLiteral("point3d.strong_threshold"), m_thresholdSpin->value());
-    app::setValue(QStringLiteral("point3d.auto_reload"), m_autoReloadCheck->isChecked());
-}
-
 // 连续性参数改动后（防抖）按新参数重算当前数据，点的大小/透明度立刻跟着变
-void Point3dWindow::recomputeContinuityNow()
+void Point3dWindow::recomputeContinuityNow(const ContinuityConfig &cfg)
 {
     if (m_data.frames.isEmpty())
         return;
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    ContinuityConfig cfg;
-    cfg.frameGap = m_gapSpin->value();
-    cfg.rangeScale = m_rangeCSpin->value();
-    cfg.dopplerScale = m_dopplerCSpin->value();
-    cfg.azimuthScale = m_azimuthCSpin->value();
     computeContinuity(m_data.frames, cfg);
     QApplication::restoreOverrideCursor();
     m_canvas->update();
@@ -1803,13 +989,15 @@ void Point3dWindow::setSidePanelPage(int page, bool show)
     m_sideStack->setCurrentIndex(qBound(0, page, 1));
     m_sidePanel->setVisible(show);
     const bool visible = !m_sidePanel->isHidden();
-    m_settingsBtn->setChecked(visible && m_sideStack->currentIndex() == 0);
+    const bool settingsActive = visible && m_sideStack->currentIndex() == 0;
+    m_settingsBtn->setChecked(settingsActive);
     m_advancedBtn->setChecked(visible && m_sideStack->currentIndex() == 1);
-    if (!visible)
-        m_canvas->setRegionBox(Point3dRegion());
-    else if (m_sideStack->currentIndex() == 0)
-        loadRegionForCurrentView();
+    m_sideSettings->setPanelActive(settingsActive);
     if (!m_restoring) {
+        if (!visible)
+            m_canvas->setRegionBox(Point3dRegion());
+        else if (settingsActive)
+            m_sideSettings->loadRegionForCurrentView();
         app::setValue(QStringLiteral("point3d.side_panel"), visible);
         app::setValue(QStringLiteral("point3d.side_page"), m_sideStack->currentIndex());
     }
