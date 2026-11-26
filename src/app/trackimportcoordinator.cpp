@@ -173,6 +173,8 @@ void TrackImportCoordinator::onImportDone()
             emit radarPointModeSelected(m_importPointMode);
             m_hasImportPointMode = false;
         }
+        if (imp->hasRadarSite())
+            emit radarSiteDiscovered(imp->radarSite());
         emit tracksImported(before, firstData);
     } else {
         msg = imp->errorString();

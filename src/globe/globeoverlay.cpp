@@ -1,8 +1,10 @@
 #include "globeoverlay.h"
 #include "drawingmanager.h"
+#include "geocalc.h"
 #include "globecamera.h"
 #include "globedrawcontroller.h"
 #include "maptools.h"
+#include "radarsite.h"
 #include "spatiallasso.h"
 #include "theme.h"
 #include "track.h"
@@ -125,10 +127,12 @@ void GlobeOverlay::paintEvent(QPaintEvent *)
     m_featuresDrawn = 0;
     m_filterOverlayItems = 0;
     m_compareLinksDrawn = 0;
+    m_radarPpiPrimitives = 0;
     if (!m_wanted || !m_ctx.camera)
         return;
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
+    drawRadarSites(p);
     drawFilterOverlay(p);
     drawCompareLinks(p);
     drawLabels(p);
@@ -862,6 +866,226 @@ void GlobeOverlay::drawCompareLinks(QPainter &p)
                              QColor(0xff, 0x80, 0x80), Qt::black, 2.2);
         }
         ++m_compareLinksDrawn;
+    }
+    p.restore();
+}
+
+void GlobeOverlay::drawRadarSites(QPainter &p)
+{
+    m_radarPpiPrimitives = 0;
+    const RadarSiteStore *store = m_ctx.radarSites;
+    if (!store || !store->ppiVisible() || store->sites().isEmpty() || !m_ctx.camera)
+        return;
+    const QSize vp = size();
+    const GlobeCamera &cam = *m_ctx.camera;
+    const QFont lblFont = remFont(0.76, true);
+    const QFont tickFont = remFont(0.70, false);
+
+    // 沿指定半径从 az0 到 az1 采样球面等距弧并投影为屏幕上可见折线段
+    auto drawRangeArc = [&](double aLat, double aLon, double rKm, double az0, double az1,
+                            const QPen &pen, QPointF *lastVisible = nullptr) {
+        double span = az1 - az0;
+        if (span <= 0.0)
+            span += 360.0;
+        const int steps = qBound(16, int(std::ceil(span / 2.0)), 180);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        QPolygonF seg;
+        bool hasLast = false;
+        for (int k = 0; k <= steps; ++k) {
+            const double az = az0 + span * double(k) / double(steps);
+            double lat = 0.0, lon = 0.0;
+            if (!geocalc::destination(aLat, aLon, az, rKm, &lat, &lon))
+                continue;
+            QPointF sp;
+            if (cam.visiblePos(lon, lat, 0.0, vp, &sp)) {
+                seg.append(sp);
+                if (lastVisible) {
+                    *lastVisible = sp;
+                    hasLast = true;
+                }
+            } else if (seg.size() >= 2) {
+                p.drawPolyline(seg);
+                ++m_radarPpiPrimitives;
+                seg.clear();
+            } else {
+                seg.clear();
+            }
+        }
+        if (seg.size() >= 2) {
+            p.drawPolyline(seg);
+            ++m_radarPpiPrimitives;
+        }
+        return hasLast;
+    };
+
+    p.save();
+    for (const RadarSite &s : store->sites()) {
+        if (!s.visible || !s.isValid())
+            continue;
+        double aLat = 0.0, aLon = 0.0;
+        if (!s.anchorLatLon(&aLat, &aLon))
+            continue;
+        const QColor base = s.color.isValid() ? s.color : QColor(0x38, 0xbd, 0xf8);
+
+        // 1) 探测扇区与同心距离环 + 方位射线
+        if (s.maxRangeKm > 0.0 && (s.hasSector || s.showFullRings)) {
+            const double az0 = s.showFullRings ? 0.0 : s.startAzDeg;
+            const double az1 = s.showFullRings ? 360.0 : s.endAzDeg;
+            double azSpan = az1 - az0;
+            if (azSpan <= 0.0)
+                azSpan += 360.0;
+
+            // 半透明探测扇区底色填充（仅在非整圆扇区时）
+            if (!s.showFullRings && azSpan < 359.5) {
+                QPolygonF sectorPoly;
+                const int steps = qBound(12, int(std::ceil(azSpan / 3.0)), 120);
+                bool allVis = true;
+                for (int k = 0; k <= steps; ++k) {
+                    double la = 0.0, lo = 0.0;
+                    if (geocalc::destination(aLat, aLon, az0 + azSpan * double(k) / double(steps), s.maxRangeKm, &la, &lo)) {
+                        QPointF sp;
+                        if (cam.visiblePos(lo, la, 0.0, vp, &sp))
+                            sectorPoly.append(sp);
+                        else
+                            allVis = false;
+                    }
+                }
+                if (s.minRangeKm > 1.0) {
+                    for (int k = steps; k >= 0; --k) {
+                        double la = 0.0, lo = 0.0;
+                        if (geocalc::destination(aLat, aLon, az0 + azSpan * double(k) / double(steps), s.minRangeKm, &la, &lo)) {
+                            QPointF sp;
+                            if (cam.visiblePos(lo, la, 0.0, vp, &sp))
+                                sectorPoly.append(sp);
+                            else
+                                allVis = false;
+                        }
+                    }
+                } else {
+                    QPointF cSp;
+                    if (cam.visiblePos(aLon, aLat, 0.0, vp, &cSp))
+                        sectorPoly.append(cSp);
+                    else
+                        allVis = false;
+                }
+                if (allVis && sectorPoly.size() >= 3) {
+                    QColor fill = base;
+                    fill.setAlpha(28);
+                    p.setPen(Qt::NoPen);
+                    p.setBrush(fill);
+                    p.drawPolygon(sectorPoly);
+                    ++m_radarPpiPrimitives;
+                }
+            }
+
+            // 同心距离环（按步长取整）
+            const double stepKm = s.effectiveRingStepKm();
+            QColor gridCol = base;
+            gridCol.setAlpha(120);
+            const QPen ringPen(gridCol, 1.0, Qt::SolidLine);
+            const QPen edgePen(QColor(base.red(), base.green(), base.blue(), 210), 1.6, Qt::SolidLine);
+
+            if (s.minRangeKm > 1.0)
+                drawRangeArc(aLat, aLon, s.minRangeKm, az0, az1, edgePen);
+            QPointF outerEnd;
+            if (drawRangeArc(aLat, aLon, s.maxRangeKm, az0, az1, edgePen, &outerEnd)) {
+                drawOutlinedText(p, outerEnd + QPointF(6.0, 4.0),
+                                 QStringLiteral("%1km").arg(s.maxRangeKm, 0, 'f', 0),
+                                 tickFont, base, Qt::black, 2.0);
+            }
+            const double firstRing = std::ceil(qMax(stepKm, s.minRangeKm + 1e-3) / stepKm) * stepKm;
+            for (double r = firstRing; r < s.maxRangeKm - stepKm * 0.15; r += stepKm) {
+                QPointF endPt;
+                if (drawRangeArc(aLat, aLon, r, az0, az1, ringPen, &endPt)) {
+                    drawOutlinedText(p, endPt + QPointF(5.0, 4.0),
+                                     QStringLiteral("%1km").arg(r, 0, 'f', 0),
+                                     tickFont, base.lighter(115), Qt::black, 1.8);
+                }
+            }
+
+            // 方位射线（边缘线 + 步长网格线）
+            const double azStep = qBound(2.0, s.azStepDeg, 90.0);
+            auto drawRay = [&](double az, const QPen &pen, const QString &tag) {
+                double la0 = aLat, lo0 = aLon, la1 = aLat, lo1 = aLon;
+                if (s.minRangeKm > 1.0)
+                    geocalc::destination(aLat, aLon, az, s.minRangeKm, &la0, &lo0);
+                if (!geocalc::destination(aLat, aLon, az, s.maxRangeKm, &la1, &lo1))
+                    return;
+                p.setPen(pen);
+                p.setBrush(Qt::NoBrush);
+                for (const QPolygonF &line : cam.geodesicLines(la0, lo0, la1, lo1, vp)) {
+                    p.drawPolyline(line);
+                    ++m_radarPpiPrimitives;
+                }
+                QPointF tip;
+                if (!tag.isEmpty() && cam.visiblePos(lo1, la1, 0.0, vp, &tip))
+                    drawOutlinedText(p, tip + QPointF(4.0, -4.0), tag, tickFont, base, Qt::black, 1.8);
+            };
+
+            if (!s.showFullRings && azSpan < 359.5) {
+                drawRay(az0, edgePen, QStringLiteral("%1°").arg(az0, 0, 'f', 1));
+                drawRay(az1, edgePen, QStringLiteral("%1°").arg(az1, 0, 'f', 1));
+                const double firstAz = std::ceil((az0 + 1e-3) / azStep) * azStep;
+                for (double a = firstAz; a < az0 + azSpan - 1e-3; a += azStep)
+                    drawRay(a, ringPen, QStringLiteral("%1°").arg(std::fmod(a + 360.0, 360.0), 0, 'f', 0));
+            } else {
+                for (double a = 0.0; a < 360.0 - 1e-3; a += qMax(15.0, azStep))
+                    drawRay(a, ringPen, QStringLiteral("%1°").arg(a, 0, 'f', 0));
+            }
+
+            // 波束中心指向轴
+            if (std::isfinite(s.beamDirDeg)) {
+                QPen beamPen(QColor(0xf5, 0x9e, 0x0b, 210), 1.5, Qt::DashDotLine);
+                drawRay(s.beamDirDeg, beamPen, QStringLiteral("Beam %1°").arg(s.beamDirDeg, 0, 'f', 0));
+            }
+        }
+
+        // 2) 双基地 Tx-Rx 基线
+        if (s.hasTx && s.hasRx) {
+            p.setPen(QPen(QColor(0xf5, 0x9e, 0x0b, 175), 1.4, Qt::DashLine));
+            for (const QPolygonF &line : cam.geodesicLines(s.txLat, s.txLon, s.rxLat, s.rxLon, vp)) {
+                p.drawPolyline(line);
+                ++m_radarPpiPrimitives;
+            }
+        }
+
+        // 3) 接收站 Rx 与发射站 Tx 站点图标
+        if (s.hasRx) {
+            QPointF sp;
+            if (cam.visiblePos(s.rxLon, s.rxLat, 0.0, vp, &sp)) {
+                p.setPen(QPen(Qt::black, 3.0));
+                p.setBrush(base);
+                p.drawEllipse(sp, 6.0, 6.0);
+                p.setPen(QPen(Qt::white, 1.5));
+                p.drawEllipse(sp, 6.0, 6.0);
+                p.setBrush(Qt::NoBrush);
+                p.setPen(QPen(base, 1.4));
+                p.drawEllipse(sp, 11.0, 11.0);
+                drawOutlinedText(p, sp + QPointF(13.0, 4.0),
+                                 QStringLiteral("%1 (Rx)").arg(s.name), lblFont, base, Qt::black, 2.2);
+                ++m_radarPpiPrimitives;
+            }
+        }
+        if (s.hasTx) {
+            QPointF sp;
+            if (cam.visiblePos(s.txLon, s.txLat, 0.0, vp, &sp)) {
+                const QColor txCol(0xf5, 0x9e, 0x0b);
+                const QPointF tri[3] = {
+                    QPointF(sp.x(), sp.y() - 7.5),
+                    QPointF(sp.x() + 6.8, sp.y() + 5.5),
+                    QPointF(sp.x() - 6.8, sp.y() + 5.5)
+                };
+                p.setPen(QPen(Qt::black, 2.6));
+                p.setBrush(txCol);
+                p.drawPolygon(tri, 3);
+                p.setPen(QPen(Qt::white, 1.3));
+                p.drawPolygon(tri, 3);
+                drawOutlinedText(p, sp + QPointF(11.0, 4.0),
+                                 QStringLiteral("%1 (Tx)").arg(s.name), lblFont, txCol, Qt::black, 2.2);
+                ++m_radarPpiPrimitives;
+            }
+        }
     }
     p.restore();
 }

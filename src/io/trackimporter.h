@@ -4,6 +4,7 @@
 #include <QThread>
 #include <QVector>
 
+#include "radarsite.h"
 #include "track.h"
 
 // 后台解析一个数据文件；完成后在主线程发 importDone，由调用方把结果合并进 TrackStore
@@ -19,6 +20,8 @@ public:
     QString displayName() const { return m_displayName; }
     // 仅在 importDone 之后读取
     QVector<Track> &tracks() { return m_tracks; }
+    bool hasRadarSite() const { return m_radarSite.isValid(); }
+    const RadarSite &radarSite() const { return m_radarSite; }
     QString errorString() const { return m_error; }
     bool ok() const { return m_ok; }
     qint64 elapsedMs() const { return m_elapsed; }
@@ -34,6 +37,7 @@ private:
     TrackSource m_kind;
     QString m_path, m_displayName, m_error;
     QVector<Track> m_tracks;
+    RadarSite m_radarSite;
     bool m_ok = false;
     qint64 m_elapsed = 0;
 };

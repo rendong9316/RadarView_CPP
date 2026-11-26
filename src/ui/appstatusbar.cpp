@@ -613,8 +613,11 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
     right->addWidget(m_error);
     m_height = new QLabel(m_right);
     m_lonLat = new QLabel(m_right);
+    m_radarPolar = new QLabel(m_right);
+    m_radarPolar->setObjectName(QStringLiteral("radarPolarLabel"));
+    m_radarPolar->hide();
     m_fps = new QLabel(m_right);
-    for (QLabel *l : { m_height, m_lonLat, m_fps }) {
+    for (QLabel *l : { m_height, m_lonLat, m_radarPolar, m_fps }) {
         l->setFont(monoFont(kFontPx()));
         right->addWidget(l);
     }
@@ -678,7 +681,7 @@ AppStatusBar::AppStatusBar(ReplayController *replay, QWidget *parent)
         setFont(uiFont(kFontPx()));
         m_time->setFont(monoFont(kFontPx()));
         m_customSpeed->setFont(monoFont(kSmallFontPx()));
-        for (QLabel *l : { m_height, m_lonLat, m_fps, m_count })
+        for (QLabel *l : { m_height, m_lonLat, m_radarPolar, m_fps, m_count })
             l->setFont(monoFont(kFontPx()));
         m_speed->setFont(monoFont(kSmallFontPx()));
         m_trail->setFont(monoFont(kSmallFontPx()));
@@ -800,6 +803,25 @@ void AppStatusBar::setViewStatus(double heightKm, double lonDeg, double latDeg, 
         m_fps->setText(ft);
         m_fps->setToolTip(QStringLiteral("渲染帧率 %1 FPS").arg(f));
     }
+}
+
+void AppStatusBar::setRadarPolarText(const QString &text, const QString &tooltip, bool visible)
+{
+    if (!m_radarPolar)
+        return;
+    if (m_radarPolar->isVisible() != visible)
+        m_radarPolar->setVisible(visible);
+    if (visible) {
+        if (m_radarPolar->text() != text)
+            m_radarPolar->setText(text);
+        if (m_radarPolar->toolTip() != tooltip)
+            m_radarPolar->setToolTip(tooltip);
+    }
+}
+
+QString AppStatusBar::radarPolarText() const
+{
+    return (m_radarPolar && m_radarPolar->isVisible()) ? m_radarPolar->text() : QString();
 }
 
 void AppStatusBar::setSources(const QVector<SourceItem> &items)
@@ -928,7 +950,7 @@ void AppStatusBar::applyTheme()
         "QLineEdit { padding: 0px 4px; background: %1; border: 1px solid %2; border-radius: 3px; color: %3; }")
         .arg(cssColor(withAlpha(m_theme.fg, 0.08)), cssColor(withAlpha(m_theme.fg, 0.22)), m_theme.fg.name())));
     setLabelColor(m_time, 1.0);
-    for (QLabel *l : { m_height, m_lonLat, m_fps })
+    for (QLabel *l : { m_height, m_lonLat, m_radarPolar, m_fps })
         setLabelColor(l, 0.85);
     setLabelColor(m_count, 0.8);
     QPalette pal = m_loading->palette();
@@ -1052,7 +1074,7 @@ bool AppStatusBar::checkLayout(QString *report) const
     // 依次检查左、右两侧可见项：都在状态栏垂直范围内、从左到右排列、互不重叠
     QList<QWidget *> items;
     items << m_play << m_stepPrev << m_stepNext << m_seek << m_time << m_speed << m_customSpeed << m_trail;
-    items << m_loadingBox << m_error << m_height << m_lonLat << m_fps;
+    items << m_loadingBox << m_error << m_height << m_lonLat << m_radarPolar << m_fps;
     items << m_sourceBtn << m_count << m_themeBtn;
 
     QStringList parts;

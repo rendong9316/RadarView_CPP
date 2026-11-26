@@ -1,6 +1,7 @@
 #include "globewidget.h"
 #include "geocalc.h"
 #include "globeoverlay.h"
+#include "radarsite.h"
 #include "maptools.h"
 #include "netmap.h"
 #include "spatiallasso.h"
@@ -333,6 +334,23 @@ void GlobeWidget::setTrackStore(const TrackStore *store)
     update();
 }
 
+void GlobeWidget::setRadarSites(RadarSiteStore *sites)
+{
+    m_radarSites = sites;
+    if (m_radarSites)
+        connect(m_radarSites, &RadarSiteStore::changed, this, [this]() {
+            syncOverlayContext();
+            update();
+        });
+    syncOverlayContext();
+    update();
+}
+
+int GlobeWidget::radarPpiPrimitivesDrawn() const
+{
+    return m_overlay ? m_overlay->radarPpiPrimitivesDrawn() : 0;
+}
+
 void GlobeWidget::setMapTools(FlagStore *flags, RulerState *ruler)
 {
     m_flags = flags;
@@ -510,6 +528,7 @@ void GlobeWidget::syncOverlayContext()
     ctx.compareLinksVisible = m_compareLinksVisible;
     ctx.compareMaxIdx = m_compareMaxIdx;
     ctx.compareSamples = &m_compareSamples;
+    ctx.radarSites = m_radarSites;
     m_overlay->setContext(ctx);
 }
 
@@ -622,6 +641,7 @@ void GlobeWidget::paintGL()
                          || m_focusValid
                          || m_filterOverlay.enabled
                          || m_compareLinksVisible
+                         || (m_radarSites && m_radarSites->ppiVisible() && !m_radarSites->sites().isEmpty())
                          || m_tipTrack >= 0;
     if (overlay || (m_overlay && m_overlay->isWanted())) {
         syncOverlayContext();

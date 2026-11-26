@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QString>
 
+#include "radarsite.h"
 #include "track.h"
 
 class DbSaveJob;
@@ -45,6 +46,7 @@ signals:
     void persistFinished(bool ok, const QString &message);
     void dbStale();
     void radarPointModeSelected(RadarPointMode mode);
+    void radarSiteDiscovered(const RadarSite &site);
 
 private slots:
     void onImportDone();

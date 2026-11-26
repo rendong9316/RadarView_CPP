@@ -58,6 +58,8 @@ public:
     explicit AppStatusBar(ReplayController *replay, QWidget *parent = nullptr);
 
     void setViewStatus(double heightKm, double lonDeg, double latDeg, int fps, bool hasCoord = false);
+    void setRadarPolarText(const QString &text, const QString &tooltip, bool visible);
+    QString radarPolarText() const;
     void setSources(const QVector<SourceItem> &items);
     void setTrackCount(int count);
     void setLoading(bool loading, int percent);
@@ -139,6 +141,7 @@ private:
     statusbar_detail::ErrorTag *m_error = nullptr;
     QLabel *m_height = nullptr;
     QLabel *m_lonLat = nullptr;
+    QLabel *m_radarPolar = nullptr;
     QLabel *m_fps = nullptr;
     QPushButton *m_sourceBtn = nullptr;         // 「数据源」入口，替代原来一排按钮
     QVector<SourceItem> m_items;                // 最近一次 setSources 的内容

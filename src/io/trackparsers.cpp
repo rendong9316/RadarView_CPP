@@ -161,16 +161,115 @@ bool parseAdsbCsv(const QString &path, QVector<Track> *out, QString *error, cons
 }
 
 // ---------------------------------------------------------------
+//  雷达 sysPara（收发站址与探测扇区）
+// ---------------------------------------------------------------
+bool parseRadarSysPara(const MatFile &mat, const QString &siteName, RadarSite *out)
+{
+    if (!out)
+        return false;
+    const MatArray sp = mat.variable(QStringLiteral("sysPara"));
+    if (!sp.isValid() || !sp.isStruct() || sp.numel() <= 0)
+        return false;
+
+    RadarSite site;
+    site.name = siteName.trimmed().isEmpty() ? QStringLiteral("雷达站") : siteName.trimmed();
+
+    auto readBlh = [](const MatArray &arr, bool *has, double *lat, double *lon, double *alt) {
+        if (!arr.isNumeric() || arr.numel() < 2)
+            return;
+        bool okLat = false, okLon = false;
+        const double la = arr.scalar(0, &okLat);
+        const double lo = arr.scalar(1, &okLon);
+        if (okLat && okLon && validLatLon(la, lo)) {
+            *has = true;
+            *lat = la;
+            *lon = lo;
+            if (arr.numel() >= 3) {
+                bool okH = false;
+                const double h = arr.scalar(2, &okH);
+                if (okH && std::isfinite(h))
+                    *alt = h;
+            }
+        }
+    };
+    readBlh(sp.field(QStringLiteral("tx_BLH")), &site.hasTx, &site.txLat, &site.txLon, &site.txAltM);
+    readBlh(sp.field(QStringLiteral("rx_BLH")), &site.hasRx, &site.rxLat, &site.rxLon, &site.rxAltM);
+    if (!site.isValid())
+        return false;
+
+    bool okBeam = false;
+    const double beam = sp.field(QStringLiteral("beamDir")).scalar(0, &okBeam);
+    if (okBeam && std::isfinite(beam))
+        site.beamDirDeg = beam;
+
+    bool okT = false;
+    const double ti = sp.field(QStringLiteral("T_inter")).scalar(0, &okT);
+    if (okT && std::isfinite(ti) && ti > 0.0)
+        site.frameIntervalSec = ti;
+
+    // 方位扇区（aIndex 首末）
+    const MatArray aIdx = sp.field(QStringLiteral("aIndex"));
+    bool hasAz = false;
+    if (aIdx.isNumeric() && aIdx.numel() >= 2) {
+        bool ok0 = false, ok1 = false;
+        const double a0 = aIdx.scalar(0, &ok0);
+        const double a1 = aIdx.scalar(aIdx.numel() - 1, &ok1);
+        if (ok0 && ok1 && std::isfinite(a0) && std::isfinite(a1)) {
+            site.startAzDeg = a0;
+            site.endAzDeg = a1;
+            hasAz = true;
+        }
+    }
+
+    // 探测距离门（rIndex[Rbin_start..Rbin_end]，1-based 索引）
+    const MatArray rIdx = sp.field(QStringLiteral("rIndex"));
+    bool hasRange = false;
+    if (rIdx.isNumeric() && rIdx.numel() >= 2) {
+        int i0 = 0;
+        int i1 = rIdx.numel() - 1;
+        bool okS = false, okE = false;
+        const int rs = int(std::lround(sp.field(QStringLiteral("Rbin_start")).scalar(0, &okS)));
+        const int re = int(std::lround(sp.field(QStringLiteral("Rbin_end")).scalar(0, &okE)));
+        if (okS && okE && rs >= 1 && re >= rs && re <= rIdx.numel()) {
+            i0 = rs - 1;
+            i1 = re - 1;
+        }
+        bool okR0 = false, okR1 = false;
+        double r0 = rIdx.scalar(i0, &okR0);
+        double r1 = rIdx.scalar(i1, &okR1);
+        if (okR0 && okR1 && std::isfinite(r0) && std::isfinite(r1) && r1 > r0) {
+            // 若最大距离超过 20000 视为米，自动换算为 km；天波雷达 rIndex 本身已是 km（如 2201.25~4200）
+            if (r1 > 20000.0) {
+                r0 /= 1000.0;
+                r1 /= 1000.0;
+            }
+            site.minRangeKm = qMax(0.0, r0);
+            site.maxRangeKm = r1;
+            hasRange = true;
+        }
+    }
+    site.hasSector = hasRange || hasAz;
+    *out = site;
+    return true;
+}
+
+// ---------------------------------------------------------------
 //  雷达 MAT
 // ---------------------------------------------------------------
 bool parseRadarMat(const QString &path, bool raw, const QString &displayName,
-                   QVector<Track> *out, QString *error, const ProgressFn &progress)
+                   QVector<Track> *out, QString *error, const ProgressFn &progress,
+                   RadarSite *siteOut)
 {
     MatFile mat;
     if (!mat.open(path, error))
         return false;
     if (progress)
         progress(5);
+    if (siteOut) {
+        const QString sName = displayName.isEmpty() ? QFileInfo(path).completeBaseName() : displayName;
+        if (!parseRadarSysPara(mat, sName, siteOut))
+            *siteOut = RadarSite();
+    }
     const MatArray list = mat.variable(QStringLiteral("trackList"), error);
     if (!list.isValid())
         return false;

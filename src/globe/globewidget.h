@@ -23,6 +23,7 @@
 class GlobeOverlay;
 class NetTileSource;
 class FlagStore;
+class RadarSiteStore;
 class RulerState;
 class SpatialLasso;
 struct Track;
@@ -81,6 +82,9 @@ public:
     void setTrackStore(const TrackStore *store);
     TrackLayer *trackLayer() { return &m_trackLayer; }
 
+    // 雷达站址与 PPI 极坐标网格（数据由主窗口持有）
+    void setRadarSites(RadarSiteStore *sites);
+    int radarPpiPrimitivesDrawn() const;
     // 旗标 / 标尺（数据由主窗口持有）
     void setMapTools(FlagStore *flags, RulerState *ruler);
     // 空间套索（交互状态由主窗口持有；激活后左键逐点/自由手绘，双击或右键闭合）
@@ -194,6 +198,7 @@ private:
     GlobeOverlay *m_overlay = nullptr;       // 叠加层（透明子控件）
 
     FlagStore *m_flags = nullptr;
+    RadarSiteStore *m_radarSites = nullptr;
     RulerState *m_ruler = nullptr;
     SpatialLasso *m_lasso = nullptr;
     DrawingManager *m_draw = nullptr;

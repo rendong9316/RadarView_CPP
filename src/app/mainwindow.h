@@ -33,6 +33,7 @@ class SourceStrip;
 class ManageState;
 class ManagePanel;
 class FlagStore;
+class RadarSiteStore;
 class RulerState;
 class SpatialLasso;
 class DrawingManager;
@@ -100,6 +101,8 @@ public:
     TrackFilterState *filterPanelState() { return &m_filter; }   // 自检用：读筛选状态
     FlagPanel *flagPanel() const { return m_flagPanel; }
     FlagStore *flagStore() const { return m_flags; }
+    RadarSiteStore *radarSites() const { return m_radarSites; }
+    void showRadarSiteDialog();
     RulerState *ruler() const { return m_ruler; }
     SpatialLasso *spatialLasso() const { return m_lasso; }
     DrawingManager *drawing() const;
@@ -182,6 +185,7 @@ private:
     TrackFilterState m_filter;
     FilterPanel *m_filterPanel = nullptr;
     FlagStore *m_flags = nullptr;
+    RadarSiteStore *m_radarSites = nullptr;
     RulerState *m_ruler = nullptr;
     SpatialLasso *m_lasso = nullptr;
     FlagPanel *m_flagPanel = nullptr;
@@ -199,6 +203,7 @@ private:
     bool m_haveOverviewDots = false;
     QAction *m_labelAction = nullptr;
     QAction *m_batchColorAction = nullptr;       // 视图 → 按航迹批号分色
+    QAction *m_radarPpiAction = nullptr;         // 视图 → 显示雷达 PPI 网格
     QAction *m_hideAllSourcesAction = nullptr;   // 视图 → 隐藏所有数据源 / 显示所有数据源（文字随状态变）
     QAction *m_resetFiltersAction = nullptr;     // 视图 → 重置所有筛选
     QAction *m_clearDotsAction = nullptr;        // 视图 → 清空所有点迹显示

@@ -27,8 +27,10 @@ void TrackImporter::run()
         if (m_ok && !m_displayName.trimmed().isEmpty())
             for (Track &track : m_tracks)
                 track.fileName = m_displayName.trimmed();
-    } else
+    } else {
+        m_radarSite = RadarSite();
         m_ok = parseRadarMat(m_path, m_kind == TrackSource::RadarRaw, m_displayName,
-                             &m_tracks, &m_error, progress);
+                             &m_tracks, &m_error, progress, &m_radarSite);
+    }
     m_elapsed = clock.elapsed();
 }

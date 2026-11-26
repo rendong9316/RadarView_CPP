@@ -35,11 +35,14 @@
 #include "apppaths.h"
 #include "appstatusbar.h"
 #include "drawingcontroller.h"
+#include "geocalc.h"
 #include "globewidget.h"
 #include "managepanel.h"
 #include "mapsourcecontroller.h"
 #include "maptools.h"
 #include "point3dcoordinator.h"
+#include "radarsite.h"
+#include "radarsitedialog.h"
 #include "replaycontroller.h"
 #include "settingspanel.h"
 #include "spatiallasso.h"
@@ -108,9 +111,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_globe->setTrackStore(&m_store);
     m_flags = new FlagStore(this);
+    m_radarSites = new RadarSiteStore(this);
     m_ruler = new RulerState(this);
     m_lasso = new SpatialLasso(this);
     m_globe->setMapTools(m_flags, m_ruler);
+    m_globe->setRadarSites(m_radarSites);
     m_globe->setSpatialLasso(m_lasso);
 
     m_drawCtrl = new DrawingController(m_globe, m_lasso, m_ruler, m_flags, this, this);
@@ -171,6 +176,41 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_globe, &GlobeWidget::viewStatusChanged, m_statusBar,
             [this](double h, double lon, double lat, int fps, bool hasCoord) {
                 m_statusBar->setViewStatus(h, lon, lat, fps, hasCoord);
+                const RadarSite *site = m_radarSites ? m_radarSites->activeSite() : nullptr;
+                double aLat = 0.0, aLon = 0.0;
+                if (!site || !site->anchorLatLon(&aLat, &aLon)) {
+                    m_statusBar->setRadarPolarText(QString(), QString(), false);
+                    return;
+                }
+                if (!hasCoord) {
+                    m_statusBar->setRadarPolarText(QStringLiteral("极 --"),
+                                                   QStringLiteral("参考雷达站: %1 (%2)").arg(site->name, site->anchorLabel()),
+                                                   true);
+                    return;
+                }
+                const double rKm = geocalc::vincentyKm(aLat, aLon, lat, lon);
+                const double az = geocalc::initialBearing(aLat, aLon, lat, lon);
+                const QString text = QStringLiteral("极 %1km %2°").arg(rKm, 0, 'f', 1).arg(az, 0, 'f', 1);
+                QStringList tips;
+                tips << QStringLiteral("参考雷达站: %1（%2: %3, %4）")
+                            .arg(site->name, site->anchorLabel())
+                            .arg(aLat, 0, 'f', 4).arg(aLon, 0, 'f', 4);
+                if (site->hasRx) {
+                    const double rRx = geocalc::vincentyKm(site->rxLat, site->rxLon, lat, lon);
+                    const double azRx = geocalc::initialBearing(site->rxLat, site->rxLon, lat, lon);
+                    tips << QStringLiteral("相对接收站 Rx: %1 km / %2°").arg(rRx, 0, 'f', 2).arg(azRx, 0, 'f', 2);
+                }
+                if (site->hasTx) {
+                    const double rTx = geocalc::vincentyKm(site->txLat, site->txLon, lat, lon);
+                    const double azTx = geocalc::initialBearing(site->txLat, site->txLon, lat, lon);
+                    tips << QStringLiteral("相对发射站 Tx: %1 km / %2°").arg(rTx, 0, 'f', 2).arg(azTx, 0, 'f', 2);
+                }
+                if (site->hasRx && site->hasTx) {
+                    const double rRx = geocalc::vincentyKm(site->rxLat, site->rxLon, lat, lon);
+                    const double rTx = geocalc::vincentyKm(site->txLat, site->txLon, lat, lon);
+                    tips << QStringLiteral("双基地半程距离 (R_tx+R_rx)/2: %1 km").arg(0.5 * (rTx + rRx), 0, 'f', 2);
+                }
+                m_statusBar->setRadarPolarText(text, tips.join(QLatin1Char('\n')), true);
             });
     connect(m_statusBar, &AppStatusBar::sourceToggled, this, &MainWindow::toggleSource);
     connect(m_sourceStrip, &SourceStrip::sourceToggled, this, &MainWindow::toggleSource);
@@ -213,6 +253,19 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_importCtrl, &TrackImportCoordinator::persistFinished, this, &MainWindow::persistFinished);
     connect(m_importCtrl, &TrackImportCoordinator::dbStale, m_manage, &ManageState::markStale);
     connect(m_importCtrl, &TrackImportCoordinator::radarPointModeSelected, this, &MainWindow::setRadarPointMode);
+    connect(m_importCtrl, &TrackImportCoordinator::radarSiteDiscovered, this, [this](const RadarSite &site) {
+        if (m_radarSites)
+            m_radarSites->upsertFromSysPara(site);
+    });
+    connect(m_radarSites, &RadarSiteStore::changed, this, [this]() {
+        if (m_radarPpiAction) {
+            QSignalBlocker blk(m_radarPpiAction);
+            m_radarPpiAction->setChecked(m_radarSites->ppiVisible());
+        }
+        if (!m_radarSites->activeSite())
+            m_statusBar->setRadarPolarText(QString(), QString(), false);
+        m_globe->update();
+    });
 
     buildMenuBar();
     m_drawCtrl->buildToolBar(this);
@@ -363,6 +416,9 @@ void MainWindow::loadPersisted()
     m_manage->loadSettings();
     m_filter.load();
     m_flags->load();
+    m_radarSites->load();
+    if (m_radarPpiAction)
+        m_radarPpiAction->setChecked(m_radarSites->ppiVisible());
     m_ruler->load();
     m_globe->setShowLabels(s.value(QStringLiteral("display.show_labels"), false).toBool());
     if (m_labelAction)
@@ -1137,6 +1193,15 @@ bool MainWindow::filterOverlayEnabled() const
     return m_globe->filterOverlay().enabled;
 }
 
+void MainWindow::showRadarSiteDialog()
+{
+    RadarSiteDialog dlg(m_radarSites, this);
+    connect(&dlg, &RadarSiteDialog::flyToSiteRequested, this, [this](double lon, double lat, double altKm) {
+        m_globe->lookAt(lon, lat, altKm);
+    });
+    dlg.exec();
+}
+
 bool MainWindow::pointDotsShown(int index) const
 {
     return index >= 0 && index < m_store.size() && m_dotKeys.contains(m_store.tracks()[index].key());
@@ -1434,6 +1499,13 @@ void MainWindow::buildMenuBar()
     });
     m_batchColorAction->setCheckable(true);
     m_batchColorAction->setToolTip(tr("开启后每条航迹按批号独立配色，便于区分同文件交叉航迹；关闭则恢复按数据源文件配色"));
+    m_radarPpiAction = item(mView, tr("显示雷达 PPI 网格"), QKeySequence(), [this]() {
+        if (m_radarSites)
+            m_radarSites->setPpiVisible(!m_radarSites->ppiVisible());
+    });
+    m_radarPpiAction->setCheckable(true);
+    m_radarPpiAction->setChecked(true);
+    m_radarPpiAction->setToolTip(tr("显示/隐藏雷达收发站址、探测扇区、同心距离环与方位射线"));
     item(mView, tr("放大"), QKeySequence::ZoomIn, [this]() { m_globe->zoomBy(1.0); });
     item(mView, tr("缩小"), QKeySequence::ZoomOut, [this]() { m_globe->zoomBy(-1.0); });
     mView->addSeparator();
@@ -1499,6 +1571,8 @@ void MainWindow::buildMenuBar()
          [this]() { showTrackAnalysis(isolatedTrack(), 0); });
     item(mTools, tr("两航迹定量误差对比..."), QKeySequence(),
          [this]() { showTrackAnalysis(-1, 1); });
+    item(mTools, tr("雷达站址与 PPI 网格管理..."), QKeySequence(),
+         [this]() { showRadarSiteDialog(); });
     mTools->addSeparator();
     item(mTools, tr("旗标管理"), QKeySequence(), [this]() { activatePanel(PanelId::Flags); });
     item(mTools, tr("清除所有旗标"), QKeySequence(), [this]() {

@@ -16,6 +16,7 @@ class FlagStore;
 class GlobeCamera;
 class GlobeDrawController;
 class QPainter;
+class RadarSiteStore;
 class RulerState;
 class SpatialLasso;
 class TrackLayer;
@@ -58,6 +59,7 @@ public:
         bool compareLinksVisible = false;
         int compareMaxIdx = -1;
         const QVector<trackanalysis::TrackDiffSample> *compareSamples = nullptr;
+        const RadarSiteStore *radarSites = nullptr;
     };
 
     explicit GlobeOverlay(QWidget *parent = nullptr);
@@ -89,12 +91,14 @@ public:
     int drawPreviewSegments() const { return m_drawPreviewSegments; }
     int filterOverlayItemsDrawn() const { return m_filterOverlayItems; }
     int compareLinksDrawn() const { return m_compareLinksDrawn; }
+    int radarPpiPrimitivesDrawn() const { return m_radarPpiPrimitives; }
 
 protected:
     void paintEvent(QPaintEvent *) override;
 
 private:
     void drawRuler(QPainter &p);
+    void drawRadarSites(QPainter &p);
     void drawFlags(QPainter &p);
     void drawLabels(QPainter &p);
     void drawLasso(QPainter &p);
@@ -120,6 +124,7 @@ private:
     int m_drawPreviewSegments = 0;
     int m_filterOverlayItems = 0;
     int m_compareLinksDrawn = 0;
+    int m_radarPpiPrimitives = 0;
 
     QHash<QString, QPixmap> m_labelCache;   // 标签文字 + 颜色 -> 带描边的位图
     QPixmap m_flagIcon;

@@ -5,6 +5,7 @@
 #include "globewidget.h"
 #include "mainwindow.h"
 #include "point3dwindow.h"
+#include "radarsite.h"
 #include "replaycontroller.h"
 #include "track.h"
 #include "trackanalysis.h"
@@ -261,9 +262,47 @@ void runDebugTest(MainWindow *w, const QString &mat, const QString &detDir, cons
                             awin->close();
                         w->setFilterOverlayEnabled(false);
                         w->isolateTrack(-1);
-                        check(g->glErrorCount() == 0,
-                              QStringLiteral("全程 OpenGL 错误数=%1").arg(g->glErrorCount()));
-                        finish();
+
+                        // 8. Phase 3: sysPara 自动提取双基地站址/探测扇区 + PPI 网格绘制 + 持久化 + 状态栏相对极坐标
+                        RadarSiteStore *rs = w->radarSites();
+                        check(rs != nullptr && rs->sites().size() == 1,
+                              QStringLiteral("Phase 3 导入 MAT 自动注册雷达站点（count=%1）")
+                                  .arg(rs ? rs->sites().size() : 0));
+                        const RadarSite *active = rs ? rs->activeSite() : nullptr;
+                        check(active != nullptr && active->hasTx && active->hasRx && active->hasSector,
+                              QStringLiteral("Phase 3 站点包含双基地 Tx/Rx 与探测扇区"));
+                        if (active) {
+                            check(std::fabs(active->txLat - 35.28) < 0.01 && std::fabs(active->txLon - 113.93) < 0.01,
+                                  QStringLiteral("Phase 3 Tx 坐标 (%1, %2)").arg(active->txLat, 0, 'f', 4).arg(active->txLon, 0, 'f', 4));
+                            check(std::fabs(active->rxLat - 33.0108) < 0.01 && std::fabs(active->rxLon - 112.6503) < 0.01,
+                                  QStringLiteral("Phase 3 Rx 坐标 (%1, %2)").arg(active->rxLat, 0, 'f', 4).arg(active->rxLon, 0, 'f', 4));
+                            check(std::fabs(active->minRangeKm - 2201.25) < 1.0 && std::fabs(active->maxRangeKm - 4200.0) < 1.0,
+                                  QStringLiteral("Phase 3 探测距离门 %1 ~ %2 km")
+                                      .arg(active->minRangeKm, 0, 'f', 2).arg(active->maxRangeKm, 0, 'f', 1));
+                            check(std::fabs(active->startAzDeg - 83.6) < 0.2 && std::fabs(active->endAzDeg - 113.6) < 0.2
+                                      && std::fabs(active->beamDirDeg - 113.0) < 0.2,
+                                  QStringLiteral("Phase 3 方位扇区 %1°~%2° beamDir=%3°")
+                                      .arg(active->startAzDeg, 0, 'f', 1).arg(active->endAzDeg, 0, 'f', 1)
+                                      .arg(active->beamDirDeg, 0, 'f', 1));
+                            // 持久化往返验证
+                            RadarSiteStore reloaded;
+                            reloaded.load();
+                            check(reloaded.sites().size() == 1 && reloaded.activeSite() != nullptr,
+                                  QStringLiteral("Phase 3 RadarSiteStore 持久化与恢复一致"));
+                        }
+                        // 切视角对准探测扇区，验证 PPI 网格与状态栏布局
+                        g->lookAt(125.0, 31.0, 5000.0);
+                        afterFrames([=]() {
+                            check(g->radarPpiPrimitivesDrawn() > 5,
+                                  QStringLiteral("Phase 3 地图绘制 PPI 网格/站址图元=%1").arg(g->radarPpiPrimitivesDrawn()));
+                            QString layoutRep2;
+                            check(sb->checkLayout(&layoutRep2),
+                                  QStringLiteral("Phase 3 启用极坐标状态栏后布局校验：%1")
+                                      .arg(layoutRep2.isEmpty() ? QStringLiteral("OK") : layoutRep2));
+                            check(g->glErrorCount() == 0,
+                                  QStringLiteral("全程 OpenGL 错误数=%1").arg(g->glErrorCount()));
+                            finish();
+                        });
                     });
                 });
                 pollLoad->start();
