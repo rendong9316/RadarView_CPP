@@ -15,7 +15,6 @@
 RadarView_CPP/
 ├── RadarView.pro            # Qt qmake 工程文件
 ├── README.md                # 项目总览与构建指南
-├── CLAUDE.md                # 开发约束与 AI 协作规范
 ├── docs/                    # 架构、双平台兼容性与数据格式文档
 ├── scripts/                 # Win7 / RHEL 7.6 构建、打包与导入表检查脚本
 ├── src/
@@ -77,4 +76,3 @@ QTDIR=~/Qt5.14.2/5.14.2/gcc_64 bash scripts/build_linux.sh
 - [双平台兼容性与 OpenGL 约束](docs/platform-compat.md)
 - [数据格式、时间基准与数据库 Schema](docs/data-formats.md)
 - [离线瓦片制作工具](tools/README.md)
-- [开发规范与 AI 协作指南](CLAUDE.md)
